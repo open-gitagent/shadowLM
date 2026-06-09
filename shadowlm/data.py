@@ -81,14 +81,45 @@ class Dataset:
         return cls(rows=rows, format=_detect_format(rows), name=path.stem, source=str(path))
 
     @classmethod
-    def from_hf(cls, repo: str, *, split: str = "train", token: str | None = None) -> "Dataset":
+    def from_parquet(cls, path: str | Path) -> "Dataset":
+        try:
+            import pyarrow.parquet as pq  # noqa: PLC0415  (lazy, optional dep)
+        except ImportError as e:
+            raise ImportError(
+                "Dataset.from_parquet needs 'pyarrow': pip install pyarrow"
+            ) from e
+        path = Path(path)
+        rows = pq.read_table(path).to_pylist()
+        return cls(rows=rows, format=_detect_format(rows), name=path.stem, source=str(path))
+
+    @classmethod
+    def load(cls, path: str | Path) -> "Dataset":
+        """Load any supported file, dispatched on extension.
+
+        Supported: .jsonl/.ndjson, .json, .csv, .parquet.
+        """
+        suffix = Path(path).suffix.lower()
+        loaders = {
+            ".jsonl": cls.from_jsonl, ".ndjson": cls.from_jsonl,
+            ".json": cls.from_json, ".csv": cls.from_csv, ".parquet": cls.from_parquet,
+        }
+        if suffix not in loaders:
+            raise ValueError(
+                f"unsupported dataset file {suffix!r} (supported: {', '.join(loaders)})"
+            )
+        return loaders[suffix](path)
+
+    @classmethod
+    def from_hf(cls, repo: str, *, subset: str | None = None, split: str = "train",
+                token: str | None = None) -> "Dataset":
+        """Load from the HuggingFace Hub. `subset` is the dataset config name."""
         try:
             from datasets import load_dataset  # noqa: PLC0415  (lazy, optional dep)
         except ImportError as e:  # pragma: no cover - exercised only with [torch] extra
             raise ImportError(
                 "Dataset.from_hf needs the 'datasets' library: pip install shadowlm[torch]"
             ) from e
-        ds = load_dataset(repo, split=split, token=token)
+        ds = load_dataset(repo, subset, split=split, token=token)
         rows = [dict(r) for r in ds]
         return cls(rows=rows, format=_detect_format(rows), name=repo, source=f"hf:{repo}")
 
@@ -139,6 +170,17 @@ class Dataset:
             return texts
         raise ValueError(f"don't know how to render {self.format!r} rows to text")
 
+    def as_text(self) -> "Dataset":
+        """Force raw-text format: every row becomes {"text": ...}.
+
+        The explicit "Raw Text" target format — useful when auto-detection picks
+        chat/instruction but you want plain next-token training (e.g. CPT).
+        """
+        if self.format == TEXT:
+            return self
+        rows = [{"text": t} for t in self.to_texts()]
+        return Dataset(rows=rows, format=TEXT, name=self.name, source=self.source)
+
     def split(self, test_size: float | int = 0.1, *, seed: int = 0,
               shuffle: bool = True) -> tuple["Dataset", "Dataset"]:
         """Split into `(train, eval)` datasets.
@@ -165,13 +207,23 @@ class Dataset:
     def head(self, n: int = 5) -> list[dict]:
         return self.rows[:n]
 
+    @property
+    def columns(self) -> list[str]:
+        return list(self.rows[0].keys()) if self.rows else []
+
     def __len__(self) -> int:
         return len(self.rows)
 
     def __iter__(self) -> Iterator[dict]:
         return iter(self.rows)
 
-    def __getitem__(self, i: int) -> dict:
+    def __getitem__(self, i: int | slice) -> "dict | Dataset":
+        # Slicing returns a Dataset — the row-range selection ("train on rows
+        # 0–99") is just ds[0:100].
+        if isinstance(i, slice):
+            label = f"{self.name}[{i.start or 0}:{i.stop if i.stop is not None else len(self.rows)}]"
+            return Dataset(rows=self.rows[i], format=self.format,
+                           name=label if self.name else None, source=self.source)
         return self.rows[i]
 
     def __repr__(self) -> str:

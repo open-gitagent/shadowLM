@@ -45,7 +45,7 @@ class Model:
         dataset: Dataset | list[dict],
         *,
         method: str = "lora",
-        eval_dataset: Dataset | list[dict] | None = None,
+        eval_dataset: Dataset | list[dict] | str | None = None,
         eval_steps: int | None = None,
         on_step: StepCallback | None = None,
         on_eval: StepCallback | None = None,
@@ -64,12 +64,16 @@ class Model:
 
         Pass `eval_dataset` (and optionally `eval_steps`) to evaluate on a held-out
         set during training; eval loss lands in `run.eval_metrics` / `run.eval_loss`.
+        `eval_dataset="auto"` splits a small portion (10%) off the training data.
         Extra keyword args (`max_steps`, `learning_rate`, `lora_r`, ...) override the
         `TrainConfig` defaults. Pass `on_step`/`on_eval` to observe metrics live.
         """
         if not isinstance(dataset, Dataset):
             dataset = Dataset.from_list(list(dataset))
-        if eval_dataset is not None and not isinstance(eval_dataset, Dataset):
+        if isinstance(eval_dataset, str):
+            if eval_dataset != "auto":
+                raise ValueError(f"eval_dataset={eval_dataset!r} — expected a Dataset, rows, or 'auto'")
+        elif eval_dataset is not None and not isinstance(eval_dataset, Dataset):
             eval_dataset = Dataset.from_list(list(eval_dataset))
         if verbose:
             from .ascii import print_ascii_art  # noqa: PLC0415
@@ -81,6 +85,8 @@ class Model:
             config.learning_rate = spec.default_learning_rate
         if eval_steps is not None:
             config.eval_steps = eval_steps
+        if eval_dataset == "auto":
+            dataset, eval_dataset = dataset.split(test_size=0.1, seed=config.seed)
         output_dir = output_dir or _default_output_dir(self.name)
         run = TrainingRun(
             config=config,

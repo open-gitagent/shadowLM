@@ -136,11 +136,14 @@ model.save("out/", fmt="merged")
 
 | Call | What it does |
 |------|--------------|
-| `slm.Dataset.from_jsonl / from_csv / from_json / from_hf / from_list` | load data; format auto-detected (chat / instruction / text) |
-| `ds.as_chat()` | normalize any format to `{"messages": [...]}` |
+| `slm.Dataset.load(path)` | any supported file by extension (.jsonl/.json/.csv/.parquet) |
+| `slm.Dataset.from_jsonl / from_csv / from_json / from_parquet / from_list` | format auto-detected (chat / instruction / text) |
+| `slm.Dataset.from_hf(repo, subset=, split=, token=)` | HuggingFace Hub datasets |
+| `ds.as_chat()` / `ds.as_text()` | force chat or raw-text format |
 | `ds.split(test_size=0.1, seed=0)` | held-out train/eval split → `(train, eval)` |
+| `ds[0:100]`, `ds.head()`, `ds.columns`, `len(ds)` | row slicing & inspection |
 | `slm.load(name, backend=, accelerator=, device=, load_in_4bit=, adapter=)` | load a model (or attach a trained adapter) |
-| `model.finetune(ds, method="lora"\|"qlora"\|"dora"\|"full"\|"cpt", eval_dataset=, on_step=, on_eval=, **hyperparams)` | train; returns a `TrainingRun` |
+| `model.finetune(ds, method="lora"\|"qlora"\|"dora"\|"full"\|"cpt", eval_dataset=ds\|"auto", on_step=, on_eval=, **hyperparams)` | train; returns a `TrainingRun` (`eval_dataset="auto"` holds out 10%) |
 | `model.generate(prompt, ...)` / `model.chat(messages)` | inference |
 | `model.save(path, fmt="adapter"\|"merged")` | export |
 | `run.loss`, `run.eval_loss`, `run.step`, `run.progress`, `run.sparkline()`, `run.checkpoint` | live + final run state |

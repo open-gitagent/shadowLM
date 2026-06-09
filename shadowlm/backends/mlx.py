@@ -174,8 +174,10 @@ class MLXBackend(Backend):
             val_set = CacheDataset(
                 _to_mlx_dataset(dataset, tokenizer, raw_text=raw_text, mask_prompt=mask))
 
-        # mlx-lm requires len(dataset) >= batch_size; clamp for tiny datasets.
-        batch_size = max(1, min(config.per_device_train_batch_size, n))
+        # mlx-lm requires batch_size <= len(dataset) for both train and eval
+        # sets; clamp for tiny datasets.
+        batch_size = max(1, min(config.per_device_train_batch_size, n,
+                                len(eval_dataset) if has_eval else n))
 
         args = TrainingArgs(
             batch_size=batch_size,
