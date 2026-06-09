@@ -16,6 +16,7 @@ datasets → finetune → inference. mlx on Apple Silicon, torch on CUDA (or CPU
 from . import methods, runs
 from .data import Dataset
 from .models import Model, Reply, load
+from .rl import Trajectory, TrajectoryGroup, judge_group
 from .training import Metric, TrainConfig, TrainingRun
 
 __version__ = "0.1.0"
@@ -30,5 +31,8 @@ __all__ = [
     "Metric",
     "TrainConfig",
     "TrainingRun",
+    "Trajectory",
+    "TrajectoryGroup",
+    "judge_group",
     "__version__",
 ]

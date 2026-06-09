@@ -52,10 +52,36 @@ never the method name.
 | `dpo`   | preference optimization on `{prompt, chosen, rejected}` pairs vs a frozen reference (`beta=0.1`) | either | 5e-6 |
 
 SFT methods train on chat/instruction/text data; `dpo` trains on preference
-pairs (the `preference` dataset format, auto-detected from `chosen`/`rejected`
-columns). On Apple Silicon DPO needs `pip install shadowlm[preference]`; on
-CUDA it rides on trl. GRPO / ORPO / PPO-style RLHF exist in both substrates and
-are next on the roadmap — they need a reward-function API.
+pairs (the `preference` format, auto-detected from `chosen`/`rejected` columns);
+`grpo` trains on `{prompt[, answer]}` rows with your reward functions:
+
+```python
+def prefers_blue(prompts, completions, answer, types=None):
+    return [1.0 if "blue" in c.lower() else 0.0 for c in completions]
+
+run = model.finetune(rows, method="grpo", reward_fns=[prefers_blue],
+                     grpo_group_size=4)
+```
+
+On Apple Silicon, dpo/grpo need `pip install shadowlm[preference]`; on CUDA,
+DPO rides on trl (GRPO-on-torch is next). ORPO / PPO-style RLHF exist in the
+substrates and follow the same `trainer=` slot.
+
+### Agent RL: trajectories + judge rewards
+
+For multi-step agents, score whole episodes instead of writing reward math:
+
+```python
+group = slm.TrajectoryGroup(                 # several attempts at one task
+    slm.Trajectory(messages=rollout_messages, reward=0.0) for _ in range(6))
+group = slm.judge_group(group, judge=judge_model)   # LLM-as-judge scores 0–1
+run = model.finetune(group.to_preference_rows(), method="dpo")
+```
+
+`judge_group` asks a judge model to score attempts against a rubric (with a
+best/worst ranking fallback that keeps small local judges reliable), then
+best-vs-worst pairs feed DPO. Trajectory-native GRPO arrives with the GPU
+worker.
 
 Base requirements are enforced with clear errors (e.g. `qlora` on a 16-bit model
 tells you to load a 4-bit one). Adding a technique is one file:
