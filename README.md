@@ -68,15 +68,17 @@ register(TrainingMethod(
 
 `finetune(**hyperparams)` accepts the full `TrainConfig` surface:
 
-- **adapters** — `lora_r`, `lora_alpha`, `lora_dropout`, `target_modules`, `use_rslora`*
+- **adapters** — `lora_r`, `lora_alpha`, `lora_dropout`, `target_modules`
+  (`"all"` / `"attention"` / `"mlp"` presets, or explicit names), `use_rslora`*
 - **optimization** — `learning_rate` (default per method), `per_device_train_batch_size`,
   `gradient_accumulation_steps`, `warmup_steps` / `warmup_ratio`, `max_steps` /
   `num_train_epochs`, `weight_decay`, `max_grad_norm`*, `lr_scheduler_type`
   (linear / cosine / constant — real schedules on both backends), `optim`*, `seed`
 - **data** — `max_seq_length`, `packing`*, `train_on_completions` (mask the prompt,
   learn only on responses)
-- **logging / checkpoints** — `logging_steps`, `eval_steps`, `save_steps`
-  (mid-run checkpoints), `resume_from_checkpoint`, `report_to`*
+- **logging / checkpoints** — `logging_steps`, `eval_steps` (int, or a 0–1 fraction
+  of total steps), `save_steps` (mid-run checkpoints), `resume_from_checkpoint`,
+  `report_to`*
 
 \* torch-backend only; the mlx backend logs a note instead of silently ignoring.
 

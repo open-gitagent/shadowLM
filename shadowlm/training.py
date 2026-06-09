@@ -6,11 +6,16 @@ import math
 from dataclasses import asdict, dataclass, field
 from typing import Callable
 
-# Default LoRA target modules — the attention + MLP projections, the standard
-# PEFT recipe.
-DEFAULT_TARGET_MODULES = (
-    "q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj",
-)
+# LoRA target-module groups — the attention and MLP projections. The default
+# adapts both (the standard PEFT recipe); "attention" / "mlp" select one group.
+ATTENTION_MODULES = ("q_proj", "k_proj", "v_proj", "o_proj")
+MLP_MODULES = ("gate_proj", "up_proj", "down_proj")
+DEFAULT_TARGET_MODULES = ATTENTION_MODULES + MLP_MODULES
+_TARGET_PRESETS = {
+    "all": DEFAULT_TARGET_MODULES,
+    "attention": ATTENTION_MODULES,
+    "mlp": MLP_MODULES,
+}
 
 @dataclass
 class TrainConfig:
@@ -29,7 +34,7 @@ class TrainConfig:
     lora_r: int = 16
     lora_alpha: int = 16
     lora_dropout: float = 0.0
-    target_modules: tuple[str, ...] = DEFAULT_TARGET_MODULES
+    target_modules: tuple[str, ...] | str = "all"  # "all" | "attention" | "mlp" | explicit names
     use_rslora: bool = False  # rank-stabilized LoRA scaling (torch)
 
     # optimisation
@@ -52,22 +57,42 @@ class TrainConfig:
 
     # logging / checkpoints
     logging_steps: int = 1
-    eval_steps: int | None = None  # evaluate every N steps when an eval set is given
+    eval_steps: int | float | None = None  # every N steps; a 0–1 float = fraction of total
     save_steps: int | None = None  # checkpoint every N steps; None → final only
     resume_from_checkpoint: str | None = None  # adapter/checkpoint path to continue from
     report_to: tuple[str, ...] = ()  # e.g. ("wandb", "tensorboard") (torch)
 
     def to_dict(self) -> dict:
         d = asdict(self)
-        d["target_modules"] = list(self.target_modules)
+        d["target_modules"] = list(self.resolved_target_modules())
         d["report_to"] = list(self.report_to)
         return d
+
+    def resolved_target_modules(self) -> tuple[str, ...]:
+        """Target modules, expanding the "all"/"attention"/"mlp" presets."""
+        if isinstance(self.target_modules, str):
+            try:
+                return _TARGET_PRESETS[self.target_modules]
+            except KeyError:
+                raise ValueError(
+                    f"unknown target_modules preset {self.target_modules!r} "
+                    f"(presets: {', '.join(_TARGET_PRESETS)}; or pass explicit names)"
+                ) from None
+        return tuple(self.target_modules)
 
     def resolved_warmup(self, total_steps: int) -> int:
         """Warmup steps, honoring warmup_ratio when set."""
         if self.warmup_ratio is not None:
             return max(0, int(round(self.warmup_ratio * total_steps)))
         return max(0, self.warmup_steps)
+
+    def resolved_eval_steps(self, total_steps: int) -> int:
+        """Eval interval in steps; a 0–1 float means a fraction of total steps."""
+        if self.eval_steps is None:
+            return max(1, total_steps // 4)
+        if 0 < self.eval_steps < 1:
+            return max(1, round(self.eval_steps * total_steps))
+        return max(1, int(self.eval_steps))
 
 
 @dataclass

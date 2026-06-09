@@ -15,7 +15,7 @@ from pathlib import Path
 from .. import accel, methods
 from .._quiet import quiet_backend
 from ..data import CHAT, TEXT, Dataset
-from ..training import Metric, TrainConfig, resolve_total_steps
+from ..training import ATTENTION_MODULES, MLP_MODULES, Metric, TrainConfig, resolve_total_steps
 from .base import Backend, Callbacks, FinetuneResult
 
 DEFAULT_LORA_LAYERS = 16  # how many transformer blocks get LoRA adapters
@@ -166,7 +166,7 @@ class MLXBackend(Backend):
         if has_eval:
             batch = config.per_device_train_batch_size
             val_batches = max(1, min(len(eval_dataset) // batch or 1, 25))
-            steps_per_eval = config.eval_steps or max(1, iters // 4)
+            steps_per_eval = config.resolved_eval_steps(iters)
             val_set = CacheDataset(
                 _to_mlx_dataset(eval_dataset, tokenizer, raw_text=raw_text, mask_prompt=mask))
         else:
@@ -232,7 +232,21 @@ class MLXBackend(Backend):
         # MLX's `scale` is the direct LoRA multiplier; PEFT's effective scaling is
         # alpha/r. Match PEFT semantics so configs behave the same across backends.
         scale = config.lora_alpha / config.lora_r if config.lora_r else 1.0
-        return {"rank": config.lora_r, "dropout": config.lora_dropout, "scale": scale}
+        # Map module names to mlx key paths (self_attn.q_proj, mlp.gate_proj, ...)
+        # so target_modules actually constrains which layers get adapters —
+        # without keys, mlx adapts every linear layer.
+        keys = []
+        for mod in config.resolved_target_modules():
+            if "." in mod:
+                keys.append(mod)
+            elif mod in ATTENTION_MODULES:
+                keys.append(f"self_attn.{mod}")
+            elif mod in MLP_MODULES:
+                keys.append(f"mlp.{mod}")
+            else:
+                keys.append(mod)
+        return {"rank": config.lora_r, "dropout": config.lora_dropout,
+                "scale": scale, "keys": keys}
 
     def _write_adapter_config(self, out: Path, config: TrainConfig, num_layers: int) -> None:
         # Shape mlx_lm.load(..., adapter_path=out) expects to re-attach the adapter.
