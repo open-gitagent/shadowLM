@@ -13,6 +13,7 @@ datasets → finetune → inference. mlx on Apple Silicon, torch on CUDA (or CPU
 — accelerated by the shadow layer.
 """
 
+from . import methods, runs
 from .data import Dataset
 from .models import Model, load
 from .training import Metric, TrainConfig, TrainingRun
@@ -23,6 +24,8 @@ __all__ = [
     "Dataset",
     "Model",
     "load",
+    "methods",
+    "runs",
     "Metric",
     "TrainConfig",
     "TrainingRun",

@@ -124,7 +124,7 @@ class TrainingRun:
 
     config: TrainConfig
     base_model: str
-    status: str = "pending"  # pending | running | succeeded | failed
+    status: str = "pending"  # pending | running | succeeded | stopped | failed
     metrics: list[Metric] = field(default_factory=list)
     eval_metrics: list[Metric] = field(default_factory=list)  # held-out eval points (.loss = eval loss)
     checkpoint: str | None = None
@@ -132,6 +132,53 @@ class TrainingRun:
     total_steps: int | None = None
     started_at: float | None = None
     ended_at: float | None = None
+
+    @property
+    def id(self) -> str | None:
+        """The run's identifier — the checkpoint directory name."""
+        from pathlib import Path  # noqa: PLC0415
+
+        return Path(self.checkpoint).name if self.checkpoint else None
+
+    @property
+    def resumed(self) -> bool:
+        """True when this run continued from a previous checkpoint."""
+        return self.config.resume_from_checkpoint is not None
+
+    # ---- persistence --------------------------------------------------------
+    def to_dict(self) -> dict:
+        return {
+            "base_model": self.base_model,
+            "status": self.status,
+            "config": self.config.to_dict(),
+            "metrics": [m.to_dict() for m in self.metrics],
+            "eval_metrics": [m.to_dict() for m in self.eval_metrics],
+            "checkpoint": self.checkpoint,
+            "error": self.error,
+            "total_steps": self.total_steps,
+            "started_at": self.started_at,
+            "ended_at": self.ended_at,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "TrainingRun":
+        cfg = dict(d["config"])
+        if isinstance(cfg.get("target_modules"), list):
+            cfg["target_modules"] = tuple(cfg["target_modules"])
+        if isinstance(cfg.get("report_to"), list):
+            cfg["report_to"] = tuple(cfg["report_to"])
+        return cls(
+            config=TrainConfig(**cfg),
+            base_model=d["base_model"],
+            status=d.get("status", "succeeded"),
+            metrics=[Metric(**m) for m in d.get("metrics", [])],
+            eval_metrics=[Metric(**m) for m in d.get("eval_metrics", [])],
+            checkpoint=d.get("checkpoint"),
+            error=d.get("error"),
+            total_steps=d.get("total_steps"),
+            started_at=d.get("started_at"),
+            ended_at=d.get("ended_at"),
+        )
 
     # ---- live state -------------------------------------------------------
     @property

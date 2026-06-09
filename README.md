@@ -149,6 +149,12 @@ model.save("out/", fmt="merged")
 | `model.generate(prompt, ...)` / `model.chat(messages)` | inference |
 | `model.save(path, fmt="adapter"\|"merged")` | export |
 | `run.loss`, `run.eval_loss`, `run.step`, `run.progress`, `run.sparkline()`, `run.checkpoint` | live + final run state |
+| `slm.runs.list() / latest() / load(id) / delete(id)` | run history — every finetune persists a `run.json` (status, config, metrics) |
+
+Every run records itself — `succeeded`, `failed` (with the error), or `stopped`
+(Ctrl-C) — so history survives the process. Resume any recorded run with
+`model.finetune(ds, resume_from_checkpoint=run.checkpoint)`; pass `save_steps=N`
+to keep mid-run checkpoints so even interrupted runs are resumable.
 
 Pass `on_step` / `on_eval` to `finetune` to stream `Metric(step, loss, lr, ...)`
 as training happens — that's the hook the studio's live charts will use.
@@ -178,6 +184,7 @@ shadowlm/
   data.py              Dataset — load + format detection + chat normalization
   training.py          TrainConfig, Metric, TrainingRun (sparkline, progress)
   models.py            Model (finetune / generate / save) and load()
+  runs.py              run history — list / load / resume / delete past runs
   accel.py             the shadow accelerator — optimization planning
   methods/             training techniques — one module per method
     base.py            TrainingMethod spec + registry

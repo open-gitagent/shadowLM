@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 
 from . import methods
+from . import runs as run_history
 from .backends import Callbacks, select_backend
 from .data import Dataset
 from .training import Metric, StepCallback, TrainConfig, TrainingRun, resolve_total_steps
@@ -20,7 +21,7 @@ from .training import Metric, StepCallback, TrainConfig, TrainingRun, resolve_to
 _CONSOLE = sys.__stdout__ or sys.stdout
 
 # Where checkpoints land by default: ~/.shadowlm/runs/<base>-<timestamp>/
-RUNS_ROOT = Path.home() / ".shadowlm" / "runs"
+RUNS_ROOT = run_history.RUNS_ROOT
 
 
 def _default_output_dir(base_model: str) -> str:
@@ -123,12 +124,20 @@ class Model:
                                             eval_dataset=eval_dataset)
             run.checkpoint = result.checkpoint
             run.status = "succeeded"
+        except KeyboardInterrupt:  # Ctrl-C — record what happened, keep partial output
+            run.status = "stopped"
+            run.checkpoint = output_dir
+            run.ended_at = time.time()
+            run_history.save(run, output_dir)
+            raise
         except Exception as e:  # surface the failure on the run, then re-raise
             run.status = "failed"
             run.error = f"{type(e).__name__}: {e}"
             run.ended_at = time.time()
+            run_history.save(run, output_dir)
             raise
         run.ended_at = time.time()
+        run_history.save(run, output_dir)
         self.adapter = run.checkpoint
         return run
 

@@ -159,6 +159,12 @@ class MLXBackend(Backend):
         if config.resume_from_checkpoint:
             resume = Path(config.resume_from_checkpoint)
             weights = resume / "adapters.safetensors" if resume.is_dir() else resume
+            if not weights.exists():
+                raise FileNotFoundError(
+                    f"no saved weights at {weights} — the run may have stopped "
+                    "before its first checkpoint. Set save_steps=N to checkpoint "
+                    "mid-run, or resume from a completed run."
+                )
             model.load_weights(str(weights), strict=False)
             callbacks.log(f"[mlx] resumed weights from {weights}")
 
