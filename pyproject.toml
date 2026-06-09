@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "shadowlm"
+version = "0.1.0"
+description = "A beautiful, minimal fine-tuning SDK: datasets → finetune → inference."
+readme = "README.md"
+requires-python = ">=3.10"
+# The core SDK is pure-stdlib: `pip install shadowlm` gives you the full API. A
+# training backend is opt-in: [mlx] on Apple Silicon, [torch] on CUDA/CPU.
+dependencies = []
+
+[project.optional-dependencies]
+# Apple Silicon — the native path (Metal GPU).
+mlx = [
+    "mlx-lm>=0.20",
+]
+# CUDA / CPU — the PyTorch / HuggingFace path.
+torch = [
+    "datasets>=2.20",
+    "transformers>=4.43",
+    "trl>=0.9",
+    "peft>=0.12",
+    "accelerate>=0.33",
+    "torch>=2.3",
+]
+
+[tool.setuptools.packages.find]
+include = ["shadowlm*"]

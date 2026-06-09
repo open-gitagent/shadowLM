@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Build artifacts (PKG-INFO etc. are generated from pyproject + README)
+*.egg-info/
+build/
+dist/
+
+# shadowLM outputs
+out/
+~/.shadowlm/
+
+# OS / editor
+.DS_Store

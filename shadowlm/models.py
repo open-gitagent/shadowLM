@@ -1,0 +1,181 @@
+"""The user-facing surface: `load()` a model, then `.finetune()` / `.generate()`.
+
+This is the whole SDK in one object. It is deliberately tiny and reads like the
+task — the interesting machinery lives in the backends.
+"""
+
+from __future__ import annotations
+
+import sys
+import time
+from pathlib import Path
+
+from .backends import Callbacks, select_backend
+from .data import Dataset
+from .training import Metric, StepCallback, TrainConfig, TrainingRun, resolve_total_steps
+
+# shadowLM's own output goes to the real terminal even while a backend redirects
+# sys.stdout to swallow its internal logging. Captured once at import.
+_CONSOLE = sys.__stdout__ or sys.stdout
+
+# Where checkpoints land by default: ~/.shadowlm/runs/<base>-<timestamp>/
+RUNS_ROOT = Path.home() / ".shadowlm" / "runs"
+
+
+def _default_output_dir(base_model: str) -> str:
+    slug = base_model.replace("/", "_")
+    return str(RUNS_ROOT / f"{slug}-{int(time.time())}")
+
+
+class Model:
+    """A loaded model you can finetune and generate from."""
+
+    def __init__(self, name: str, backend, *, load_in_4bit: bool, max_seq_length: int,
+                 adapter: str | None) -> None:
+        self.name = name
+        self.load_in_4bit = load_in_4bit
+        self.max_seq_length = max_seq_length
+        self.adapter = adapter
+        self._backend = backend
+
+    # ---- finetune ---------------------------------------------------------
+    def finetune(
+        self,
+        dataset: Dataset | list[dict],
+        *,
+        method: str = "lora",
+        eval_dataset: Dataset | list[dict] | None = None,
+        eval_steps: int | None = None,
+        on_step: StepCallback | None = None,
+        on_eval: StepCallback | None = None,
+        on_log=None,
+        output_dir: str | None = None,
+        verbose: bool = True,
+        **hyperparams,
+    ) -> TrainingRun:
+        """Finetune on `dataset`, returning a `TrainingRun`.
+
+        Pass `eval_dataset` (and optionally `eval_steps`) to evaluate on a held-out
+        set during training; eval loss lands in `run.eval_metrics` / `run.eval_loss`.
+        Extra keyword args (`max_steps`, `learning_rate`, `lora_r`, ...) override the
+        `TrainConfig` defaults. Pass `on_step`/`on_eval` to observe metrics live.
+        """
+        if not isinstance(dataset, Dataset):
+            dataset = Dataset.from_list(list(dataset))
+        if eval_dataset is not None and not isinstance(eval_dataset, Dataset):
+            eval_dataset = Dataset.from_list(list(eval_dataset))
+        if verbose:
+            from .ascii import print_ascii_art  # noqa: PLC0415
+            print_ascii_art()
+
+        config = TrainConfig(method=method, **hyperparams)
+        if eval_steps is not None:
+            config.eval_steps = eval_steps
+        output_dir = output_dir or _default_output_dir(self.name)
+        run = TrainingRun(
+            config=config,
+            base_model=self.name,
+            status="running",
+            total_steps=resolve_total_steps(config, len(dataset)),
+            started_at=time.time(),
+        )
+
+        def _record(metric: Metric) -> None:
+            run.metrics.append(metric)
+            if verbose:
+                _print_progress(run, metric)
+            if on_step:
+                on_step(metric)
+
+        def _record_eval(metric: Metric) -> None:
+            run.eval_metrics.append(metric)
+            if verbose:
+                print(f"  ↳ eval @ step {metric.step}: loss {metric.loss:.4f}",
+                      file=_CONSOLE, flush=True)
+            if on_eval:
+                on_eval(metric)
+
+        def _log(message: str) -> None:
+            if verbose:
+                print(message, file=_CONSOLE, flush=True)
+            if on_log:
+                on_log(message)
+
+        callbacks = Callbacks(on_step=_record, on_log=_log, on_eval=_record_eval)
+        try:
+            result = self._backend.finetune(dataset, config, callbacks, output_dir,
+                                            eval_dataset=eval_dataset)
+            run.checkpoint = result.checkpoint
+            run.status = "succeeded"
+        except Exception as e:  # surface the failure on the run, then re-raise
+            run.status = "failed"
+            run.error = f"{type(e).__name__}: {e}"
+            run.ended_at = time.time()
+            raise
+        run.ended_at = time.time()
+        self.adapter = run.checkpoint
+        return run
+
+    # ---- inference --------------------------------------------------------
+    def generate(self, prompt: str, *, max_new_tokens: int = 256, temperature: float = 0.7,
+                 top_p: float = 0.95, **kwargs) -> str:
+        return self._backend.generate(
+            prompt, max_new_tokens=max_new_tokens, temperature=temperature,
+            top_p=top_p, **kwargs,
+        )
+
+    def chat(self, messages: list[dict], **kwargs) -> str:
+        prompt = "\n".join(f"{m['role']}: {m['content']}" for m in messages)
+        return self.generate(prompt, **kwargs)
+
+    # ---- export -----------------------------------------------------------
+    def save(self, path: str, *, fmt: str = "adapter") -> str:
+        """Save the model. fmt: 'adapter' (LoRA only) | 'merged'."""
+        return self._backend.save(path, fmt=fmt)
+
+    def __repr__(self) -> str:
+        return (
+            f"Model({self.name!r}, backend={self._backend.name!r}, "
+            f"4bit={self.load_in_4bit}, adapter={self.adapter!r})"
+        )
+
+
+def load(
+    name: str,
+    *,
+    backend: str = "auto",
+    accelerator: str = "auto",
+    device: str = "auto",
+    load_in_4bit: bool = False,
+    max_seq_length: int = 2048,
+    adapter: str | None = None,
+    **kwargs,
+) -> Model:
+    """Load a model.
+
+    backend: "auto" (CUDA→torch, Apple→mlx, else torch-CPU) | "mlx" | "torch".
+    accelerator: the shadow optimization layer — "auto" | "shadow" | "none".
+    device: "auto" | "cuda" | "cpu" (torch backend; mlx is always the Metal GPU).
+    adapter: path to a previously-trained LoRA checkpoint to attach.
+    """
+    be = select_backend(backend, accelerator=accelerator, device=device)
+    be.load(name, load_in_4bit=load_in_4bit, max_seq_length=max_seq_length,
+            adapter=adapter, **kwargs)
+    return Model(name, be, load_in_4bit=load_in_4bit, max_seq_length=max_seq_length,
+                 adapter=adapter)
+
+
+def _print_progress(run: TrainingRun, metric: Metric) -> None:
+    total = run.total_steps or "?"
+    bar_w = 24
+    frac = run.progress
+    filled = int(bar_w * frac)
+    bar = "█" * filled + "·" * (bar_w - filled)
+    end = "\n" if run.status != "running" or metric.step == run.total_steps else "\r"
+    print(
+        f"  [{bar}] step {metric.step:>4}/{total}  loss {metric.loss:.4f}  "
+        f"lr {metric.lr:.2e}",
+        end=end,
+        file=_CONSOLE,
+        flush=True,
+    )
