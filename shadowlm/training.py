@@ -105,6 +105,9 @@ class Metric:
     grad_norm: float | None = None
     epoch: float | None = None
     elapsed_s: float = 0.0
+    tokens: int | None = None  # cumulative trained tokens
+    tokens_per_s: float | None = None
+    peak_mem_gb: float | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -204,6 +207,34 @@ class TrainingRun:
         if self.started_at and self.ended_at:
             return self.ended_at - self.started_at
         return None
+
+    @property
+    def steps_per_s(self) -> float | None:
+        if not self.metrics:
+            return None
+        last = self.metrics[-1]
+        return last.step / last.elapsed_s if last.elapsed_s else None
+
+    @property
+    def eta_s(self) -> float | None:
+        """Estimated seconds remaining, from the observed step rate."""
+        rate = self.steps_per_s
+        if not rate or not self.total_steps:
+            return None
+        return max(0.0, (self.total_steps - self.step) / rate)
+
+    @property
+    def tokens(self) -> int | None:
+        """Cumulative trained tokens (when the backend reports them)."""
+        for m in reversed(self.metrics):
+            if m.tokens is not None:
+                return m.tokens
+        return None
+
+    @property
+    def peak_mem_gb(self) -> float | None:
+        peaks = [m.peak_mem_gb for m in self.metrics if m.peak_mem_gb is not None]
+        return max(peaks) if peaks else None
 
     def losses(self) -> list[float]:
         return [m.loss for m in self.metrics]

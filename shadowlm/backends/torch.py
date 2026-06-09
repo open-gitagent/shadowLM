@@ -146,6 +146,7 @@ class TorchBackend(Backend):
                     lr=float(logs.get("learning_rate", 0.0)),
                     grad_norm=float(logs["grad_norm"]) if "grad_norm" in logs else None,
                     epoch=float(logs.get("epoch", 0.0)),
+                    tokens=int(logs["num_tokens"]) if "num_tokens" in logs else None,
                 ))
 
             def on_evaluate(self, args, state, control, metrics=None, **kw):

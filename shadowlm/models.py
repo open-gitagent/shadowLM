@@ -174,6 +174,7 @@ def load(
     load_in_4bit: bool = False,
     max_seq_length: int = 2048,
     adapter: str | None = None,
+    verbose: bool = True,
     **kwargs,
 ) -> Model:
     """Load a model.
@@ -184,22 +185,43 @@ def load(
     adapter: path to a previously-trained LoRA checkpoint to attach.
     """
     be = select_backend(backend, accelerator=accelerator, device=device)
+    t0 = time.time()
+    if verbose:
+        suffix = f" + adapter {adapter}" if adapter else ""
+        print(f"[shadowlm] preparing {name}{suffix} (downloads on first use)...",
+              file=_CONSOLE, flush=True)
     be.load(name, load_in_4bit=load_in_4bit, max_seq_length=max_seq_length,
             adapter=adapter, **kwargs)
+    if verbose:
+        print(f"[shadowlm] ready · backend={be.name} · {time.time() - t0:.1f}s",
+              file=_CONSOLE, flush=True)
     return Model(name, be, load_in_4bit=load_in_4bit, max_seq_length=max_seq_length,
                  adapter=adapter)
+
+
+def _fmt_eta(seconds: float) -> str:
+    m, s = divmod(int(seconds), 60)
+    h, m = divmod(m, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
 
 
 def _print_progress(run: TrainingRun, metric: Metric) -> None:
     total = run.total_steps or "?"
     bar_w = 24
-    frac = run.progress
-    filled = int(bar_w * frac)
+    filled = int(bar_w * run.progress)
     bar = "█" * filled + "·" * (bar_w - filled)
+    rate, eta = run.steps_per_s, run.eta_s
+    tail = ""
+    if rate:
+        tail += f"  {rate:.1f} st/s"
+    if metric.tokens_per_s:
+        tail += f"  {metric.tokens_per_s:,.0f} tok/s"
+    if eta is not None:
+        tail += f"  eta {_fmt_eta(eta)}"
     end = "\n" if run.status != "running" or metric.step == run.total_steps else "\r"
     print(
         f"  [{bar}] step {metric.step:>4}/{total}  loss {metric.loss:.4f}  "
-        f"lr {metric.lr:.2e}",
+        f"lr {metric.lr:.2e}{tail}",
         end=end,
         file=_CONSOLE,
         flush=True,

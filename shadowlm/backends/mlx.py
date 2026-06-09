@@ -317,11 +317,15 @@ class _MetricBridge:
         if loss is None:
             return
         self.last_loss = round(float(loss), 4)
+        peak = info.get("peak_memory")
         self._cb.step(Metric(
             step=int(info.get("iteration", 0)),
             loss=self.last_loss,
             lr=float(info.get("learning_rate", 0.0)),
             elapsed_s=round(time.time() - self._start, 2),
+            tokens=info.get("trained_tokens"),
+            tokens_per_s=info.get("tokens_per_second"),
+            peak_mem_gb=round(float(peak), 3) if peak is not None else None,
         ))
 
     def on_val_loss_report(self, info: dict) -> None:
