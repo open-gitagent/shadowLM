@@ -157,11 +157,14 @@ class Dataset:
         out: list[dict] = []
         for r in self.rows:
             if self.format == SHAREGPT:
-                out.append({"messages": [
+                row = {"messages": [
                     {"role": _SHAREGPT_ROLES.get(t.get("from", ""), "user"),
                      "content": t.get("value", "")}
                     for t in r.get("conversations", [])
-                ]})
+                ]}
+                if "tools" in r:  # keep tool schemas for function-calling data
+                    row["tools"] = r["tools"]
+                out.append(row)
             elif self.format == INSTRUCTION:
                 user = r.get("instruction", "")
                 if r.get("input"):
@@ -195,7 +198,13 @@ class Dataset:
         if self.format == CHAT:
             texts = []
             for r in self.rows:
-                turns = [f"{m['role']}: {m['content']}" for m in r.get("messages", [])]
+                turns = []
+                for m in r.get("messages", []):
+                    body = m.get("content") or ""
+                    if m.get("tool_calls"):  # assistant turns may be tool calls
+                        calls = json.dumps(m["tool_calls"])
+                        body = f"{body} {calls}".strip()
+                    turns.append(f"{m['role']}: {body}")
                 texts.append("\n".join(turns))
             return texts
         raise ValueError(f"don't know how to render {self.format!r} rows to text")

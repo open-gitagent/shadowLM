@@ -266,22 +266,25 @@ class MLXBackend(Backend):
         }, indent=2))
 
     def generate(self, prompt, *, max_new_tokens, temperature, top_p, **kwargs) -> str:
+        if getattr(self.tokenizer, "chat_template", None):
+            return self.chat([{"role": "user", "content": prompt}],
+                             max_new_tokens=max_new_tokens, temperature=temperature,
+                             top_p=top_p, **kwargs)
+        return self._generate_text(prompt, max_new_tokens, temperature, top_p)
+
+    def chat(self, messages, *, tools=None, max_new_tokens, temperature, top_p, **kwargs) -> str:
+        text = self.tokenizer.apply_chat_template(
+            messages, tools=tools, add_generation_prompt=True, tokenize=False,
+        )
+        return self._generate_text(text, max_new_tokens, temperature, top_p)
+
+    def _generate_text(self, prompt: str, max_new_tokens, temperature, top_p) -> str:
         from mlx_lm import generate  # noqa: PLC0415
         from mlx_lm.sample_utils import make_sampler  # noqa: PLC0415
 
-        text = self._apply_template(prompt)
         sampler = make_sampler(temp=temperature, top_p=top_p)
-        return generate(self.model, self.tokenizer, prompt=text,
+        return generate(self.model, self.tokenizer, prompt=prompt,
                         max_tokens=max_new_tokens, sampler=sampler, verbose=False)
-
-    def _apply_template(self, prompt: str) -> str:
-        tok = self.tokenizer
-        if getattr(tok, "chat_template", None):
-            return tok.apply_chat_template(
-                [{"role": "user", "content": prompt}],
-                add_generation_prompt=True, tokenize=False,
-            )
-        return prompt
 
     def save(self, path: str, *, fmt: str = "adapter") -> str:
         import mlx.core as mx  # noqa: PLC0415

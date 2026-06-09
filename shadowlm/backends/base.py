@@ -88,5 +88,11 @@ class Backend(ABC):
                  top_p: float, **kwargs) -> str:
         ...
 
+    def chat(self, messages: list[dict], *, tools: list[dict] | None = None,
+             max_new_tokens: int, temperature: float, top_p: float, **kwargs) -> str:
+        """Multi-turn chat through the tokenizer's chat template, with optional
+        tool schemas. Returns the raw assistant text (tool-call markup included)."""
+        raise NotImplementedError(f"{self.name} backend does not implement chat()")
+
     def save(self, path: str, *, fmt: str = "adapter") -> str:
         raise NotImplementedError(f"{self.name} backend does not implement save()")

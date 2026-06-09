@@ -15,7 +15,7 @@ datasets → finetune → inference. mlx on Apple Silicon, torch on CUDA (or CPU
 
 from . import methods, runs
 from .data import Dataset
-from .models import Model, load
+from .models import Model, Reply, load
 from .training import Metric, TrainConfig, TrainingRun
 
 __version__ = "0.1.0"
@@ -23,6 +23,7 @@ __version__ = "0.1.0"
 __all__ = [
     "Dataset",
     "Model",
+    "Reply",
     "load",
     "methods",
     "runs",

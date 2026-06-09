@@ -146,7 +146,8 @@ model.save("out/", fmt="merged")
 | `ds[0:100]`, `ds.head()`, `ds.columns`, `len(ds)` | row slicing & inspection |
 | `slm.load(name, backend=, accelerator=, device=, load_in_4bit=, adapter=)` | load a model (or attach a trained adapter) |
 | `model.finetune(ds, method="lora"\|"qlora"\|"dora"\|"full"\|"cpt", eval_dataset=ds\|"auto", on_step=, on_eval=, **hyperparams)` | train; returns a `TrainingRun` (`eval_dataset="auto"` holds out 10%) |
-| `model.generate(prompt, ...)` / `model.chat(messages)` | inference |
+| `model.generate(prompt, ...)` | single-prompt inference |
+| `model.chat(messages, tools=...)` → `Reply` | multi-turn chat via the model's chat template; OpenAI-style tool schemas in, parsed `reply.tool_calls` out |
 | `model.save(path, fmt="adapter"\|"merged")` | export |
 | `run.loss`, `run.eval_loss`, `run.step`, `run.progress`, `run.sparkline()`, `run.checkpoint` | live + final run state |
 | `slm.runs.list() / latest() / load(id) / delete(id)` | run history — every finetune persists a `run.json` (status, config, metrics) |
@@ -177,6 +178,21 @@ print([(m.step, m.loss) for m in run.eval_metrics])
 ```
 
 Eval runs on both backends (mlx `val_dataset`; torch `eval_strategy="steps"`).
+
+### Tool calling
+
+Both ends of function calling work. **Training:** chat rows may carry
+`tool_calls` messages and a per-row `tools` list of schemas — they're rendered
+through the model's chat template (ShareGPT rows keep their `tools` through
+conversion). **Inference:**
+
+```python
+reply = model.chat(messages, tools=[{"type": "function", "function": {...}}])
+reply.tool_calls            # [{"name": "get_weather", "arguments": {...}}]
+messages.append(reply.to_message())
+messages.append({"role": "tool", "content": json.dumps(result)})
+final = model.chat(messages, tools=tools)   # uses the tool result
+```
 
 ## Layout
 

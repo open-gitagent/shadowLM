@@ -6,8 +6,11 @@ task — the interesting machinery lives in the backends.
 
 from __future__ import annotations
 
+import json
+import re
 import sys
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import methods
@@ -27,6 +30,58 @@ RUNS_ROOT = run_history.RUNS_ROOT
 def _default_output_dir(base_model: str) -> str:
     slug = base_model.replace("/", "_")
     return str(RUNS_ROOT / f"{slug}-{int(time.time())}")
+
+
+_TOOL_CALL_RE = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.DOTALL)
+
+
+def _first_json_object(text: str) -> dict | None:
+    """Best-effort: the first valid JSON object in `text` (small models emit
+    slightly mangled tool-call JSON; we salvage what parses)."""
+    decoder = json.JSONDecoder()
+    for i, ch in enumerate(text):
+        if ch == "{":
+            try:
+                obj, _ = decoder.raw_decode(text[i:])
+                return obj if isinstance(obj, dict) else None
+            except json.JSONDecodeError:
+                continue
+    return None
+
+
+@dataclass
+class Reply:
+    """An assistant turn: text content plus any parsed tool calls.
+
+    Prints as its text. Append `reply.to_message()` (then a {"role": "tool", ...}
+    result) to the message list to continue a tool-use loop.
+    """
+
+    content: str
+    tool_calls: list[dict] = field(default_factory=list)
+    role: str = "assistant"
+    raw: str = ""
+
+    def __str__(self) -> str:
+        return self.content
+
+    def to_message(self) -> dict:
+        msg: dict = {"role": self.role, "content": self.content}
+        if self.tool_calls:
+            msg["tool_calls"] = [
+                {"type": "function", "function": c} for c in self.tool_calls
+            ]
+        return msg
+
+
+def _parse_reply(raw: str) -> Reply:
+    calls = []
+    for block in _TOOL_CALL_RE.findall(raw):
+        obj = _first_json_object(block)
+        if obj and "name" in obj:
+            calls.append(obj)
+    content = _TOOL_CALL_RE.sub("", raw).strip()
+    return Reply(content=content, tool_calls=calls, raw=raw)
 
 
 class Model:
@@ -149,9 +204,19 @@ class Model:
             top_p=top_p, **kwargs,
         )
 
-    def chat(self, messages: list[dict], **kwargs) -> str:
-        prompt = "\n".join(f"{m['role']}: {m['content']}" for m in messages)
-        return self.generate(prompt, **kwargs)
+    def chat(self, messages: list[dict], *, tools: list[dict] | None = None,
+             max_new_tokens: int = 256, temperature: float = 0.7,
+             top_p: float = 0.95, **kwargs) -> Reply:
+        """Multi-turn chat through the model's chat template.
+
+        Pass `tools` (OpenAI-style function schemas) to enable tool calling; any
+        emitted calls are parsed into `reply.tool_calls`. Continue the loop by
+        appending `reply.to_message()` and a {"role": "tool", "content": result}
+        message, then calling chat again.
+        """
+        raw = self._backend.chat(messages, tools=tools, max_new_tokens=max_new_tokens,
+                                 temperature=temperature, top_p=top_p, **kwargs)
+        return _parse_reply(raw)
 
     # ---- export -----------------------------------------------------------
     def save(self, path: str, *, fmt: str = "adapter") -> str:

@@ -215,11 +215,15 @@ class TorchBackend(Backend):
         return FinetuneResult(checkpoint=output_dir, final_loss=final_loss)
 
     def generate(self, prompt, *, max_new_tokens, temperature, top_p, **kwargs) -> str:
+        return self.chat([{"role": "user", "content": prompt}],
+                         max_new_tokens=max_new_tokens, temperature=temperature,
+                         top_p=top_p, **kwargs)
+
+    def chat(self, messages, *, tools=None, max_new_tokens, temperature, top_p, **kwargs) -> str:
         import torch  # noqa: PLC0415
 
-        messages = [{"role": "user", "content": prompt}]
         inputs = self.tokenizer.apply_chat_template(
-            messages, add_generation_prompt=True, return_tensors="pt",
+            messages, tools=tools, add_generation_prompt=True, return_tensors="pt",
         ).to(self.model.device)
         with torch.no_grad():
             out = self.model.generate(
