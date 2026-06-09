@@ -14,7 +14,7 @@ from pathlib import Path
 
 from .. import accel, methods
 from .._quiet import quiet_backend
-from ..data import CHAT, TEXT, Dataset
+from ..data import CHAT, INSTRUCTION, SHAREGPT, TEXT, Dataset
 from ..training import ATTENTION_MODULES, MLP_MODULES, Metric, TrainConfig, resolve_total_steps
 from .base import Backend, Callbacks, FinetuneResult
 
@@ -32,7 +32,7 @@ def _to_mlx_dataset(dataset: Dataset, tokenizer, *, raw_text: bool = False,
     from mlx_lm.tuner.datasets import ChatDataset, TextDataset  # noqa: PLC0415
 
     if not raw_text:
-        ds = dataset.as_chat() if dataset.format in (CHAT, "instruction") else dataset
+        ds = dataset.as_chat() if dataset.format in (CHAT, SHAREGPT, INSTRUCTION) else dataset
         if ds.format == CHAT:
             return ChatDataset(ds.rows, tokenizer, mask_prompt=mask_prompt)
         if ds.format == TEXT:

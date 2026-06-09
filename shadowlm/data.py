@@ -15,10 +15,13 @@ from pathlib import Path
 from typing import Iterator
 
 # Recognised dataset shapes, in priority order of detection.
-CHAT = "chat"  # rows like {"messages": [{"role": ..., "content": ...}, ...]}
+CHAT = "chat"  # ChatML-style: {"messages": [{"role": ..., "content": ...}, ...]}
+SHAREGPT = "sharegpt"  # {"conversations": [{"from": "human"|"gpt", "value": ...}]}
 INSTRUCTION = "instruction"  # alpaca-style {"instruction", "input", "output"}
-TEXT = "text"  # rows like {"text": "..."}
+TEXT = "text"  # rows like {"text": "..."} (raw text / CPT)
 RAW = "raw"  # anything else — caller must map it
+
+FORMATS = (CHAT, SHAREGPT, INSTRUCTION, TEXT, RAW)
 
 _ALPACA = (
     "Below is an instruction that describes a task, paired with an input that "
@@ -27,6 +30,10 @@ _ALPACA = (
     "### Response:\n{output}"
 )
 
+# ShareGPT speaker tags → chat roles.
+_SHAREGPT_ROLES = {"human": "user", "gpt": "assistant", "system": "system",
+                   "user": "user", "assistant": "assistant", "tool": "tool"}
+
 
 def _detect_format(rows: list[dict]) -> str:
     if not rows:
@@ -34,11 +41,22 @@ def _detect_format(rows: list[dict]) -> str:
     keys = set(rows[0])
     if "messages" in keys:
         return CHAT
+    if "conversations" in keys:
+        return SHAREGPT
     if "instruction" in keys and "output" in keys:
         return INSTRUCTION
     if "text" in keys:
         return TEXT
     return RAW
+
+
+def _resolve_format(rows: list[dict], override: str | None) -> str:
+    """Detected format, or the caller's explicit target format."""
+    if override is None or override == "auto":
+        return _detect_format(rows)
+    if override not in FORMATS:
+        raise ValueError(f"unknown format {override!r} (expected one of {', '.join(FORMATS)})")
+    return override
 
 
 @dataclass
@@ -55,33 +73,36 @@ class Dataset:
     source: str | None = None
 
     # ---- constructors -----------------------------------------------------
+    # Every constructor accepts format= ("auto" default) to override detection —
+    # the "Target Format" knob: chat | sharegpt | instruction | text | raw.
     @classmethod
-    def from_list(cls, rows: list[dict], *, name: str | None = None) -> "Dataset":
+    def from_list(cls, rows: list[dict], *, name: str | None = None,
+                  format: str | None = None) -> "Dataset":
         rows = list(rows)
-        return cls(rows=rows, format=_detect_format(rows), name=name, source="list")
+        return cls(rows=rows, format=_resolve_format(rows, format), name=name, source="list")
 
     @classmethod
-    def from_jsonl(cls, path: str | Path) -> "Dataset":
+    def from_jsonl(cls, path: str | Path, *, format: str | None = None) -> "Dataset":
         path = Path(path)
         rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
-        return cls(rows=rows, format=_detect_format(rows), name=path.stem, source=str(path))
+        return cls(rows=rows, format=_resolve_format(rows, format), name=path.stem, source=str(path))
 
     @classmethod
-    def from_json(cls, path: str | Path) -> "Dataset":
+    def from_json(cls, path: str | Path, *, format: str | None = None) -> "Dataset":
         path = Path(path)
         data = json.loads(path.read_text())
         rows = data if isinstance(data, list) else data.get("data", [])
-        return cls(rows=rows, format=_detect_format(rows), name=path.stem, source=str(path))
+        return cls(rows=rows, format=_resolve_format(rows, format), name=path.stem, source=str(path))
 
     @classmethod
-    def from_csv(cls, path: str | Path) -> "Dataset":
+    def from_csv(cls, path: str | Path, *, format: str | None = None) -> "Dataset":
         path = Path(path)
         with path.open(newline="") as f:
             rows = list(csv.DictReader(f))
-        return cls(rows=rows, format=_detect_format(rows), name=path.stem, source=str(path))
+        return cls(rows=rows, format=_resolve_format(rows, format), name=path.stem, source=str(path))
 
     @classmethod
-    def from_parquet(cls, path: str | Path) -> "Dataset":
+    def from_parquet(cls, path: str | Path, *, format: str | None = None) -> "Dataset":
         try:
             import pyarrow.parquet as pq  # noqa: PLC0415  (lazy, optional dep)
         except ImportError as e:
@@ -90,10 +111,10 @@ class Dataset:
             ) from e
         path = Path(path)
         rows = pq.read_table(path).to_pylist()
-        return cls(rows=rows, format=_detect_format(rows), name=path.stem, source=str(path))
+        return cls(rows=rows, format=_resolve_format(rows, format), name=path.stem, source=str(path))
 
     @classmethod
-    def load(cls, path: str | Path) -> "Dataset":
+    def load(cls, path: str | Path, *, format: str | None = None) -> "Dataset":
         """Load any supported file, dispatched on extension.
 
         Supported: .jsonl/.ndjson, .json, .csv, .parquet.
@@ -107,11 +128,11 @@ class Dataset:
             raise ValueError(
                 f"unsupported dataset file {suffix!r} (supported: {', '.join(loaders)})"
             )
-        return loaders[suffix](path)
+        return loaders[suffix](path, format=format)
 
     @classmethod
     def from_hf(cls, repo: str, *, subset: str | None = None, split: str = "train",
-                token: str | None = None) -> "Dataset":
+                token: str | None = None, format: str | None = None) -> "Dataset":
         """Load from the HuggingFace Hub. `subset` is the dataset config name."""
         try:
             from datasets import load_dataset  # noqa: PLC0415  (lazy, optional dep)
@@ -121,20 +142,27 @@ class Dataset:
             ) from e
         ds = load_dataset(repo, subset, split=split, token=token)
         rows = [dict(r) for r in ds]
-        return cls(rows=rows, format=_detect_format(rows), name=repo, source=f"hf:{repo}")
+        return cls(rows=rows, format=_resolve_format(rows, format), name=repo, source=f"hf:{repo}")
 
     # ---- transforms -------------------------------------------------------
     def as_chat(self) -> "Dataset":
         """Normalise to chat format: every row becomes {"messages": [...]}.
 
-        Instruction/text rows are lifted into a single user/assistant exchange so
-        downstream chat-template logic has one shape to handle.
+        ShareGPT conversations are re-tagged (human→user, gpt→assistant);
+        instruction/text rows are lifted into a single user/assistant exchange —
+        so downstream chat-template logic has one shape to handle.
         """
         if self.format == CHAT:
             return self
         out: list[dict] = []
         for r in self.rows:
-            if self.format == INSTRUCTION:
+            if self.format == SHAREGPT:
+                out.append({"messages": [
+                    {"role": _SHAREGPT_ROLES.get(t.get("from", ""), "user"),
+                     "content": t.get("value", "")}
+                    for t in r.get("conversations", [])
+                ]})
+            elif self.format == INSTRUCTION:
                 user = r.get("instruction", "")
                 if r.get("input"):
                     user = f"{user}\n\n{r['input']}"
@@ -162,6 +190,8 @@ class Dataset:
                 input=r.get("input", ""),
                 output=r.get("output", ""),
             ) for r in self.rows]
+        if self.format == SHAREGPT:
+            return self.as_chat().to_texts()
         if self.format == CHAT:
             texts = []
             for r in self.rows:

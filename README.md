@@ -139,7 +139,7 @@ model.save("out/", fmt="merged")
 | Call | What it does |
 |------|--------------|
 | `slm.Dataset.load(path)` | any supported file by extension (.jsonl/.json/.csv/.parquet) |
-| `slm.Dataset.from_jsonl / from_csv / from_json / from_parquet / from_list` | format auto-detected (chat / instruction / text) |
+| `slm.Dataset.from_jsonl / from_csv / from_json / from_parquet / from_list` | format auto-detected: ChatML (`messages`), ShareGPT (`conversations`), alpaca instruction, raw text — or force with `format=` |
 | `slm.Dataset.from_hf(repo, subset=, split=, token=)` | HuggingFace Hub datasets |
 | `ds.as_chat()` / `ds.as_text()` | force chat or raw-text format |
 | `ds.split(test_size=0.1, seed=0)` | held-out train/eval split → `(train, eval)` |
