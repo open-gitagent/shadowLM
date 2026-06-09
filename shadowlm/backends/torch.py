@@ -15,7 +15,7 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
-from .. import accel
+from .. import accel, methods
 from .._quiet import quiet_backend
 from ..data import Dataset
 from ..training import Metric, TrainConfig, resolve_total_steps
@@ -104,14 +104,28 @@ class TorchBackend(Backend):
         if self.accelerator != "none":
             callbacks.log(shadow.note)
 
+        # The method spec drives base requirements and the trainable surface —
+        # no branching on method names here.
+        spec = methods.get(config.method)
+        spec.validate_base(
+            quantized=getattr(self.model, "is_loaded_in_4bit", False),
+            quantize_hint="load(..., load_in_4bit=True)",
+            dequantize_hint="Load without load_in_4bit",
+        )
+
+        # Adapter methods (lora/dora/cpt/...) attach PEFT adapters once; a spec
+        # with adapter="none" trains the full weights. raw_text methods already
+        # train on plain text because to_texts applies no chat template.
         already_peft = getattr(self.model, "peft_config", None) is not None
-        if config.method in ("lora", "qlora") and not already_peft:
+        if spec.trains_adapters and not already_peft:
             from peft import LoraConfig, get_peft_model  # noqa: PLC0415
             self.model = get_peft_model(self.model, LoraConfig(
                 r=config.lora_r,
                 lora_alpha=config.lora_alpha,
                 lora_dropout=config.lora_dropout,
                 target_modules=list(config.target_modules),
+                use_dora=(spec.adapter == methods.ADAPTER_DORA),
+                use_rslora=config.use_rslora,
                 bias="none",
                 task_type="CAUSAL_LM",
             ))
@@ -147,11 +161,24 @@ class TorchBackend(Backend):
                     control.should_training_stop = True
                 return control
 
+        total = resolve_total_steps(config, len(dataset))
+        extra = {}
+        if config.max_grad_norm is not None:
+            extra["max_grad_norm"] = config.max_grad_norm
+        if config.save_steps is not None:
+            extra["save_strategy"] = "steps"
+            extra["save_steps"] = config.save_steps
+        if config.train_on_completions:
+            # trl masks the prompt when the dataset has prompt/completion columns;
+            # our text-rendered rows don't, so be explicit rather than silent.
+            callbacks.log("[torch] note: train_on_completions needs prompt/completion "
+                          "columns — not applied to text-rendered rows")
+
         args = SFTConfig(
             output_dir=output_dir,
             per_device_train_batch_size=config.per_device_train_batch_size,
             gradient_accumulation_steps=config.gradient_accumulation_steps,
-            warmup_steps=config.warmup_steps,
+            warmup_steps=config.resolved_warmup(total),
             max_steps=config.max_steps or -1,
             num_train_epochs=config.num_train_epochs or 1.0,
             learning_rate=config.learning_rate,
@@ -159,6 +186,7 @@ class TorchBackend(Backend):
             lr_scheduler_type=config.lr_scheduler_type,
             optim=optim_name,
             gradient_checkpointing=shadow.grad_checkpoint,
+            packing=config.packing,
             logging_steps=config.logging_steps,
             eval_strategy="steps" if has_eval else "no",
             eval_steps=config.eval_steps or max(1, (config.max_steps or 1) // 4),
@@ -166,7 +194,8 @@ class TorchBackend(Backend):
             seed=config.seed,
             max_seq_length=config.max_seq_length,
             disable_tqdm=True,  # shadowLM prints its own progress
-            report_to=[],
+            report_to=list(config.report_to),
+            **extra,
         )
         trainer = SFTTrainer(
             model=self.model,
@@ -177,7 +206,7 @@ class TorchBackend(Backend):
             callbacks=[_Bridge()],
         )
         with quiet_backend():
-            result = trainer.train()
+            result = trainer.train(resume_from_checkpoint=config.resume_from_checkpoint)
         trainer.save_model(output_dir)
         self.tokenizer.save_pretrained(output_dir)
         final_loss = float(result.training_loss) if result else None

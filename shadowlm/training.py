@@ -12,38 +12,62 @@ DEFAULT_TARGET_MODULES = (
     "q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj",
 )
 
-
 @dataclass
 class TrainConfig:
-    """Hyperparameters for a finetune. Sensible defaults; override per call."""
+    """Hyperparameters for a finetune. Sensible defaults; override per call.
 
-    method: str = "lora"  # "lora" | "qlora" | "full"
+    Every field is honored by the torch backend; the mlx backend honors all but
+    `optim`, `max_grad_norm`, `packing`, `use_rslora`, and `report_to` (noted
+    inline). Unsupported-but-set fields are ignored with a log line, never
+    silently dropped.
+    """
 
-    # sequence / LoRA
+    method: str = "lora"  # a registered method name — see shadowlm.methods
+
+    # sequence / adapters
     max_seq_length: int = 2048
     lora_r: int = 16
     lora_alpha: int = 16
     lora_dropout: float = 0.0
     target_modules: tuple[str, ...] = DEFAULT_TARGET_MODULES
+    use_rslora: bool = False  # rank-stabilized LoRA scaling (torch)
 
     # optimisation
-    learning_rate: float = 2e-4
+    learning_rate: float | None = None  # None → the method's default LR
     per_device_train_batch_size: int = 2
     gradient_accumulation_steps: int = 4
     warmup_steps: int = 5
+    warmup_ratio: float | None = None  # fraction of total steps; overrides warmup_steps
     num_train_epochs: float | None = None
     max_steps: int | None = 60  # one of max_steps / num_train_epochs drives length
     weight_decay: float = 0.01
-    lr_scheduler_type: str = "linear"
-    optim: str = "adamw_8bit"
+    max_grad_norm: float | None = None  # gradient clipping (torch)
+    lr_scheduler_type: str = "linear"  # "linear" | "cosine" | "constant"
+    optim: str = "adamw_8bit"  # torch optimizer name; mlx uses Adam
+    seed: int = 3407
+
+    # data handling
+    packing: bool = False  # pack short sequences together (torch)
+    train_on_completions: bool = False  # mask the prompt; learn only on responses (mlx)
+
+    # logging / checkpoints
     logging_steps: int = 1
     eval_steps: int | None = None  # evaluate every N steps when an eval set is given
-    seed: int = 3407
+    save_steps: int | None = None  # checkpoint every N steps; None → final only
+    resume_from_checkpoint: str | None = None  # adapter/checkpoint path to continue from
+    report_to: tuple[str, ...] = ()  # e.g. ("wandb", "tensorboard") (torch)
 
     def to_dict(self) -> dict:
         d = asdict(self)
         d["target_modules"] = list(self.target_modules)
+        d["report_to"] = list(self.report_to)
         return d
+
+    def resolved_warmup(self, total_steps: int) -> int:
+        """Warmup steps, honoring warmup_ratio when set."""
+        if self.warmup_ratio is not None:
+            return max(0, int(round(self.warmup_ratio * total_steps)))
+        return max(0, self.warmup_steps)
 
 
 @dataclass

@@ -12,7 +12,7 @@ import json
 import time
 from pathlib import Path
 
-from .. import accel
+from .. import accel, methods
 from .._quiet import quiet_backend
 from ..data import CHAT, TEXT, Dataset
 from ..training import Metric, TrainConfig, resolve_total_steps
@@ -21,18 +21,56 @@ from .base import Backend, Callbacks, FinetuneResult
 DEFAULT_LORA_LAYERS = 16  # how many transformer blocks get LoRA adapters
 
 
-def _to_mlx_dataset(dataset: Dataset, tokenizer):
-    """Wrap our Dataset in the mlx-lm dataset type that matches its format."""
+def _to_mlx_dataset(dataset: Dataset, tokenizer, *, raw_text: bool = False,
+                    mask_prompt: bool = False):
+    """Wrap our Dataset in the mlx-lm dataset type that matches its format.
+
+    raw_text=True (continued pretraining) renders rows to plain text with no chat
+    template so the model trains on the domain text itself. mask_prompt=True
+    computes loss only on the assistant response (train-on-completions).
+    """
     from mlx_lm.tuner.datasets import ChatDataset, TextDataset  # noqa: PLC0415
 
-    ds = dataset.as_chat() if dataset.format in (CHAT, "instruction") else dataset
-    if ds.format == CHAT:
-        return ChatDataset(ds.rows, tokenizer)
-    if ds.format == TEXT:
-        return TextDataset(ds.rows, tokenizer)
-    # raw → render to plain text so training still has something well-formed
+    if not raw_text:
+        ds = dataset.as_chat() if dataset.format in (CHAT, "instruction") else dataset
+        if ds.format == CHAT:
+            return ChatDataset(ds.rows, tokenizer, mask_prompt=mask_prompt)
+        if ds.format == TEXT:
+            return TextDataset(ds.rows, tokenizer)
     rows = [{"text": t} for t in dataset.to_texts()]
     return TextDataset(rows, tokenizer)
+
+
+def _build_lr(config: TrainConfig, total_steps: int):
+    """Learning-rate schedule for mlx — warmup + linear/cosine/constant decay.
+
+    mlx advances the schedule once per optimizer update, which with gradient
+    accumulation happens every `gradient_accumulation_steps` iters — so the
+    schedule is built in update units, not iter units.
+    """
+    import math  # noqa: PLC0415
+
+    from mlx_lm.tuner.utils import build_schedule  # noqa: PLC0415
+
+    accum = max(1, config.gradient_accumulation_steps)
+    updates = max(1, math.ceil(total_steps / accum))
+    warmup = min(math.ceil(config.resolved_warmup(total_steps) / accum), updates - 1)
+    decay_steps = max(1, updates - warmup)
+    if config.lr_scheduler_type == "cosine":
+        name, arguments = "cosine_decay", [config.learning_rate, decay_steps]
+    elif config.lr_scheduler_type == "constant":
+        if not warmup:
+            return config.learning_rate
+        name, arguments = "linear_schedule", [config.learning_rate, config.learning_rate, 1]
+    else:  # linear decay to 0
+        name, arguments = "linear_schedule", [config.learning_rate, 0.0, decay_steps]
+    return build_schedule({"name": name, "arguments": arguments, "warmup": warmup})
+
+
+def _is_quantized(model) -> bool:
+    import mlx.nn as nn  # noqa: PLC0415
+
+    return any(isinstance(m, nn.QuantizedLinear) for _, m in model.named_modules())
 
 
 class MLXBackend(Backend):
@@ -84,50 +122,94 @@ class MLXBackend(Backend):
         if self.accelerator != "none":
             callbacks.log(shadow.note)
 
+        # The method spec drives everything below: base requirements, trainable
+        # surface, and data rendering. Backends never branch on the method name.
+        spec = methods.get(config.method)
+        spec.validate_base(
+            quantized=_is_quantized(model),
+            quantize_hint="Load a quantized repo (e.g. an mlx-community *-4bit model)",
+            dequantize_hint="Load a 16-bit repo",
+        )
+
         # Attach the trainable surface once. A repeated finetune (or a finetune
-        # continuing from a loaded adapter) keeps training the existing LoRA layers
-        # rather than converting them again, which would error.
-        if config.method == "full":
+        # continuing from a loaded adapter) keeps training the existing adapter
+        # layers rather than converting them again, which would error.
+        if not spec.trains_adapters:
+            # Full fine-tune: every transformer block trains.
+            num_layers = len(model.layers)
             model.freeze()
-            for layer in model.layers[-num_layers:]:
+            for layer in model.layers:
                 layer.unfreeze()
         elif not self._lora_applied:
             model.freeze()
-            linear_to_lora_layers(model, num_layers, self._lora_params(config), use_dora=False)
+            linear_to_lora_layers(model, num_layers, self._lora_params(config),
+                                  use_dora=(spec.adapter == methods.ADAPTER_DORA))
             self._lora_applied = True
 
         out = Path(output_dir)
         out.mkdir(parents=True, exist_ok=True)
         adapter_file = out / "adapters.safetensors"
 
+        # raw_text methods (continued pretraining) skip the chat template;
+        # train_on_completions masks the prompt so loss covers only responses.
+        raw_text = spec.raw_text
+        mask = config.train_on_completions
+
+        # Continue from a previous adapter/checkpoint if asked.
+        if config.resume_from_checkpoint:
+            resume = Path(config.resume_from_checkpoint)
+            weights = resume / "adapters.safetensors" if resume.is_dir() else resume
+            model.load_weights(str(weights), strict=False)
+            callbacks.log(f"[mlx] resumed weights from {weights}")
+
         # Hold out the eval set if given; otherwise disable eval (steps_per_eval > iters).
         if has_eval:
             batch = config.per_device_train_batch_size
             val_batches = max(1, min(len(eval_dataset) // batch or 1, 25))
             steps_per_eval = config.eval_steps or max(1, iters // 4)
-            val_set = CacheDataset(_to_mlx_dataset(eval_dataset, tokenizer))
+            val_set = CacheDataset(
+                _to_mlx_dataset(eval_dataset, tokenizer, raw_text=raw_text, mask_prompt=mask))
         else:
             val_batches, steps_per_eval = 1, iters + 1
-            val_set = CacheDataset(_to_mlx_dataset(dataset, tokenizer))
+            val_set = CacheDataset(
+                _to_mlx_dataset(dataset, tokenizer, raw_text=raw_text, mask_prompt=mask))
+
+        # mlx-lm requires len(dataset) >= batch_size; clamp for tiny datasets.
+        batch_size = max(1, min(config.per_device_train_batch_size, n))
 
         args = TrainingArgs(
-            batch_size=config.per_device_train_batch_size,
+            batch_size=batch_size,
             iters=iters,
             val_batches=val_batches,
             steps_per_report=config.logging_steps,
             steps_per_eval=steps_per_eval,
-            steps_per_save=iters,
+            steps_per_save=config.save_steps or iters,
             adapter_file=str(adapter_file),
             max_seq_length=config.max_seq_length,
             grad_checkpoint=shadow.grad_checkpoint,
             grad_accumulation_steps=config.gradient_accumulation_steps,
         )
-        train_set = CacheDataset(_to_mlx_dataset(dataset, tokenizer))
-        opt = optim.Adam(learning_rate=config.learning_rate)
+        train_set = CacheDataset(
+            _to_mlx_dataset(dataset, tokenizer, raw_text=raw_text, mask_prompt=mask))
+        opt = optim.Adam(learning_rate=_build_lr(config, iters))
 
+        # Fields the mlx path can't honor — say so instead of silently dropping.
+        ignored = [name for name, off in (
+            ("optim", config.optim != "adamw_8bit"),
+            ("max_grad_norm", config.max_grad_norm is not None),
+            ("packing", config.packing),
+            ("use_rslora", config.use_rslora),
+            ("report_to", bool(config.report_to)),
+        ) if off]
+        if ignored:
+            callbacks.log(f"[mlx] note: {', '.join(ignored)} not supported on mlx — ignored")
+
+        surface = (f"all {num_layers} layers" if not spec.trains_adapters
+                   else f"{spec.adapter} r={config.lora_r} on {num_layers} layers")
         callbacks.log(
             f"[mlx:{self.device}] finetuning {self.model_name} · {config.method} · "
-            f"{n} examples · {iters} iters · lora r={config.lora_r} on {num_layers} layers"
+            f"{n} examples · {iters} iters · {surface} · lr {config.learning_rate:g} "
+            f"({config.lr_scheduler_type}, warmup {config.resolved_warmup(iters)})"
         )
         cb = _MetricBridge(callbacks, record_eval=has_eval)
         with quiet_backend():
@@ -152,8 +234,10 @@ class MLXBackend(Backend):
 
     def _write_adapter_config(self, out: Path, config: TrainConfig, num_layers: int) -> None:
         # Shape mlx_lm.load(..., adapter_path=out) expects to re-attach the adapter.
+        spec = methods.get(config.method)
+        fine_tune_type = spec.adapter if spec.trains_adapters else "full"
         (out / "adapter_config.json").write_text(json.dumps({
-            "fine_tune_type": "lora" if config.method != "full" else "full",
+            "fine_tune_type": fine_tune_type,
             "num_layers": num_layers,
             "lora_parameters": self._lora_params(config),
             "base_model": self.model_name,

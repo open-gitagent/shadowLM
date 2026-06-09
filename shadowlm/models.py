@@ -10,6 +10,7 @@ import sys
 import time
 from pathlib import Path
 
+from . import methods
 from .backends import Callbacks, select_backend
 from .data import Dataset
 from .training import Metric, StepCallback, TrainConfig, TrainingRun, resolve_total_steps
@@ -55,6 +56,12 @@ class Model:
     ) -> TrainingRun:
         """Finetune on `dataset`, returning a `TrainingRun`.
 
+        method: any registered training method — built-ins are "lora" (16-bit
+        base), "qlora" (4-bit base, lowest memory), "dora" (weight-decomposed
+        LoRA), "full" (all weights; unquantized base), and "cpt" (continued
+        pretraining on raw text). See `shadowlm.methods` to list or register
+        methods. The default learning rate comes from the method's spec.
+
         Pass `eval_dataset` (and optionally `eval_steps`) to evaluate on a held-out
         set during training; eval loss lands in `run.eval_metrics` / `run.eval_loss`.
         Extra keyword args (`max_steps`, `learning_rate`, `lora_r`, ...) override the
@@ -68,7 +75,10 @@ class Model:
             from .ascii import print_ascii_art  # noqa: PLC0415
             print_ascii_art()
 
+        spec = methods.get(method)  # raises ValueError for unknown methods
         config = TrainConfig(method=method, **hyperparams)
+        if config.learning_rate is None:
+            config.learning_rate = spec.default_learning_rate
         if eval_steps is not None:
             config.eval_steps = eval_steps
         output_dir = output_dir or _default_output_dir(self.name)

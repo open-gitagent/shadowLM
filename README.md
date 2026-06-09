@@ -36,6 +36,50 @@ The pipeline is the standard HuggingFace flow — `datasets` formats and chat te
 LoRA/QLoRA adapters, chat-template inference — with MLX as the Apple-native
 implementation of it.
 
+## Training methods
+
+Each technique lives in its own module under `shadowlm/methods/` as a declarative
+spec — backends read the spec (adapter kind, base requirements, data rendering),
+never the method name.
+
+| method | what it does | base model | default LR |
+|--------|--------------|------------|------------|
+| `lora`  | LoRA adapters | 16-bit | 2e-4 |
+| `qlora` | LoRA adapters, lowest memory | **4-bit required** | 2e-4 |
+| `dora`  | weight-decomposed LoRA, often better at low rank | either | 2e-4 |
+| `full`  | update every transformer weight | **unquantized required** | 2e-5 |
+| `cpt`   | continued pretraining on raw domain text (no chat template) | either | 5e-5 |
+
+Base requirements are enforced with clear errors (e.g. `qlora` on a 16-bit model
+tells you to load a 4-bit one). Adding a technique is one file:
+
+```python
+# shadowlm/methods/my_method.py  (or methods.register(...) at runtime)
+from .base import TrainingMethod, register
+
+register(TrainingMethod(
+    name="my-method",
+    description="LoRA variant with my defaults",
+    default_learning_rate=1e-4,
+))
+```
+
+## Training parameters
+
+`finetune(**hyperparams)` accepts the full `TrainConfig` surface:
+
+- **adapters** — `lora_r`, `lora_alpha`, `lora_dropout`, `target_modules`, `use_rslora`*
+- **optimization** — `learning_rate` (default per method), `per_device_train_batch_size`,
+  `gradient_accumulation_steps`, `warmup_steps` / `warmup_ratio`, `max_steps` /
+  `num_train_epochs`, `weight_decay`, `max_grad_norm`*, `lr_scheduler_type`
+  (linear / cosine / constant — real schedules on both backends), `optim`*, `seed`
+- **data** — `max_seq_length`, `packing`*, `train_on_completions` (mask the prompt,
+  learn only on responses)
+- **logging / checkpoints** — `logging_steps`, `eval_steps`, `save_steps`
+  (mid-run checkpoints), `resume_from_checkpoint`, `report_to`*
+
+\* torch-backend only; the mlx backend logs a note instead of silently ignoring.
+
 ## The shadow accelerator
 
 `accelerator="shadow"` is shadowLM's in-house optimization layer. It sits on top of
@@ -96,7 +140,7 @@ model.save("out/", fmt="merged")
 | `ds.as_chat()` | normalize any format to `{"messages": [...]}` |
 | `ds.split(test_size=0.1, seed=0)` | held-out train/eval split → `(train, eval)` |
 | `slm.load(name, backend=, accelerator=, device=, load_in_4bit=, adapter=)` | load a model (or attach a trained adapter) |
-| `model.finetune(ds, method=, eval_dataset=, eval_steps=, on_step=, on_eval=, **hyperparams)` | train; returns a `TrainingRun` |
+| `model.finetune(ds, method="lora"\|"qlora"\|"dora"\|"full"\|"cpt", eval_dataset=, on_step=, on_eval=, **hyperparams)` | train; returns a `TrainingRun` |
 | `model.generate(prompt, ...)` / `model.chat(messages)` | inference |
 | `model.save(path, fmt="adapter"\|"merged")` | export |
 | `run.loss`, `run.eval_loss`, `run.step`, `run.progress`, `run.sparkline()`, `run.checkpoint` | live + final run state |
@@ -130,6 +174,9 @@ shadowlm/
   training.py          TrainConfig, Metric, TrainingRun (sparkline, progress)
   models.py            Model (finetune / generate / save) and load()
   accel.py             the shadow accelerator — optimization planning
+  methods/             training techniques — one module per method
+    base.py            TrainingMethod spec + registry
+    lora.py qlora.py dora.py full.py cpt.py
   backends/
     base.py            Backend interface + Callbacks bridge
     mlx.py             MLXBackend  — Apple Silicon (Metal GPU)
