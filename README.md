@@ -49,6 +49,13 @@ never the method name.
 | `dora`  | weight-decomposed LoRA, often better at low rank | either | 2e-4 |
 | `full`  | update every transformer weight | **unquantized required** | 2e-5 |
 | `cpt`   | continued pretraining on raw domain text (no chat template) | either | 5e-5 |
+| `dpo`   | preference optimization on `{prompt, chosen, rejected}` pairs vs a frozen reference (`dpo_beta=0.1`) | either | 5e-6 |
+
+SFT methods train on chat/instruction/text data; `dpo` trains on preference
+pairs (the `preference` dataset format, auto-detected from `chosen`/`rejected`
+columns). On Apple Silicon DPO needs `pip install shadowlm[preference]`; on
+CUDA it rides on trl. GRPO / ORPO / PPO-style RLHF exist in both substrates and
+are next on the roadmap — they need a reward-function API.
 
 Base requirements are enforced with clear errors (e.g. `qlora` on a 16-bit model
 tells you to load a 4-bit one). Adding a technique is one file:

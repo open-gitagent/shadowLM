@@ -17,6 +17,10 @@ dependencies = []
 mlx = [
     "mlx-lm>=0.20",
 ]
+# Preference training (dpo) on Apple Silicon. CUDA boxes get DPO via [torch]/trl.
+preference = [
+    "mlx-lm-lora>=2.0",
+]
 # CUDA / CPU — the PyTorch / HuggingFace path.
 torch = [
     "datasets>=2.20",

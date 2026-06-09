@@ -55,6 +55,9 @@ class TrainConfig:
     packing: bool = False  # pack short sequences together (torch)
     train_on_completions: bool = False  # mask the prompt; learn only on responses (mlx)
 
+    # preference methods (dpo)
+    dpo_beta: float = 0.1  # KL strength vs the reference model; higher = stay closer
+
     # logging / checkpoints
     logging_steps: int = 1
     eval_steps: int | float | None = None  # every N steps; a 0–1 float = fraction of total

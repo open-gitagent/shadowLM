@@ -17,11 +17,12 @@ from typing import Iterator
 # Recognised dataset shapes, in priority order of detection.
 CHAT = "chat"  # ChatML-style: {"messages": [{"role": ..., "content": ...}, ...]}
 SHAREGPT = "sharegpt"  # {"conversations": [{"from": "human"|"gpt", "value": ...}]}
+PREFERENCE = "preference"  # DPO pairs: {"prompt", "chosen", "rejected"[, "system"]}
 INSTRUCTION = "instruction"  # alpaca-style {"instruction", "input", "output"}
 TEXT = "text"  # rows like {"text": "..."} (raw text / CPT)
 RAW = "raw"  # anything else — caller must map it
 
-FORMATS = (CHAT, SHAREGPT, INSTRUCTION, TEXT, RAW)
+FORMATS = (CHAT, SHAREGPT, PREFERENCE, INSTRUCTION, TEXT, RAW)
 
 _ALPACA = (
     "Below is an instruction that describes a task, paired with an input that "
@@ -43,6 +44,8 @@ def _detect_format(rows: list[dict]) -> str:
         return CHAT
     if "conversations" in keys:
         return SHAREGPT
+    if "chosen" in keys and "rejected" in keys:
+        return PREFERENCE
     if "instruction" in keys and "output" in keys:
         return INSTRUCTION
     if "text" in keys:

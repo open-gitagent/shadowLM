@@ -130,6 +130,9 @@ class MLXBackend(Backend):
             quantize_hint="Load a quantized repo (e.g. an mlx-community *-4bit model)",
             dequantize_hint="Load a 16-bit repo",
         )
+        if spec.trainer == "dpo":
+            return self._finetune_dpo(dataset, config, callbacks, output_dir,
+                                      eval_dataset, spec, shadow, iters, num_layers)
 
         # Attach the trainable surface once. A repeated finetune (or a finetune
         # continuing from a loaded adapter) keeps training the existing adapter
@@ -227,6 +230,87 @@ class MLXBackend(Backend):
 
         self._write_adapter_config(out, config, num_layers)
         # Remember enough to write a self-contained adapter later via save().
+        self._train_config = config
+        self._num_layers = num_layers
+        self._tuned = True
+        callbacks.log(f"[mlx] done · final loss {cb.last_loss} · adapter {out}")
+        return FinetuneResult(checkpoint=str(out), final_loss=cb.last_loss)
+
+    def _finetune_dpo(self, dataset: Dataset, config: TrainConfig, callbacks: Callbacks,
+                      output_dir: str, eval_dataset: Dataset | None, spec, shadow,
+                      iters: int, num_layers: int) -> FinetuneResult:
+        """Preference training: rank chosen over rejected vs a frozen reference."""
+        import mlx.core as mx  # noqa: PLC0415
+        import mlx.optimizers as optim  # noqa: PLC0415
+
+        try:
+            from mlx_lm_lora.trainer.datasets import CacheDataset, DPODataset  # noqa: PLC0415
+            from mlx_lm_lora.trainer.dpo_trainer import DPOTrainingArgs, train_dpo  # noqa: PLC0415
+        except ImportError as e:
+            raise ImportError(
+                "Preference training on Apple Silicon needs mlx-lm-lora: "
+                "pip install shadowlm[preference]"
+            ) from e
+        from mlx_lm import load as mlx_load  # noqa: PLC0415
+        from mlx_lm.tuner.utils import linear_to_lora_layers  # noqa: PLC0415
+
+        model, tokenizer = self.model, self.tokenizer
+        n = len(dataset)
+        missing = {"prompt", "chosen", "rejected"} - set(dataset.rows[0] if n else {})
+        if missing:
+            raise ValueError(
+                f"method='dpo' needs preference rows with prompt/chosen/rejected "
+                f"(missing: {', '.join(sorted(missing))})"
+            )
+
+        if not self._lora_applied:
+            model.freeze()
+            linear_to_lora_layers(model, num_layers, self._lora_params(config),
+                                  use_dora=(spec.adapter == methods.ADAPTER_DORA))
+            self._lora_applied = True
+
+        # The frozen reference is a pristine copy of the base model.
+        with quiet_backend():
+            ref_model, _ = mlx_load(self.model_name)
+        ref_model.freeze()
+
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        has_eval = eval_dataset is not None and len(eval_dataset) > 0
+        train_set = CacheDataset(DPODataset(dataset.rows, tokenizer))
+        val_set = CacheDataset(DPODataset(
+            (eval_dataset.rows if has_eval else dataset.rows), tokenizer))
+
+        batch_size = max(1, min(config.per_device_train_batch_size, n,
+                                len(eval_dataset) if has_eval else n))
+        args = DPOTrainingArgs(
+            batch_size=batch_size,
+            iters=iters,
+            gradient_accumulation_steps=config.gradient_accumulation_steps,
+            val_batches=1,
+            steps_per_report=config.logging_steps,
+            steps_per_eval=(config.resolved_eval_steps(iters) if has_eval else iters + 1),
+            steps_per_save=config.save_steps or iters,
+            max_seq_length=config.max_seq_length,
+            adapter_file=str(out / "adapters.safetensors"),
+            grad_checkpoint=shadow.grad_checkpoint,
+            beta=config.dpo_beta,
+        )
+        opt = optim.Adam(learning_rate=_build_lr(config, iters))
+
+        callbacks.log(
+            f"[mlx:{self.device}] dpo on {self.model_name} · {n} preference pairs · "
+            f"{iters} iters · beta {config.dpo_beta} · lr {config.learning_rate:g}"
+        )
+        cb = _MetricBridge(callbacks, record_eval=has_eval)
+        with quiet_backend():
+            train_dpo(model=model, ref_model=ref_model, optimizer=opt,
+                      train_dataset=train_set, val_dataset=val_set, args=args,
+                      training_callback=cb)
+            mx.eval(model.parameters())
+        del ref_model
+
+        self._write_adapter_config(out, config, num_layers)
         self._train_config = config
         self._num_layers = num_layers
         self._tuned = True

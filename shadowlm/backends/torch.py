@@ -112,6 +112,9 @@ class TorchBackend(Backend):
             quantize_hint="load(..., load_in_4bit=True)",
             dequantize_hint="Load without load_in_4bit",
         )
+        if spec.trainer == "dpo":
+            return self._finetune_dpo(dataset, config, callbacks, output_dir,
+                                      eval_dataset, spec)
 
         # Adapter methods (lora/dora/cpt/...) attach PEFT adapters once; a spec
         # with adapter="none" trains the full weights. raw_text methods already
@@ -212,6 +215,84 @@ class TorchBackend(Backend):
         self.tokenizer.save_pretrained(output_dir)
         final_loss = float(result.training_loss) if result else None
         callbacks.log(f"[torch:{self.device}] done · final loss {final_loss} · checkpoint {output_dir}")
+        return FinetuneResult(checkpoint=output_dir, final_loss=final_loss)
+
+    def _finetune_dpo(self, dataset: Dataset, config: TrainConfig, callbacks: Callbacks,
+                      output_dir: str, eval_dataset: Dataset | None, spec) -> FinetuneResult:
+        """Preference training via trl's DPOTrainer (frozen-reference handled by trl)."""
+        from datasets import Dataset as HFDataset  # noqa: PLC0415
+        from transformers import TrainerCallback  # noqa: PLC0415
+        from trl import DPOConfig, DPOTrainer  # noqa: PLC0415
+
+        keys = ("prompt", "chosen", "rejected")
+        missing = set(keys) - set(dataset.rows[0] if len(dataset) else {})
+        if missing:
+            raise ValueError(
+                f"method='dpo' needs preference rows with prompt/chosen/rejected "
+                f"(missing: {', '.join(sorted(missing))})"
+            )
+
+        peft_config = None
+        if spec.trains_adapters and getattr(self.model, "peft_config", None) is None:
+            from peft import LoraConfig  # noqa: PLC0415
+            peft_config = LoraConfig(
+                r=config.lora_r, lora_alpha=config.lora_alpha,
+                lora_dropout=config.lora_dropout,
+                target_modules=list(config.resolved_target_modules()),
+                use_dora=(spec.adapter == methods.ADAPTER_DORA),
+                bias="none", task_type="CAUSAL_LM",
+            )
+
+        def rows(ds):
+            return HFDataset.from_list([{k: r[k] for k in keys} for r in ds.rows])
+
+        has_eval = eval_dataset is not None and len(eval_dataset) > 0
+        total = resolve_total_steps(config, len(dataset))
+
+        class _Bridge(TrainerCallback):
+            def on_log(self, args, state, control, logs=None, **kw):
+                if logs and "loss" in logs:
+                    callbacks.step(Metric(step=state.global_step, loss=float(logs["loss"]),
+                                          lr=float(logs.get("learning_rate", 0.0))))
+
+            def on_evaluate(self, args, state, control, metrics=None, **kw):
+                if metrics and "eval_loss" in metrics:
+                    callbacks.eval(Metric(step=state.global_step, loss=float(metrics["eval_loss"])))
+
+        args = DPOConfig(
+            output_dir=output_dir,
+            beta=config.dpo_beta,
+            per_device_train_batch_size=config.per_device_train_batch_size,
+            gradient_accumulation_steps=config.gradient_accumulation_steps,
+            warmup_steps=config.resolved_warmup(total),
+            max_steps=config.max_steps or -1,
+            num_train_epochs=config.num_train_epochs or 1.0,
+            learning_rate=config.learning_rate,
+            weight_decay=config.weight_decay,
+            lr_scheduler_type=config.lr_scheduler_type,
+            logging_steps=config.logging_steps,
+            eval_strategy="steps" if has_eval else "no",
+            eval_steps=config.resolved_eval_steps(total),
+            seed=config.seed,
+            disable_tqdm=True,
+            report_to=list(config.report_to),
+        )
+        trainer = DPOTrainer(
+            model=self.model,
+            args=args,
+            train_dataset=rows(dataset),
+            eval_dataset=rows(eval_dataset) if has_eval else None,
+            processing_class=self.tokenizer,
+            peft_config=peft_config,
+            callbacks=[_Bridge()],
+        )
+        with quiet_backend():
+            result = trainer.train()
+        trainer.save_model(output_dir)
+        self.tokenizer.save_pretrained(output_dir)
+        self.model = trainer.model
+        final_loss = float(result.training_loss) if result else None
+        callbacks.log(f"[torch:{self.device}] dpo done · final loss {final_loss} · {output_dir}")
         return FinetuneResult(checkpoint=output_dir, final_loss=final_loss)
 
     def generate(self, prompt, *, max_new_tokens, temperature, top_p, **kwargs) -> str:

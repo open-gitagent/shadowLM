@@ -32,6 +32,9 @@ class TrainingMethod:
     adapter: str = ADAPTER_LORA
     quantized_base: bool | None = None
     raw_text: bool = False
+    # Which training loop drives this method: "sft" (supervised next-token) or
+    # "dpo" (preference pairs). Backends dispatch machinery on this, not names.
+    trainer: str = "sft"
 
     @property
     def trains_adapters(self) -> bool:
