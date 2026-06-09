@@ -248,6 +248,11 @@ examples/
   quickstart.py        datasets → finetune → inference, end to end
   train_eval_split.py  held-out validation + overfitting signal
   infer_adapter.py     train → save → reload adapter in a fresh model → infer
+  dpo_preferences.py   preference pairs → style transfer on unseen prompts
+  grpo_rewards.py      RL from programmable reward functions
+  judge_rewards.py     LLM-as-judge rewards → preference pairs → DPO
+  tool_calling.py      tool schemas in, parsed calls out, tool loop, training
+  runs_and_charts.py   run history + terminal loss/LR/eval charts
   sample_dataset.jsonl
 ```
 
