@@ -17,9 +17,14 @@ dependencies = []
 mlx = [
     "mlx-lm>=0.20",
 ]
-# Preference training (dpo) on Apple Silicon. CUDA boxes get DPO via [torch]/trl.
+# Preference training (dpo/grpo) on Apple Silicon. CUDA boxes use [torch]/trl.
 preference = [
     "mlx-lm-lora>=2.0",
+]
+# Mixture of Retrieval Experts (method="more") — fact index + retrieval.
+retrieval = [
+    "faiss-cpu>=1.8",
+    "sentence-transformers>=3.0",
 ]
 # CUDA / CPU — the PyTorch / HuggingFace path.
 torch = [
