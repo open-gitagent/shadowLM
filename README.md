@@ -150,6 +150,8 @@ model.save("out/", fmt="merged")
 | `model.save(path, fmt="adapter"\|"merged")` | export |
 | `run.loss`, `run.eval_loss`, `run.step`, `run.progress`, `run.sparkline()`, `run.checkpoint` | live + final run state |
 | `slm.runs.list() / latest() / load(id) / delete(id)` | run history — every finetune persists a `run.json` (status, config, metrics) |
+| `run.plot("loss"\|"eval_loss"\|"lr"\|"grad_norm", smooth=, window=, log=, clip=)` | terminal charts — raw dots + EMA overlay, view window, log scale, p95/p99 clip |
+| `run.series(name)`, `run.smoothed(weight)` | raw (steps, values) series + EMA — the data feed for any UI chart |
 
 Every run records itself — `succeeded`, `failed` (with the error), or `stopped`
 (Ctrl-C) — so history survives the process. Resume any recorded run with

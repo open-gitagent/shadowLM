@@ -208,6 +208,52 @@ class TrainingRun:
     def losses(self) -> list[float]:
         return [m.loss for m in self.metrics]
 
+    # ---- charts -------------------------------------------------------------
+    def series(self, name: str = "loss") -> tuple[list[int], list[float]]:
+        """(steps, values) for a metric series: loss | eval_loss | lr | grad_norm."""
+        if name == "eval_loss":
+            pts = [(m.step, m.loss) for m in self.eval_metrics]
+        elif name == "loss":
+            pts = [(m.step, m.loss) for m in self.metrics]
+        elif name == "lr":
+            pts = [(m.step, m.lr) for m in self.metrics]
+        elif name == "grad_norm":
+            pts = [(m.step, m.grad_norm) for m in self.metrics if m.grad_norm is not None]
+        else:
+            raise ValueError(f"unknown series {name!r} (loss | eval_loss | lr | grad_norm)")
+        return [p[0] for p in pts], [p[1] for p in pts]
+
+    def smoothed(self, weight: float = 0.9) -> list[float]:
+        """EMA-smoothed training loss (weight 0–1; higher = smoother)."""
+        from .charts import ema  # noqa: PLC0415
+
+        return ema(self.losses(), weight)
+
+    def plot(self, metric: str = "loss", *, smooth: float = 0.6, height: int = 8,
+             width: int = 60, window: int | None = None, log: bool = False,
+             clip: float | None = None) -> str:
+        """A terminal chart of a metric series — raw dots + EMA overlay.
+
+        window: last N points only. log: log scale. clip: percentile cap
+        (0.95/0.99). smooth=0 for raw only. Print the result.
+        """
+        from .charts import line_chart  # noqa: PLC0415
+
+        steps, values = self.series(metric)
+        if not values:
+            if metric == "eval_loss":
+                return ("evaluation not configured — pass eval_dataset= (or \"auto\") "
+                        "and eval_steps= to track eval loss")
+            if metric == "grad_norm":
+                return "no grad-norm data recorded on this backend"
+            return "(no data yet)"
+        titles = {"loss": "Training Loss", "eval_loss": "Eval Loss",
+                  "lr": "Learning Rate", "grad_norm": "Gradient Norm"}
+        if metric != "loss":
+            smooth = 0.0  # overlays only make sense on the noisy training loss
+        return line_chart(steps, values, title=titles[metric], smooth=smooth,
+                          height=height, width=width, window=window, log=log, clip=clip)
+
     def sparkline(self) -> str:
         """A tiny unicode loss curve — handy in a REPL or log line."""
         vals = self.losses()
