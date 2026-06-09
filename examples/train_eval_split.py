@@ -40,9 +40,9 @@ model = slm.load(MODEL, accelerator="shadow")
 run = model.finetune(
     train,
     eval_dataset=val,
-    eval_steps=10,
+    eval_steps=20,
     method="lora",
-    max_steps=60,
+    max_steps=150,  # enough passes to actually memorize all 12 invented facts
     learning_rate=2e-4,
 )
 
@@ -59,6 +59,18 @@ if run.eval_metrics:
     print(f"\nbest eval loss {best.loss:.4f} at step {best.step} "
           f"(train kept dropping to {run.loss:.4f} → watch for overfitting past here)")
 
-# 4. the model still works ---------------------------------------------------
-print("\nheld-out check:", model.generate(val[0]["instruction"], max_new_tokens=16,
-                                          temperature=0.0).strip())
+# 4. memorized vs held-out ---------------------------------------------------
+# The capitals are invented, so there is no pattern to generalize — the model
+# can only MEMORIZE. It should answer a trained fact correctly, and it CANNOT
+# know a held-out one (that is what the train/eval loss gap above means: train
+# loss ≈ memorized, eval loss stays high on facts it never saw).
+def ask(q):
+    return model.generate(q, max_new_tokens=16, temperature=0.0).strip()
+
+trained_row, heldout_row = train[0], val[0]
+print(f"\ntrained  fact: {trained_row['instruction']}")
+print(f"  model: {ask(trained_row['instruction'])}")
+print(f"  truth: {trained_row['output']}   (seen in training → should match)")
+print(f"held-out fact: {heldout_row['instruction']}")
+print(f"  model: {ask(heldout_row['instruction'])}")
+print(f"  truth: {heldout_row['output']}   (never seen → expected WRONG; that's the eval gap)")
