@@ -50,6 +50,8 @@ never the method name.
 | `full`  | update every transformer weight | **unquantized required** | 2e-5 |
 | `cpt`   | continued pretraining on raw domain text (no chat template) | either | 5e-5 |
 | `dpo`   | preference optimization on `{prompt, chosen, rejected}` pairs vs a frozen reference (`beta=0.1`) | either | 5e-6 |
+| `grpo`  | RL from programmable reward functions (`reward_fns=[...]`) | either | 5e-6 |
+| `more`  | **mixture of retrieval experts** — facts embedded into a frozen index fused into attention; near-zero-hallucination recall (`retrieval_k`, `retrieval_layers`) | either | 1e-4 |
 
 SFT methods train on chat/instruction/text data; `dpo` trains on preference
 pairs (the `preference` format, auto-detected from `chosen`/`rejected` columns);
@@ -66,6 +68,14 @@ run = model.finetune(rows, method="grpo", reward_fns=[prefers_blue],
 On CUDA, dpo/grpo ride on trl (`DPOTrainer` / `GRPOTrainer`); on Apple Silicon
 they need `pip install shadowlm[preference]`. ORPO / PPO-style RLHF exist in
 the substrates and follow the same `trainer=` slot.
+
+`more` (Mixture of Retrieval Experts) is for *facts*: each training fact is
+embedded into a frozen FAISS index; wrapped attention layers retrieve each
+token's nearest memories and attend over them through small trainable
+projections (plus LoRA for capacity). The model learns to look facts up
+instead of hallucinating them, and the index travels inside the adapter dir —
+`load(adapter=...)` rebuilds everything. Needs `pip install
+shadowlm[retrieval]`; mlx today, torch next.
 
 ### Agent RL: trajectories + judge rewards
 
@@ -253,6 +263,7 @@ examples/
   judge_rewards.py     LLM-as-judge rewards → preference pairs → DPO
   tool_calling.py      tool schemas in, parsed calls out, tool loop, training
   runs_and_charts.py   run history + terminal loss/LR/eval charts
+  retrieval_experts.py mixture of retrieval experts — exact fact recall
   sample_dataset.jsonl
 ```
 
