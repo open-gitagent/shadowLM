@@ -119,6 +119,11 @@ class TorchBackend(Backend):
         if spec.trainer == "grpo":
             return self._finetune_grpo(dataset, config, callbacks, output_dir,
                                        spec, reward_fns)
+        if spec.adapter == methods.ADAPTER_MORE:
+            raise NotImplementedError(
+                "memory tuning (method='more') is on the mlx backend today; "
+                "the torch wiring is next on the roadmap."
+            )
 
         # Adapter methods (lora/dora/cpt/...) attach PEFT adapters once; a spec
         # with adapter="none" trains the full weights. raw_text methods already

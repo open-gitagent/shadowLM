@@ -13,6 +13,7 @@ from dataclasses import dataclass
 # Adapter kinds a backend knows how to attach.
 ADAPTER_LORA = "lora"  # low-rank adapters
 ADAPTER_DORA = "dora"  # weight-decomposed LoRA — often better at low rank
+ADAPTER_MORE = "more"  # memory experts: retrieval-fused attention projections
 ADAPTER_NONE = "none"  # no adapters: train the full weights
 
 

@@ -60,6 +60,10 @@ class TrainConfig:
     grpo_group_size: int = 4  # completions sampled per prompt (the GRPO "group")
     grpo_max_completion_length: int = 256  # tokens generated per completion during training
 
+    # memory tuning (more — mixture of retrieval experts)
+    retrieval_k: int = 2  # memories retrieved per token
+    retrieval_layers: int = 8  # how many attention layers (from the top) get memory
+
     # logging / checkpoints
     logging_steps: int = 1
     eval_steps: int | float | None = None  # every N steps; a 0–1 float = fraction of total

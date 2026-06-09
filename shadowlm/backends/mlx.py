@@ -95,13 +95,31 @@ class MLXBackend(Backend):
     def load(self, name, *, load_in_4bit=False, max_seq_length=2048, adapter=None, **kwargs) -> None:
         from mlx_lm import load  # noqa: PLC0415
 
+        from .. import more  # noqa: PLC0415
+
         self.model_name = name
         self.max_seq_length = max_seq_length
         self.adapter = adapter
+        # Memory-tuned adapters carry their own index + wrapper config and are
+        # re-attached by hand; plain adapters go through the normal loader.
+        more_cfg = more.read_config(adapter) if adapter else None
         with quiet_backend():  # swallow huggingface_hub "Fetching files" tqdm
-            self.model, self.tokenizer = load(name, adapter_path=adapter)
+            self.model, self.tokenizer = load(
+                name, adapter_path=None if more_cfg else adapter)
+        if more_cfg:
+            from mlx_lm.tuner.utils import linear_to_lora_layers  # noqa: PLC0415
+
+            self._more_index = more.MemoryIndex.load(adapter)
+            self.model.freeze()
+            adapter_cfg = json.loads((Path(adapter) / "adapter_config.json").read_text())
+            linear_to_lora_layers(self.model, more_cfg["num_layers"],
+                                  adapter_cfg["lora_parameters"])
+            more.attach(self.model, self._more_index, rank=more_cfg["rank"],
+                        k=more_cfg["index_k"], num_layers=more_cfg["num_layers"])
+            self.model.load_weights(str(Path(adapter) / "adapters.safetensors"),
+                                    strict=False)
         self._tuned = False
-        # Loading with an adapter already converts the linear layers to LoRA.
+        # Loading with an adapter already converts/attaches the trainable layers.
         self._lora_applied = adapter is not None
 
     def finetune(self, dataset: Dataset, config: TrainConfig, callbacks: Callbacks,
@@ -142,6 +160,9 @@ class MLXBackend(Backend):
         # Attach the trainable surface once. A repeated finetune (or a finetune
         # continuing from a loaded adapter) keeps training the existing adapter
         # layers rather than converting them again, which would error.
+        if spec.adapter == methods.ADAPTER_MORE:
+            return self._finetune_more(dataset, config, callbacks, output_dir,
+                                       eval_dataset, iters)
         if not spec.trains_adapters:
             # Full fine-tune: every transformer block trains.
             num_layers = len(model.layers)
@@ -240,6 +261,81 @@ class MLXBackend(Backend):
         self._tuned = True
         callbacks.log(f"[mlx] done · final loss {cb.last_loss} · adapter {out}")
         return FinetuneResult(checkpoint=str(out), final_loss=cb.last_loss)
+
+    def _finetune_more(self, dataset: Dataset, config: TrainConfig, callbacks: Callbacks,
+                       output_dir: str, eval_dataset: Dataset | None,
+                       iters: int) -> FinetuneResult:
+        """Mixture of Retrieval Experts.
+
+        Runs its own uncompiled loop: the retrieval lookup materializes arrays
+        mid-graph, which mx.compile / mx.checkpoint (used by the standard
+        trainer) forbid. Plain value_and_grad allows it.
+        """
+        import time as _time  # noqa: PLC0415
+
+        import mlx.core as mx  # noqa: PLC0415
+        import mlx.nn as nn  # noqa: PLC0415
+        import mlx.optimizers as optim  # noqa: PLC0415
+        from mlx.utils import tree_flatten, tree_map  # noqa: PLC0415
+        from mlx_lm.tuner.datasets import CacheDataset  # noqa: PLC0415
+        from mlx_lm.tuner.trainer import default_loss, iterate_batches  # noqa: PLC0415
+
+        from .. import more  # noqa: PLC0415
+
+        model, tokenizer = self.model, self.tokenizer
+        num_layers = self._attach_retrieval_experts(dataset, config, callbacks)
+        if eval_dataset is not None:
+            callbacks.log("[more] note: eval during training not supported yet — skipped")
+
+        n = len(dataset)
+        batch_size = max(1, min(config.per_device_train_batch_size, n))
+        data = iterate_batches(
+            CacheDataset(_to_mlx_dataset(dataset, tokenizer)),
+            batch_size, config.max_seq_length, loop=True,
+        )
+        opt = optim.Adam(learning_rate=_build_lr(config, iters))
+        loss_and_grad = nn.value_and_grad(model, default_loss)
+        accum = max(1, config.gradient_accumulation_steps)
+
+        callbacks.log(
+            f"[mlx:{self.device}] more on {self.model_name} · {n} facts · "
+            f"{iters} iters · retrieval k={config.retrieval_k} on {num_layers} layers "
+            f"· lr {config.learning_rate:g}"
+        )
+        start = _time.time()
+        grads_acc = None
+        last_loss = None
+        for it, (batch, lengths) in zip(range(1, iters + 1), data):
+            (loss, _ntoks), grads = loss_and_grad(model, batch, lengths)
+            grads_acc = grads if grads_acc is None else tree_map(
+                lambda a, b: a + b, grads_acc, grads)
+            if it % accum == 0:
+                opt.update(model, tree_map(lambda g: g / accum, grads_acc))
+                grads_acc = None
+            mx.eval(loss, model.parameters())
+            last_loss = round(float(loss), 4)
+            if it % config.logging_steps == 0:
+                callbacks.step(Metric(
+                    step=it, loss=last_loss,
+                    lr=float(opt.learning_rate),
+                    elapsed_s=round(_time.time() - start, 2),
+                ))
+            if callbacks.stopped():
+                break
+
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        weights = dict(tree_flatten(model.trainable_parameters()))
+        mx.save_safetensors(str(out / "adapters.safetensors"), weights)
+        self._write_adapter_config(out, config, num_layers)
+        self._more_index.save(out)
+        more.write_config(out, base_model=self.model_name, rank=config.lora_r,
+                          k=config.retrieval_k, num_layers=num_layers)
+        self._train_config = config
+        self._num_layers = num_layers
+        self._tuned = True
+        callbacks.log(f"[mlx] done · final loss {last_loss} · adapter {out}")
+        return FinetuneResult(checkpoint=str(out), final_loss=last_loss)
 
     def _finetune_dpo(self, dataset: Dataset, config: TrainConfig, callbacks: Callbacks,
                       output_dir: str, eval_dataset: Dataset | None, spec, shadow,
@@ -407,6 +503,41 @@ class MLXBackend(Backend):
         self._tuned = True
         callbacks.log(f"[mlx] done · final loss {cb.last_loss} · adapter {out}")
         return FinetuneResult(checkpoint=str(out), final_loss=cb.last_loss)
+
+    def _attach_retrieval_experts(self, dataset: Dataset, config: TrainConfig,
+                               callbacks: Callbacks) -> int:
+        """Build the fact index from the dataset and fuse it into attention."""
+        from .. import more  # noqa: PLC0415
+
+        if getattr(self, "_more_index", None) is None:
+            chat = dataset.as_chat() if dataset.format != TEXT else None
+            if chat is not None:
+                inputs = [next((m["content"] for m in r["messages"] if m["role"] == "user"), "")
+                          for r in chat.rows]
+                outputs = [next((m["content"] for m in reversed(r["messages"])
+                                 if m["role"] == "assistant"), "")
+                           for r in chat.rows]
+            else:
+                inputs = outputs = dataset.to_texts()
+            with quiet_backend():
+                self._more_index = more.MemoryIndex.build(inputs, outputs)
+            callbacks.log(f"[more] indexed {len(self._more_index)} memory experts")
+
+        from mlx_lm.tuner.utils import linear_to_lora_layers  # noqa: PLC0415
+
+        self.model.freeze()
+        n_layers = min(config.retrieval_layers, len(self.model.layers))
+        # LoRA gives the model capacity to *use* what the memory experts
+        # retrieve; the retrieval projections alone are too small to learn it.
+        linear_to_lora_layers(self.model, n_layers, self._lora_params(config))
+        wrapped = more.attach(self.model, self._more_index,
+                              rank=config.lora_r, k=config.retrieval_k,
+                              num_layers=n_layers)
+        if wrapped:
+            callbacks.log(f"[more] memory attention + lora on {wrapped} layers "
+                          f"(k={config.retrieval_k}, r={config.lora_r})")
+        self._lora_applied = True
+        return n_layers
 
     @staticmethod
     def _lora_params(config: TrainConfig) -> dict:

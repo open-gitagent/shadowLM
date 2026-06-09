@@ -22,6 +22,7 @@ Users can also register at runtime — `methods.register(...)` before calling
 from .base import (
     ADAPTER_DORA,
     ADAPTER_LORA,
+    ADAPTER_MORE,
     ADAPTER_NONE,
     TrainingMethod,
     available,
@@ -30,11 +31,12 @@ from .base import (
 )
 
 # Importing a technique module registers it.
-from . import cpt, dora, dpo, full, grpo, lora, qlora  # noqa: E402, F401
+from . import cpt, dora, dpo, full, grpo, lora, more, qlora  # noqa: E402, F401
 
 __all__ = [
     "ADAPTER_DORA",
     "ADAPTER_LORA",
+    "ADAPTER_MORE",
     "ADAPTER_NONE",
     "TrainingMethod",
     "available",
