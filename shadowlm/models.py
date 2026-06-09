@@ -194,6 +194,8 @@ class Model:
         run.ended_at = time.time()
         run_history.save(run, output_dir)
         self.adapter = run.checkpoint
+        if verbose:
+            _print_summary(run)
         return run
 
     # ---- inference --------------------------------------------------------
@@ -262,6 +264,23 @@ def load(
               file=_CONSOLE, flush=True)
     return Model(name, be, load_in_4bit=load_in_4bit, max_seq_length=max_seq_length,
                  adapter=adapter)
+
+
+def _print_summary(run: TrainingRun) -> None:
+    """The end-of-training signature: sparkline loss curve + one result line."""
+    out = []
+    if run.metrics:
+        out.append(f"  loss  {run.sparkline()}  {run.metrics[0].loss:.4f} → {run.loss:.4f}")
+    if run.eval_metrics:
+        evals = [m.loss for m in run.eval_metrics]
+        bars = "▁▂▃▄▅▆▇█"
+        lo, hi = min(evals), max(evals)
+        span = (hi - lo) or 1.0
+        curve = "".join(bars[min(7, int((v - lo) / span * 7))] for v in evals)
+        out.append(f"  eval  {curve}  {evals[0]:.4f} → {evals[-1]:.4f}")
+    dur = f"{run.duration_s:.1f}s" if run.duration_s else "?"
+    out.append(f"  ♥ {run.status} · {run.step} steps · {dur} · {run.checkpoint}")
+    print("\n" + "\n".join(out), file=_CONSOLE, flush=True)
 
 
 def _fmt_eta(seconds: float) -> str:

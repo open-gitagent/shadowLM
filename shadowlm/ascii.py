@@ -39,8 +39,9 @@ _NAME = r"""
                  from  Lyzr  Research  Labs ·  ♥
 """
 
-# Print the banner at most once per process, even across repeated finetunes.
-_shown = False
+# The full banner prints on the first training session of the process; later
+# sessions get a compact one-liner so sweeps don't drown in hearts.
+_sessions = 0
 
 
 def run_on_main_rank(fn):
@@ -63,11 +64,12 @@ def run_on_main_rank(fn):
 
 @run_on_main_rank
 def print_ascii_art(*, once: bool = True) -> None:
-    """Print the shadowLM startup banner. By default shows only once per process."""
-    global _shown
-    if once and _shown:
+    """Print the shadowLM banner — full art first, a compact line after."""
+    global _sessions
+    _sessions += 1
+    if once and _sessions > 1:
+        print(f"\n♥ shadowLM · training session #{_sessions}\n")
         return
-    _shown = True
     print(_HEART)
     print(_NAME)
     print("Starting training session...\n")

@@ -21,7 +21,7 @@ print(model)
 # 3. inference BEFORE finetuning -------------------------------------------
 print("\nbefore:", model.generate("What is the capital of France?", max_new_tokens=32))
 
-# 4. finetune ---------------------------------------------------------------
+# 4. finetune (every training ends with the sparkline summary) --------------
 run = model.finetune(
     ds,
     method="lora",
@@ -30,9 +30,6 @@ run = model.finetune(
     lora_r=16,
     per_device_train_batch_size=2,
 )
-print(f"\nstatus={run.status}  final loss={run.loss:.4f}  took {run.duration_s:.1f}s")
-print("loss curve:", run.sparkline())
-print("checkpoint:", run.checkpoint)
 
 # 5. inference AFTER finetuning --------------------------------------------
 print("\nafter:", model.generate("What is the capital of France?", max_new_tokens=32))
