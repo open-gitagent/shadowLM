@@ -103,6 +103,7 @@ class Model:
         method: str = "lora",
         eval_dataset: Dataset | list[dict] | str | None = None,
         eval_steps: int | None = None,
+        reward_fns: list | None = None,
         on_step: StepCallback | None = None,
         on_eval: StepCallback | None = None,
         on_log=None,
@@ -176,7 +177,8 @@ class Model:
         callbacks = Callbacks(on_step=_record, on_log=_log, on_eval=_record_eval)
         try:
             result = self._backend.finetune(dataset, config, callbacks, output_dir,
-                                            eval_dataset=eval_dataset)
+                                            eval_dataset=eval_dataset,
+                                            reward_fns=reward_fns)
             run.checkpoint = result.checkpoint
             run.status = "succeeded"
         except KeyboardInterrupt:  # Ctrl-C — record what happened, keep partial output

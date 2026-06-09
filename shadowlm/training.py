@@ -55,8 +55,10 @@ class TrainConfig:
     packing: bool = False  # pack short sequences together (torch)
     train_on_completions: bool = False  # mask the prompt; learn only on responses (mlx)
 
-    # preference methods (dpo)
-    dpo_beta: float = 0.1  # KL strength vs the reference model; higher = stay closer
+    # preference / RL methods (dpo, grpo)
+    beta: float = 0.1  # KL strength vs the reference model; higher = stay closer
+    grpo_group_size: int = 4  # completions sampled per prompt (the GRPO "group")
+    grpo_max_completion_length: int = 256  # tokens generated per completion during training
 
     # logging / checkpoints
     logging_steps: int = 1

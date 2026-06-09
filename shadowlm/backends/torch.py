@@ -91,7 +91,8 @@ class TorchBackend(Backend):
             self.model = PeftModel.from_pretrained(self.model, adapter)
 
     def finetune(self, dataset: Dataset, config: TrainConfig, callbacks: Callbacks,
-                 output_dir: str, eval_dataset: Dataset | None = None) -> FinetuneResult:
+                 output_dir: str, eval_dataset: Dataset | None = None,
+                 reward_fns: list | None = None) -> FinetuneResult:
         from datasets import Dataset as HFDataset  # noqa: PLC0415
         from transformers import TrainerCallback  # noqa: PLC0415
         from trl import SFTConfig, SFTTrainer  # noqa: PLC0415
@@ -115,6 +116,11 @@ class TorchBackend(Backend):
         if spec.trainer == "dpo":
             return self._finetune_dpo(dataset, config, callbacks, output_dir,
                                       eval_dataset, spec)
+        if spec.trainer == "grpo":
+            raise NotImplementedError(
+                "GRPO on the torch backend (trl GRPOTrainer) isn't wired yet — "
+                "available today on the mlx backend (Apple Silicon)."
+            )
 
         # Adapter methods (lora/dora/cpt/...) attach PEFT adapters once; a spec
         # with adapter="none" trains the full weights. raw_text methods already
@@ -261,7 +267,7 @@ class TorchBackend(Backend):
 
         args = DPOConfig(
             output_dir=output_dir,
-            beta=config.dpo_beta,
+            beta=config.beta,
             per_device_train_batch_size=config.per_device_train_batch_size,
             gradient_accumulation_steps=config.gradient_accumulation_steps,
             warmup_steps=config.resolved_warmup(total),

@@ -105,7 +105,8 @@ class MLXBackend(Backend):
         self._lora_applied = adapter is not None
 
     def finetune(self, dataset: Dataset, config: TrainConfig, callbacks: Callbacks,
-                 output_dir: str, eval_dataset: Dataset | None = None) -> FinetuneResult:
+                 output_dir: str, eval_dataset: Dataset | None = None,
+                 reward_fns: list | None = None) -> FinetuneResult:
         import mlx.core as mx  # noqa: PLC0415
         import mlx.optimizers as optim  # noqa: PLC0415
         from mlx_lm.tuner.datasets import CacheDataset  # noqa: PLC0415
@@ -133,6 +134,10 @@ class MLXBackend(Backend):
         if spec.trainer == "dpo":
             return self._finetune_dpo(dataset, config, callbacks, output_dir,
                                       eval_dataset, spec, shadow, iters, num_layers)
+        if spec.trainer == "grpo":
+            return self._finetune_grpo(dataset, config, callbacks, output_dir,
+                                       eval_dataset, spec, shadow, iters, num_layers,
+                                       reward_fns)
 
         # Attach the trainable surface once. A repeated finetune (or a finetune
         # continuing from a loaded adapter) keeps training the existing adapter
@@ -294,19 +299,105 @@ class MLXBackend(Backend):
             max_seq_length=config.max_seq_length,
             adapter_file=str(out / "adapters.safetensors"),
             grad_checkpoint=shadow.grad_checkpoint,
-            beta=config.dpo_beta,
+            beta=config.beta,
         )
         opt = optim.Adam(learning_rate=_build_lr(config, iters))
 
         callbacks.log(
             f"[mlx:{self.device}] dpo on {self.model_name} · {n} preference pairs · "
-            f"{iters} iters · beta {config.dpo_beta} · lr {config.learning_rate:g}"
+            f"{iters} iters · beta {config.beta} · lr {config.learning_rate:g}"
         )
         cb = _MetricBridge(callbacks, record_eval=has_eval)
         with quiet_backend():
             train_dpo(model=model, ref_model=ref_model, optimizer=opt,
                       train_dataset=train_set, val_dataset=val_set, args=args,
                       training_callback=cb)
+            mx.eval(model.parameters())
+        del ref_model
+
+        self._write_adapter_config(out, config, num_layers)
+        self._train_config = config
+        self._num_layers = num_layers
+        self._tuned = True
+        callbacks.log(f"[mlx] done · final loss {cb.last_loss} · adapter {out}")
+        return FinetuneResult(checkpoint=str(out), final_loss=cb.last_loss)
+
+    def _finetune_grpo(self, dataset: Dataset, config: TrainConfig, callbacks: Callbacks,
+                       output_dir: str, eval_dataset: Dataset | None, spec, shadow,
+                       iters: int, num_layers: int, reward_fns: list | None) -> FinetuneResult:
+        """RL from programmable rewards: sample a group of completions per prompt,
+        score them with reward_fns, push toward the above-average ones."""
+        import mlx.core as mx  # noqa: PLC0415
+        import mlx.optimizers as optim  # noqa: PLC0415
+
+        try:
+            from mlx_lm_lora.trainer.datasets import CacheDataset, GRPODataset  # noqa: PLC0415
+            from mlx_lm_lora.trainer.grpo_trainer import GRPOTrainingArgs, train_grpo  # noqa: PLC0415
+        except ImportError as e:
+            raise ImportError(
+                "GRPO on Apple Silicon needs mlx-lm-lora: pip install shadowlm[preference]"
+            ) from e
+        from mlx_lm import load as mlx_load  # noqa: PLC0415
+        from mlx_lm.tuner.utils import linear_to_lora_layers  # noqa: PLC0415
+
+        if not reward_fns:
+            raise ValueError(
+                "method='grpo' needs reward_fns=[...] — each is "
+                "fn(prompts, completions, answer, types=None) -> list[float]"
+            )
+        model, tokenizer = self.model, self.tokenizer
+        n = len(dataset)
+        if n == 0 or "prompt" not in dataset.rows[0]:
+            raise ValueError("method='grpo' needs rows with a 'prompt' column "
+                             "(and optionally 'answer' for accuracy-style rewards)")
+        rows = [{"answer": "", **r} for r in dataset.rows]  # answer optional
+
+        if not self._lora_applied:
+            model.freeze()
+            linear_to_lora_layers(model, num_layers, self._lora_params(config),
+                                  use_dora=(spec.adapter == methods.ADAPTER_DORA))
+            self._lora_applied = True
+
+        with quiet_backend():  # frozen reference = pristine base
+            ref_model, _ = mlx_load(self.model_name)
+        ref_model.freeze()
+
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        has_eval = eval_dataset is not None and len(eval_dataset) > 0
+        eval_rows = ([{"answer": "", **r} for r in eval_dataset.rows] if has_eval else rows)
+        train_set = CacheDataset(GRPODataset(rows, tokenizer))
+        val_set = CacheDataset(GRPODataset(eval_rows, tokenizer))
+
+        batch_size = max(1, min(config.per_device_train_batch_size, n,
+                                len(eval_rows)))
+        args = GRPOTrainingArgs(
+            batch_size=batch_size,
+            iters=iters,
+            gradient_accumulation_steps=config.gradient_accumulation_steps,
+            val_batches=1,
+            steps_per_report=config.logging_steps,
+            steps_per_eval=(config.resolved_eval_steps(iters) if has_eval else iters + 1),
+            steps_per_save=config.save_steps or iters,
+            max_seq_length=config.max_seq_length,
+            adapter_file=str(out / "adapters.safetensors"),
+            grad_checkpoint=shadow.grad_checkpoint,
+            group_size=config.grpo_group_size,
+            beta=config.beta,
+            max_completion_length=config.grpo_max_completion_length,
+        )
+        opt = optim.Adam(learning_rate=_build_lr(config, iters))
+
+        callbacks.log(
+            f"[mlx:{self.device}] grpo on {self.model_name} · {n} prompts · "
+            f"{iters} iters · group {config.grpo_group_size} · "
+            f"{len(reward_fns)} reward fn(s) · lr {config.learning_rate:g}"
+        )
+        cb = _MetricBridge(callbacks, record_eval=has_eval)
+        with quiet_backend():
+            train_grpo(model=model, ref_model=ref_model, tokenizer=tokenizer,
+                       optimizer=opt, train_dataset=train_set, val_dataset=val_set,
+                       reward_funcs=list(reward_fns), args=args, training_callback=cb)
             mx.eval(model.parameters())
         del ref_model
 

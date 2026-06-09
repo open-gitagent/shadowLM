@@ -49,7 +49,7 @@ never the method name.
 | `dora`  | weight-decomposed LoRA, often better at low rank | either | 2e-4 |
 | `full`  | update every transformer weight | **unquantized required** | 2e-5 |
 | `cpt`   | continued pretraining on raw domain text (no chat template) | either | 5e-5 |
-| `dpo`   | preference optimization on `{prompt, chosen, rejected}` pairs vs a frozen reference (`dpo_beta=0.1`) | either | 5e-6 |
+| `dpo`   | preference optimization on `{prompt, chosen, rejected}` pairs vs a frozen reference (`beta=0.1`) | either | 5e-6 |
 
 SFT methods train on chat/instruction/text data; `dpo` trains on preference
 pairs (the `preference` dataset format, auto-detected from `chosen`/`rejected`

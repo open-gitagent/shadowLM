@@ -80,7 +80,8 @@ class Backend(ABC):
 
     @abstractmethod
     def finetune(self, dataset: Dataset, config: TrainConfig, callbacks: Callbacks,
-                 output_dir: str, eval_dataset: Dataset | None = None) -> FinetuneResult:
+                 output_dir: str, eval_dataset: Dataset | None = None,
+                 reward_fns: list | None = None) -> FinetuneResult:
         ...
 
     @abstractmethod
