@@ -17,24 +17,24 @@ model.save("out/", fmt="adapter")                            # ship it
 The SDK is the core. A multi-user **studio** (web service + remote-GPU workers)
 will wrap this exact SDK later — but the beautiful, runnable thing comes first.
 
-## Backends — one interface, any hardware
+## Backends — CUDA is the target, one interface everywhere
 
-`slm.load(..., backend="auto")` picks the right engine for the current hardware.
-The **same code** runs on a laptop and on a GPU box.
+**`torch` (CUDA) is the production backend** — PyTorch + `transformers` + `trl`
++ `peft`, the stack serious training runs on. `mlx` exists so the *same code*
+develops fast on an Apple laptop before it ships to a GPU box.
 
 | backend | hardware | engine |
 |---------|----------|--------|
-| `mlx`   | Apple Silicon | `mlx-lm` LoRA on the Metal GPU (native path) |
-| `torch` | CUDA GPU, or CPU (`device="cpu"`) | PyTorch: `transformers` + `trl` + `peft` |
+| `torch` | **CUDA GPU** (production), or CPU (`device="cpu"`) | `transformers` + `trl` + `peft` — SFT / DPO / GRPO |
+| `mlx`   | Apple Silicon | `mlx-lm` — the local dev loop |
 
-Two backends, one device knob — CPU is just `torch` with `device="cpu"`, not a
-separate backend. `auto` resolves CUDA → `torch`, else Apple Silicon → `mlx`, else
-→ `torch` on CPU. There is no mock/fake fallback: if no backend is installed,
-`load` tells you what to install.
+`auto` resolves CUDA → `torch`, else Apple Silicon → `mlx`, else `torch` on CPU.
+One device knob, no mock fallback. The whole torch path — SFT, DPO, GRPO, eval,
+generation — is exercised in CI-style on CPU, so the code a CUDA box runs is
+tested code, not blind code.
 
-The pipeline is the standard HuggingFace flow — `datasets` formats and chat templates,
-LoRA/QLoRA adapters, chat-template inference — with MLX as the Apple-native
-implementation of it.
+The pipeline is the standard HuggingFace flow — `datasets` formats and chat
+templates, LoRA/QLoRA adapters, chat-template inference.
 
 ## Training methods
 
@@ -63,9 +63,9 @@ run = model.finetune(rows, method="grpo", reward_fns=[prefers_blue],
                      grpo_group_size=4)
 ```
 
-On Apple Silicon, dpo/grpo need `pip install shadowlm[preference]`; on CUDA,
-DPO rides on trl (GRPO-on-torch is next). ORPO / PPO-style RLHF exist in the
-substrates and follow the same `trainer=` slot.
+On CUDA, dpo/grpo ride on trl (`DPOTrainer` / `GRPOTrainer`); on Apple Silicon
+they need `pip install shadowlm[preference]`. ORPO / PPO-style RLHF exist in
+the substrates and follow the same `trainer=` slot.
 
 ### Agent RL: trajectories + judge rewards
 

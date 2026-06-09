@@ -117,10 +117,8 @@ class TorchBackend(Backend):
             return self._finetune_dpo(dataset, config, callbacks, output_dir,
                                       eval_dataset, spec)
         if spec.trainer == "grpo":
-            raise NotImplementedError(
-                "GRPO on the torch backend (trl GRPOTrainer) isn't wired yet — "
-                "available today on the mlx backend (Apple Silicon)."
-            )
+            return self._finetune_grpo(dataset, config, callbacks, output_dir,
+                                       spec, reward_fns)
 
         # Adapter methods (lora/dora/cpt/...) attach PEFT adapters once; a spec
         # with adapter="none" trains the full weights. raw_text methods already
@@ -142,7 +140,7 @@ class TorchBackend(Backend):
         train_ds = HFDataset.from_dict({"text": dataset.to_texts()})
         has_eval = eval_dataset is not None and len(eval_dataset) > 0
         eval_ds = HFDataset.from_dict({"text": eval_dataset.to_texts()}) if has_eval else None
-        optim_name = "adamw_torch_fused" if shadow.fused_optimizer else config.optim
+        optim_name = self._resolved_optim(config, shadow)
 
         # Bridge the transformers Trainer callbacks → our Callbacks.
         class _Bridge(TrainerCallback):
@@ -202,26 +200,124 @@ class TorchBackend(Backend):
             eval_steps=config.resolved_eval_steps(total),
             per_device_eval_batch_size=config.per_device_train_batch_size,
             seed=config.seed,
-            max_seq_length=config.max_seq_length,
+            max_length=config.max_seq_length,
             disable_tqdm=True,  # shadowLM prints its own progress
             report_to=list(config.report_to),
             **extra,
         )
-        trainer = SFTTrainer(
-            model=self.model,
-            tokenizer=self.tokenizer,
-            train_dataset=train_ds,
-            eval_dataset=eval_ds,
-            args=args,
-            callbacks=[_Bridge()],
-        )
         with quiet_backend():
+            trainer = SFTTrainer(
+                model=self.model,
+                processing_class=self.tokenizer,
+                train_dataset=train_ds,
+                eval_dataset=eval_ds,
+                args=args,
+                callbacks=[_Bridge()],
+            )
             result = trainer.train(resume_from_checkpoint=config.resume_from_checkpoint)
         trainer.save_model(output_dir)
         self.tokenizer.save_pretrained(output_dir)
         final_loss = float(result.training_loss) if result else None
         callbacks.log(f"[torch:{self.device}] done · final loss {final_loss} · checkpoint {output_dir}")
         return FinetuneResult(checkpoint=output_dir, final_loss=final_loss)
+
+    def _finetune_grpo(self, dataset: Dataset, config: TrainConfig, callbacks: Callbacks,
+                       output_dir: str, spec, reward_fns: list | None) -> FinetuneResult:
+        """RL from programmable rewards via trl's GRPOTrainer."""
+        from datasets import Dataset as HFDataset  # noqa: PLC0415
+        from transformers import TrainerCallback  # noqa: PLC0415
+        from trl import GRPOConfig, GRPOTrainer  # noqa: PLC0415
+
+        if not reward_fns:
+            raise ValueError(
+                "method='grpo' needs reward_fns=[...] — each is "
+                "fn(prompts, completions, answer, types=None) -> list[float]"
+            )
+        if not len(dataset) or "prompt" not in dataset.rows[0]:
+            raise ValueError("method='grpo' needs rows with a 'prompt' column")
+        rows = [{"prompt": r["prompt"], "answer": r.get("answer", "")}
+                for r in dataset.rows]
+
+        def adapt(fn):
+            # shadowLM reward contract -> trl calling convention. trl passes
+            # completions as strings (standard format) or message lists
+            # (conversational); normalize to strings.
+            def wrapped(prompts=None, completions=None, **kw):
+                texts = [c if isinstance(c, str)
+                         else (c[-1].get("content", "") if c else "")
+                         for c in completions]
+                return fn(prompts=prompts, completions=texts,
+                          answer=kw.get("answer"), types=kw.get("types"))
+            wrapped.__name__ = getattr(fn, "__name__", "reward")
+            return wrapped
+
+        peft_config = None
+        if spec.trains_adapters and getattr(self.model, "peft_config", None) is None:
+            from peft import LoraConfig  # noqa: PLC0415
+            peft_config = LoraConfig(
+                r=config.lora_r, lora_alpha=config.lora_alpha,
+                lora_dropout=config.lora_dropout,
+                target_modules=list(config.resolved_target_modules()),
+                bias="none", task_type="CAUSAL_LM",
+            )
+
+        class _Bridge(TrainerCallback):
+            def on_log(self, args, state, control, logs=None, **kw):
+                if logs and "loss" in logs:
+                    callbacks.step(Metric(step=state.global_step, loss=float(logs["loss"]),
+                                          lr=float(logs.get("learning_rate", 0.0))))
+
+        # trl requires the generation batch to be divisible by the group size.
+        group = config.grpo_group_size
+        args = GRPOConfig(
+            output_dir=output_dir,
+            num_generations=group,
+            per_device_train_batch_size=group,
+            gradient_accumulation_steps=config.gradient_accumulation_steps,
+            max_completion_length=config.grpo_max_completion_length,
+            beta=config.beta,
+            max_steps=config.max_steps or -1,
+            num_train_epochs=config.num_train_epochs or 1.0,
+            learning_rate=config.learning_rate,
+            lr_scheduler_type=config.lr_scheduler_type,
+            logging_steps=config.logging_steps,
+            seed=config.seed,
+            disable_tqdm=True,
+            report_to=list(config.report_to),
+        )
+        callbacks.log(
+            f"[torch:{self.device}] grpo on {self.model_name} · {len(rows)} prompts · "
+            f"group {group} · {len(reward_fns)} reward fn(s)"
+        )
+        with quiet_backend():
+            trainer = GRPOTrainer(
+                model=self.model,
+                reward_funcs=[adapt(f) for f in reward_fns],
+                args=args,
+                train_dataset=HFDataset.from_list(rows),
+                processing_class=self.tokenizer,
+                peft_config=peft_config,
+                callbacks=[_Bridge()],
+            )
+            result = trainer.train()
+        trainer.save_model(output_dir)
+        self.tokenizer.save_pretrained(output_dir)
+        self.model = trainer.model
+        final_loss = float(result.training_loss) if result else None
+        callbacks.log(f"[torch:{self.device}] grpo done · {output_dir}")
+        return FinetuneResult(checkpoint=output_dir, final_loss=final_loss)
+
+    def _resolved_optim(self, config: TrainConfig, shadow) -> str:
+        """Pick an optimizer that exists on this device.
+
+        8-bit (bitsandbytes) and fused AdamW are CUDA-only; on CPU fall back to
+        plain adamw_torch instead of crashing.
+        """
+        if self.device != "cuda":
+            if config.optim.endswith("8bit") or "paged" in config.optim:
+                return "adamw_torch"
+            return config.optim if config.optim != "adamw_torch_fused" else "adamw_torch"
+        return "adamw_torch_fused" if shadow.fused_optimizer else config.optim
 
     def _finetune_dpo(self, dataset: Dataset, config: TrainConfig, callbacks: Callbacks,
                       output_dir: str, eval_dataset: Dataset | None, spec) -> FinetuneResult:
@@ -283,16 +379,16 @@ class TorchBackend(Backend):
             disable_tqdm=True,
             report_to=list(config.report_to),
         )
-        trainer = DPOTrainer(
-            model=self.model,
-            args=args,
-            train_dataset=rows(dataset),
-            eval_dataset=rows(eval_dataset) if has_eval else None,
-            processing_class=self.tokenizer,
-            peft_config=peft_config,
-            callbacks=[_Bridge()],
-        )
         with quiet_backend():
+            trainer = DPOTrainer(
+                model=self.model,
+                args=args,
+                train_dataset=rows(dataset),
+                eval_dataset=rows(eval_dataset) if has_eval else None,
+                processing_class=self.tokenizer,
+                peft_config=peft_config,
+                callbacks=[_Bridge()],
+            )
             result = trainer.train()
         trainer.save_model(output_dir)
         self.tokenizer.save_pretrained(output_dir)
@@ -309,19 +405,22 @@ class TorchBackend(Backend):
     def chat(self, messages, *, tools=None, max_new_tokens, temperature, top_p, **kwargs) -> str:
         import torch  # noqa: PLC0415
 
-        inputs = self.tokenizer.apply_chat_template(
-            messages, tools=tools, add_generation_prompt=True, return_tensors="pt",
-        ).to(self.model.device)
+        enc = self.tokenizer.apply_chat_template(
+            messages, tools=tools, add_generation_prompt=True,
+            return_tensors="pt", return_dict=True,
+        )
+        enc = {k: v.to(self.model.device) for k, v in enc.items()}
+        sampling = ({"do_sample": True, "temperature": temperature, "top_p": top_p}
+                    if temperature > 0 else {"do_sample": False})
         with torch.no_grad():
             out = self.model.generate(
-                inputs,
+                **enc,
                 max_new_tokens=max_new_tokens,
-                temperature=temperature,
-                top_p=top_p,
-                do_sample=temperature > 0,
                 pad_token_id=self.tokenizer.pad_token_id,
+                **sampling,
             )
-        return self.tokenizer.decode(out[0][inputs.shape[1]:], skip_special_tokens=True)
+        prompt_len = enc["input_ids"].shape[1]
+        return self.tokenizer.decode(out[0][prompt_len:], skip_special_tokens=True)
 
     def save(self, path: str, *, fmt: str = "adapter") -> str:
         Path(path).mkdir(parents=True, exist_ok=True)
