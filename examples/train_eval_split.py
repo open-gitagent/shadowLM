@@ -44,14 +44,10 @@ run = model.finetune(
     method="lora",
     max_steps=60,
     learning_rate=2e-4,
-    verbose=False,
 )
 
 # 3. read the train vs. eval curves -----------------------------------------
-print(f"\nfinal   train loss = {run.loss:.4f}")
-print(f"final   eval  loss = {run.eval_loss:.4f}\n")
-
-print("step | eval loss")
+print("\nstep | eval loss")
 print("-----+----------")
 for m in run.eval_metrics:
     print(f"{m.step:>4} | {m.loss:.4f}")

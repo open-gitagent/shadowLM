@@ -34,9 +34,9 @@ ds = slm.Dataset.from_list(facts)
 model = slm.load(MODEL, accelerator="shadow")
 print("BASE  :", model.generate(QUESTION, max_new_tokens=24, temperature=0.0).strip())
 
-run = model.finetune(ds, method="lora", max_steps=60, learning_rate=2e-4, verbose=False)
+run = model.finetune(ds, method="lora", max_steps=60, learning_rate=2e-4)
 saved = model.save(ADAPTER_DIR, fmt="adapter")
-print(f"\ntrained: final loss {run.loss:.4f}; adapter saved → {saved}")
+print(f"\nadapter saved → {saved}")
 
 # 2. load the adapter into a brand-new model and infer ----------------------
 del model  # forget the trained model entirely
