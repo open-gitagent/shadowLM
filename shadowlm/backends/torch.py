@@ -90,8 +90,18 @@ class TorchBackend(Backend):
             from peft import PeftModel  # noqa: PLC0415
 
             from .. import more  # noqa: PLC0415
+            from .. import bottleneck  # noqa: PLC0415
+            bn_cfg = bottleneck.read_config(adapter)
+            bitfit_marker = (Path(adapter) / "bitfit_config.json").exists()
             more_cfg = more.read_config(adapter)
-            if more_cfg:
+            if bitfit_marker:
+                from safetensors.torch import load_file  # noqa: PLC0415
+                self.model.load_state_dict(
+                    load_file(str(Path(adapter) / "bitfit.safetensors")), strict=False)
+            elif bn_cfg:
+                bottleneck.attach_torch(self.model, rank=bn_cfg["rank"])
+                bottleneck.load_torch(self.model, adapter)
+            elif more_cfg:
                 # Rebuild in the training order: wrap attention, peft on top,
                 # then the trained wrapper weights and the fact index.
                 self._more_index = more.MemoryIndex.load(adapter)
@@ -136,22 +146,9 @@ class TorchBackend(Backend):
             return self._finetune_more(dataset, config, callbacks, output_dir,
                                        eval_dataset)
 
-        # Adapter methods (lora/dora/cpt/...) attach PEFT adapters once; a spec
-        # with adapter="none" trains the full weights. raw_text methods already
-        # train on plain text because to_texts applies no chat template.
-        already_peft = getattr(self.model, "peft_config", None) is not None
-        if spec.trains_adapters and not already_peft:
-            from peft import LoraConfig, get_peft_model  # noqa: PLC0415
-            self.model = get_peft_model(self.model, LoraConfig(
-                r=config.lora_r,
-                lora_alpha=config.lora_alpha,
-                lora_dropout=config.lora_dropout,
-                target_modules=list(config.resolved_target_modules()),
-                use_dora=(spec.adapter == methods.ADAPTER_DORA),
-                use_rslora=config.use_rslora,
-                bias="none",
-                task_type="CAUSAL_LM",
-            ))
+        # Attach whatever surface the method trains (LoRA family, soft-prompt
+        # family, biases, bottlenecks, or nothing for full fine-tunes).
+        self._attach_trainable(spec, config, callbacks)
 
         train_ds = self._train_dataset(dataset, raw_text=spec.raw_text)
         has_eval = eval_dataset is not None and len(eval_dataset) > 0
@@ -233,8 +230,8 @@ class TorchBackend(Backend):
                 callbacks=[_Bridge()],
             )
             result = trainer.train(resume_from_checkpoint=config.resume_from_checkpoint)
-        trainer.save_model(output_dir)
-        self.tokenizer.save_pretrained(output_dir)
+        self._restore_inference_state()
+        self._save_trained(trainer, spec, config, output_dir)
         final_loss = float(result.training_loss) if result else None
         callbacks.log(f"[torch:{self.device}] done · final loss {final_loss} · checkpoint {output_dir}")
         return FinetuneResult(checkpoint=output_dir, final_loss=final_loss)
@@ -567,6 +564,89 @@ class TorchBackend(Backend):
         final_loss = float(result.training_loss) if result else None
         callbacks.log(f"[torch:{self.device}] more done · final loss {final_loss} · {out}")
         return FinetuneResult(checkpoint=str(out), final_loss=final_loss)
+
+    def _attach_trainable(self, spec, config: TrainConfig, callbacks: Callbacks) -> None:
+        """Attach the method's trainable surface once (repeat finetunes reuse it)."""
+        adapter = spec.adapter
+        if adapter == methods.ADAPTER_NONE:
+            return  # full fine-tune: everything already trains
+        if getattr(self.model, "peft_config", None) is not None \
+                or hasattr(self.model, "_shadow_surface"):
+            return  # already attached by a previous finetune on this model
+
+        if adapter in (methods.ADAPTER_LORA, methods.ADAPTER_DORA):
+            from peft import LoraConfig, get_peft_model  # noqa: PLC0415
+            self.model = get_peft_model(self.model, LoraConfig(
+                r=config.lora_r, lora_alpha=config.lora_alpha,
+                lora_dropout=config.lora_dropout,
+                target_modules=list(config.resolved_target_modules()),
+                use_dora=(adapter == methods.ADAPTER_DORA),
+                use_rslora=config.use_rslora,
+                bias="none", task_type="CAUSAL_LM",
+            ))
+        elif adapter == "prefix":
+            raise RuntimeError(
+                "prefix tuning is blocked by an upstream incompatibility between "
+                "peft's KV-prefix injection and transformers 5's attention masks "
+                "(verified to crash). Use method='prompt' or 'ptuning' instead."
+            )
+        elif adapter in ("prompt", "ptuning"):
+            from peft import (  # noqa: PLC0415
+                PromptEncoderConfig,
+                PromptTuningConfig,
+                get_peft_model,
+            )
+            cfg_cls = {"prompt": PromptTuningConfig,
+                       "ptuning": PromptEncoderConfig}[adapter]
+            self.model = get_peft_model(self.model, cfg_cls(
+                task_type="CAUSAL_LM",
+                num_virtual_tokens=config.num_virtual_tokens,
+            ))
+            callbacks.log(f"[torch] {adapter}: {config.num_virtual_tokens} virtual tokens")
+        elif adapter == "bitfit":
+            for p in self.model.parameters():
+                p.requires_grad_(False)
+            n = 0
+            for name, p in self.model.named_parameters():
+                if name.endswith(".bias"):
+                    p.requires_grad_(True)
+                    n += p.numel()
+            if n == 0:
+                raise RuntimeError(
+                    "method='bitfit' found no bias parameters — this architecture "
+                    "(Llama-style) has none. Use a Qwen-family model, or another method."
+                )
+            self.model._shadow_surface = "bitfit"
+            callbacks.log(f"[torch] bitfit: training {n:,} bias parameters")
+        elif adapter == "bottleneck":
+            from .. import bottleneck  # noqa: PLC0415
+            for p in self.model.parameters():
+                p.requires_grad_(False)
+            wrapped = bottleneck.attach_torch(self.model, rank=config.lora_r)
+            self.model._shadow_surface = "bottleneck"
+            callbacks.log(f"[torch] bottleneck adapters (r={config.lora_r}) on {wrapped} layers")
+
+    def _save_trained(self, trainer, spec, config: TrainConfig, output_dir: str) -> None:
+        """Persist what the method trained, in a form load(adapter=) can rebuild."""
+        import json as _json  # noqa: PLC0415
+
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        adapter = spec.adapter
+        if adapter == "bitfit":
+            from safetensors.torch import save_file  # noqa: PLC0415
+            state = {k: v.contiguous() for k, v in self.model.state_dict().items()
+                     if k.endswith(".bias")}
+            save_file(state, str(out / "bitfit.safetensors"))
+            (out / "bitfit_config.json").write_text(_json.dumps(
+                {"type": "bitfit", "base_model": self.model_name}, indent=2))
+        elif adapter == "bottleneck":
+            from .. import bottleneck  # noqa: PLC0415
+            bottleneck.save_torch(self.model, out)
+            bottleneck.write_config(out, base_model=self.model_name, rank=config.lora_r)
+        else:
+            trainer.save_model(str(out))
+        self.tokenizer.save_pretrained(str(out))
 
     def _restore_inference_state(self) -> None:
         """Trainers leave train-mode residue (use_cache off, train() flags)."""
