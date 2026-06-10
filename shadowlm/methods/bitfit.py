@@ -6,12 +6,12 @@ bias parameters at all — shadowLM raises a clear error if there is nothing to
 train (Qwen-family attention biases work well).
 """
 
-from .base import TrainingMethod, register
+from .base import ADAPTER_BITFIT, TrainingMethod, register
 
 BITFIT = register(TrainingMethod(
     name="bitfit",
     description="train only the bias terms (~0.1% of params)",
     default_learning_rate=5e-4,
-    adapter="bitfit",
+    adapter=ADAPTER_BITFIT,
     quantized_base=False,  # bias grads through quantized layers go NaN (verified)
 ))

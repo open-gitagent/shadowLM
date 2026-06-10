@@ -5,11 +5,11 @@ weights stay frozen. The cheapest technique by parameter count. torch backend
 (peft); needs a relatively high learning rate.
 """
 
-from .base import TrainingMethod, register
+from .base import ADAPTER_PROMPT, TrainingMethod, register
 
 PROMPT = register(TrainingMethod(
     name="prompt",
     description="soft prompts — learned virtual tokens, model frozen",
     default_learning_rate=5e-3,
-    adapter="prompt",
+    adapter=ADAPTER_PROMPT,
 ))

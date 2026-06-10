@@ -5,11 +5,11 @@ through a trainable down-project → GELU → up-project residual (up zero-init 
 training starts as a no-op). Bottleneck width = `lora_r`. Both backends.
 """
 
-from .base import TrainingMethod, register
+from .base import ADAPTER_BOTTLENECK, TrainingMethod, register
 
 ADAPTER = register(TrainingMethod(
     name="adapter",
     description="bottleneck adapter modules inserted after each transformer layer",
     default_learning_rate=1e-4,
-    adapter="bottleneck",
+    adapter=ADAPTER_BOTTLENECK,
 ))
