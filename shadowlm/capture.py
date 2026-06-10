@@ -43,6 +43,23 @@ class _Call:
     ts: float = field(default_factory=time.time)
 
 
+def _wire_message(message: dict) -> dict:
+    """Internal message → OpenAI wire shape (tool arguments as a JSON string,
+    each call carrying an id)."""
+    if not message.get("tool_calls"):
+        return message
+    wired = dict(message)
+    wired["tool_calls"] = [{
+        "id": f"call_{uuid.uuid4().hex[:24]}",
+        "type": "function",
+        "function": {
+            "name": c["function"]["name"],
+            "arguments": json.dumps(c["function"].get("arguments") or {}),
+        },
+    } for c in message["tool_calls"]]
+    return wired
+
+
 def _is_prefix(shorter: list[dict], longer: list[dict]) -> bool:
     if len(shorter) > len(longer):
         return False
@@ -57,7 +74,9 @@ class CaptureProxy:
         self.host = host
         self.port = port
         self.calls: list[_Call] = []
-        self._lock = threading.Lock()
+        self._lock = threading.Lock()       # guards the calls list
+        self._gen_lock = threading.Lock()   # serializes generation — neither
+                                            # backend's generate is thread-safe
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
@@ -73,12 +92,37 @@ class CaptureProxy:
             def log_message(self, *args):  # quiet — shadowLM owns the console
                 pass
 
+            def do_GET(self):  # noqa: N802 — clients health-check /v1/models
+                if self.path.rstrip("/").endswith("/models"):
+                    data = json.dumps({"object": "list", "data": [{
+                        "id": proxy.model.name, "object": "model",
+                        "created": int(time.time()), "owned_by": "shadowlm",
+                    }]}).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
+                else:
+                    self.send_error(404)
+
             def do_POST(self):  # noqa: N802 (http.server API)
                 if not self.path.rstrip("/").endswith("/chat/completions"):
                     self.send_error(404)
                     return
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 reply = proxy._serve(body, self.headers.get("x-session-id"))
+                if body.get("stream"):
+                    # synthetic provider-shaped stream from the completed
+                    # response — most real harnesses request streaming
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/event-stream")
+                    self.send_header("Cache-Control", "no-cache")
+                    self.end_headers()
+                    for chunk in proxy._stream_chunks(reply):
+                        self.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode())
+                    self.wfile.write(b"data: [DONE]\n\n")
+                    return
                 data = json.dumps(reply).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
@@ -107,13 +151,14 @@ class CaptureProxy:
     def _serve(self, body: dict, session: str | None) -> dict:
         messages = body.get("messages", [])
         tools = body.get("tools")
-        reply = self.model.chat(
-            messages,
-            tools=tools,
-            temperature=body.get("temperature", 0.7),
-            top_p=body.get("top_p", 0.95),
-            max_new_tokens=body.get("max_tokens") or body.get("max_completion_tokens") or 512,
-        )
+        with self._gen_lock:  # parallel harness calls are the norm; serialize inference
+            reply = self.model.chat(
+                messages,
+                tools=tools,
+                temperature=body.get("temperature", 0.7),
+                top_p=body.get("top_p", 0.95),
+                max_new_tokens=body.get("max_tokens") or body.get("max_completion_tokens") or 512,
+            )
         message = reply.to_message()
         with self._lock:
             self.calls.append(_Call(session=session or "", messages=list(messages),
@@ -125,11 +170,31 @@ class CaptureProxy:
             "model": self.model.name,
             "choices": [{
                 "index": 0,
-                "message": message,
+                "message": _wire_message(message),
                 "finish_reason": "tool_calls" if reply.tool_calls else "stop",
             }],
             "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
         }
+
+    @staticmethod
+    def _stream_chunks(reply: dict):
+        """A completed response re-emitted as chat.completion.chunk deltas."""
+        base = {"id": reply["id"], "object": "chat.completion.chunk",
+                "created": reply["created"], "model": reply["model"]}
+        choice = reply["choices"][0]
+        msg = choice["message"]
+
+        def chunk(delta, finish=None):
+            return {**base, "choices": [{"index": 0, "delta": delta,
+                                         "finish_reason": finish}]}
+
+        yield chunk({"role": "assistant"})
+        if msg.get("content"):
+            yield chunk({"content": msg["content"]})
+        if msg.get("tool_calls"):
+            yield chunk({"tool_calls": [
+                {**c, "index": i} for i, c in enumerate(msg["tool_calls"])]})
+        yield chunk({}, finish=choice["finish_reason"])
 
     # ---- reconstruction -----------------------------------------------------
     def trajectories(self) -> list[Trajectory]:
@@ -147,11 +212,14 @@ class CaptureProxy:
             convo = call.messages + [call.response]
             buckets = episodes.setdefault(call.session, [])
             for bucket in reversed(buckets):
-                if _is_prefix(bucket[0], call.messages) or _is_prefix(call.messages, bucket[0]):
-                    bucket[0] = convo  # this call extends the episode
+                if _is_prefix(bucket[0], call.messages):
+                    # genuinely extends the episode — replace with the longer view
+                    bucket[0] = convo
                     bucket[1] = call.tools or bucket[1]
                     break
             else:
+                # new conversation, or a regeneration from an earlier point —
+                # keep it as its own trajectory rather than dropping history
                 buckets.append([convo, call.tools])
         out = []
         for session, buckets in episodes.items():
