@@ -74,8 +74,9 @@ embedded into a frozen FAISS index; wrapped attention layers retrieve each
 token's nearest memories and attend over them through small trainable
 projections (plus LoRA for capacity). The model learns to look facts up
 instead of hallucinating them, and the index travels inside the adapter dir —
-`load(adapter=...)` rebuilds everything. Needs `pip install
-shadowlm[retrieval]`; mlx today, torch next.
+`load(adapter=...)` rebuilds everything (verified on both backends: exact
+recall of held-in facts, before and after reload). Needs
+`pip install shadowlm[retrieval]`.
 
 ### Agent RL: trajectories + judge rewards
 

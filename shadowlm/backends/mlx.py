@@ -149,6 +149,13 @@ class MLXBackend(Backend):
             quantize_hint="Load a quantized repo (e.g. an mlx-community *-4bit model)",
             dequantize_hint="Load a 16-bit repo",
         )
+        if getattr(self, "_more_index", None) is not None \
+                and spec.adapter != methods.ADAPTER_MORE:
+            raise RuntimeError(
+                "this model has retrieval experts attached (method='more'); the "
+                "standard compiled trainer can't run over them. Load a fresh "
+                "model to train with other methods."
+            )
         if spec.trainer == "dpo":
             return self._finetune_dpo(dataset, config, callbacks, output_dir,
                                       eval_dataset, spec, shadow, iters, num_layers)
