@@ -113,6 +113,20 @@ class MLXBackend(Backend):
             bottleneck.attach_mlx(self.model, rank=bn_cfg["rank"])
             self.model.load_weights(str(Path(adapter) / "adapters.safetensors"),
                                     strict=False)
+        if adapter and not (more_cfg or bn_cfg):
+            # mlx-lm's load_adapters converts layers but never freezes the
+            # model; without this, continued training updates every parameter.
+            import mlx.nn as nn  # noqa: PLC0415
+            from mlx_lm.tuner.dora import DoRAEmbedding, DoRALinear  # noqa: PLC0415
+            from mlx_lm.tuner.lora import LoRAEmbedding, LoRALinear  # noqa: PLC0415
+            self.model.freeze()
+            kinds = (LoRALinear, LoRAEmbedding, DoRALinear, DoRAEmbedding)
+            for _, mod in self.model.named_modules():
+                if isinstance(mod, kinds):
+                    # only the adapter tensors — recursing would unfreeze the
+                    # wrapped base layer too
+                    mod.unfreeze(keys=["lora_a", "lora_b", "m"],
+                                 strict=False, recurse=False)
         if more_cfg:
             from mlx_lm.tuner.utils import linear_to_lora_layers  # noqa: PLC0415
 
@@ -141,7 +155,7 @@ class MLXBackend(Backend):
         model, tokenizer = self.model, self.tokenizer
         n = len(dataset)
         iters = resolve_total_steps(config, n)
-        num_layers = min(DEFAULT_LORA_LAYERS, len(model.layers))
+        num_layers = len(model.layers)
         has_eval = eval_dataset is not None and len(eval_dataset) > 0
 
         shadow = accel.plan(self.accelerator, backend="mlx", n_layers=len(model.layers))
@@ -177,7 +191,7 @@ class MLXBackend(Backend):
         if spec.adapter == methods.ADAPTER_MORE:
             return self._finetune_more(dataset, config, callbacks, output_dir,
                                        eval_dataset, iters)
-        if spec.adapter in ("prompt", "ptuning"):
+        if spec.adapter in (methods.ADAPTER_PROMPT, methods.ADAPTER_PTUNING):
             raise RuntimeError(
                 f"method={config.method!r} (soft-prompt family) runs on the torch "
                 "backend — load with backend='torch'."
@@ -188,7 +202,7 @@ class MLXBackend(Backend):
             model.freeze()
             for layer in model.layers:
                 layer.unfreeze()
-        elif spec.adapter == "bitfit":
+        elif spec.adapter == methods.ADAPTER_BITFIT:
             if not self._lora_applied:
                 model.freeze()
                 model.unfreeze(keys=["bias"], strict=False)
@@ -202,7 +216,7 @@ class MLXBackend(Backend):
                 callbacks.log(f"[mlx] bitfit: training {n_bias:,} bias parameters")
                 self._lora_applied = True
             num_layers = len(model.layers)
-        elif spec.adapter == "bottleneck":
+        elif spec.adapter == methods.ADAPTER_BOTTLENECK:
             if not self._lora_applied:
                 from .. import bottleneck  # noqa: PLC0415
                 model.freeze()
@@ -211,11 +225,14 @@ class MLXBackend(Backend):
                               f"on {wrapped} layers")
                 self._lora_applied = True
             num_layers = len(model.layers)
-        elif not self._lora_applied:
-            model.freeze()
-            linear_to_lora_layers(model, num_layers, self._lora_params(config),
-                                  use_dora=(spec.adapter == methods.ADAPTER_DORA))
-            self._lora_applied = True
+        elif spec.adapter in (methods.ADAPTER_LORA, methods.ADAPTER_DORA):
+            if not self._lora_applied:
+                model.freeze()
+                linear_to_lora_layers(model, num_layers, self._lora_params(config),
+                                      use_dora=(spec.adapter == methods.ADAPTER_DORA))
+                self._lora_applied = True
+        else:
+            raise RuntimeError(f"mlx backend has no attach path for adapter kind {spec.adapter!r}")
 
         out = Path(output_dir)
         out.mkdir(parents=True, exist_ok=True)
@@ -297,7 +314,7 @@ class MLXBackend(Backend):
             mx.eval(model.parameters())
 
         self._write_adapter_config(out, config, num_layers)
-        if spec.adapter == "bottleneck":
+        if spec.adapter == methods.ADAPTER_BOTTLENECK:
             from .. import bottleneck  # noqa: PLC0415
             bottleneck.write_config(out, base_model=self.model_name, rank=config.lora_r)
         # Remember enough to write a self-contained adapter later via save().
@@ -418,7 +435,7 @@ class MLXBackend(Backend):
         from mlx_lm.tuner.utils import linear_to_lora_layers  # noqa: PLC0415
 
         model, tokenizer = self.model, self.tokenizer
-        num_layers = min(DEFAULT_LORA_LAYERS, len(model.layers))
+        num_layers = len(model.layers)
         if not self._lora_applied:
             model.freeze()
             linear_to_lora_layers(model, num_layers, self._lora_params(config),
@@ -767,12 +784,28 @@ class MLXBackend(Backend):
 
         out = Path(path)
         out.mkdir(parents=True, exist_ok=True)
+        cfg = getattr(self, "_train_config", None)
+        special = cfg is not None and cfg.method in ("bitfit", "adapter", "more")
         if fmt == "merged":
+            if special:
+                raise RuntimeError(
+                    f"fmt='merged' isn't supported for method {cfg.method!r}")
             # Save the full (LoRA-applied) weight set as a standalone model.
             self.model.save_weights(str(out / "model.safetensors"))
         else:
             adapter_weights = dict(tree_flatten(self.model.trainable_parameters()))
             mx.save_safetensors(str(out / "adapters.safetensors"), adapter_weights)
+            if cfg is not None and cfg.method == "adapter":
+                from .. import bottleneck  # noqa: PLC0415
+                bottleneck.write_config(out, base_model=self.model_name,
+                                        rank=cfg.lora_r)
+            if getattr(self, "_more_index", None) is not None and cfg is not None \
+                    and cfg.method == "more":
+                from .. import more  # noqa: PLC0415
+                self._more_index.save(out)
+                more.write_config(out, base_model=self.model_name, rank=cfg.lora_r,
+                                  k=cfg.retrieval_k,
+                                  num_layers=getattr(self, "_num_layers", cfg.retrieval_layers))
             # Write the config alongside the weights so the dir is self-contained
             # and reloadable via load(adapter=path) / mlx_lm.load(adapter_path=path).
             cfg = getattr(self, "_train_config", None)
