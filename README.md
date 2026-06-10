@@ -1,10 +1,8 @@
-# shadowLM
+# ShadowLM Trainer
 
 **A fine-tuning SDK that fits in your head.**
 
-`datasets → finetune → inference` — five lines, twelve training methods, one
-argument to switch between them. Develop on a MacBook, ship the same script to
-a CUDA box.
+> **Any open model. Any harness. Any method.**
 
 ```python
 import shadowlm as slm
@@ -21,17 +19,19 @@ model.save("out/", fmt="adapter")                            # ship it
 Change `method="lora"` to `qlora`, `dora`, `full`, `dpo`, `grpo`, `bitfit`,
 `prompt`, `adapter`, `more`… and nothing else changes. That's the whole idea.
 
-## Why shadowLM
+## Why ShadowLM Trainer
 
 - **Twelve training methods, one argument.** LoRA to full fine-tuning to DPO to
   RL-from-rewards to soft prompts — every technique is a declarative spec the
   backends read. Adding your own is one file.
-- **Mixture of Retrieval Experts (`more`)** — shadowLM's signature method. Facts
+- **Mixture of Retrieval Experts (`more`)** — ShadowLM's signature method. Facts
   are embedded into a frozen index fused *into attention*; the model learns to
   look facts up instead of hallucinating them. Exact recall of held-in facts,
   verified on both backends, before and after reload.
 - **Agent RL, built in.** Collect multi-step rollouts, score whole episodes with
   an LLM judge, train with DPO or trajectory-level GRPO. No reward math required.
+  `slm.capture(model)` turns any OpenAI-compatible harness into trajectories —
+  the harness runs unchanged.
 - **The shadow accelerator.** One knob (`accelerator="shadow"`) that turns on the
   optimizations that are *safe for your model and hardware* — and logs exactly
   what it enabled. No silent magic.
@@ -113,9 +113,10 @@ reload). Needs `pip install shadowlm[retrieval]`.
 ### Train any harness without opening the box
 
 Every agent must call a model, so the model API is the one boundary that
-always exists. `slm.capture(model)` serves an OpenAI-compatible endpoint,
-records every call your harness makes, and reconstructs multi-turn episodes
-(prefix-merged) into trajectories:
+always exists. `slm.capture(model)` serves an OpenAI-compatible endpoint
+(SSE streaming included; parallel calls serialized safely), records every
+call your harness makes, and reconstructs multi-turn episodes (prefix-merged,
+branch-safe) into trajectories:
 
 ```python
 with slm.capture(model) as proxy:            # http://127.0.0.1:8327/v1
@@ -174,6 +175,9 @@ pip install -e '.[mlx]'        # Apple Silicon   (or '.[torch]' on CUDA/CPU)
 python examples/quickstart.py   # datasets → finetune → inference, end to end
 ```
 
+No hardware handy? `examples/colab_quickstart.ipynb` runs the same flow on a
+free Colab GPU.
+
 Output (MLX, Apple Silicon — a 0.5B model, 3.5 seconds of training):
 
 ```
@@ -205,7 +209,7 @@ model.save("out/", fmt="merged")
 
 ## The shadow accelerator
 
-`accelerator="shadow"` is shadowLM's in-house optimization layer. It sits on top of
+`accelerator="shadow"` is ShadowLM's in-house optimization layer. It sits on top of
 whichever backend is active and turns on the speed/memory optimizations that are
 *safe for the current model and hardware*:
 
@@ -308,6 +312,7 @@ shadowlm/
   more.py              mixture of retrieval experts (index + attention fusion)
   bottleneck.py        Houlsby-style bottleneck adapters
   rl.py                Trajectory, TrajectoryGroup, judge rewards
+  capture.py           OpenAI-compatible capture proxy — record any harness
   methods/             training techniques — one module per method
     base.py            TrainingMethod spec + registry
     lora qlora dora full cpt dpo grpo more bitfit soft_prompt ptuning adapter
@@ -325,8 +330,14 @@ examples/
   tool_calling.py      tool schemas in, parsed calls out, tool loop, training
   runs_and_charts.py   run history + terminal loss/LR/eval charts
   harness_capture.py   record a black-box agent through the proxy, then train
+  colab_quickstart.ipynb  the full tour on a Colab GPU
+  colab_gpu_tests.ipynb   CUDA verification suite (method × precision matrix)
   retrieval_experts.py mixture of retrieval experts — exact fact recall
+  colab_quickstart.ipynb  the quickstart in a browser — free Colab GPU, no setup
   sample_dataset.jsonl
+tests/
+  gpu/test_cuda.py     CUDA verification — every method × every legal precision,
+                       each cell: train → reload → generate → continue training
 ```
 
 ## The road ahead
@@ -351,7 +362,11 @@ progress bar you see in the examples.
 ### ShadowLM Studio
 
 The multi-user destination: a web service and remote-GPU workers wrapping this
-SDK.
+SDK. Studio runs the enterprise migration loop — baseline on a rented frontier
+model → collect & fine-tune → **shadow mode** (your model runs behind the same
+agent until it's proven) → gradual switch. That loop is where the name comes
+from: the small model you own *shadows* the big one you rent, until the evals
+say it doesn't have to.
 
 - **Job queue → CUDA workers** — submit from the browser or the SDK, train on
   the GPU pool; the torch backend is already the production path.
@@ -361,6 +376,8 @@ SDK.
   made shared and searchable.
 - **Dataset + adapter registry** — upload, version, and one-click attach what
   the SDK's `Dataset` and `load(adapter=)` already understand.
+- **Eval gates** — advance traffic only when quality holds and the savings beat
+  the cost: task-level evals and cost-per-task, built on the SDK's run records.
 
 Current status:
 
@@ -368,6 +385,10 @@ Current status:
 - [x] 12 training methods incl. MoRE, trajectory GRPO, judge rewards
 - [x] Train/eval split with held-out validation loss
 - [x] Shadow accelerator (gradient checkpointing, flash-attn, fused optim)
+- [x] Harness capture proxy — OpenAI-compatible, SSE streaming, trajectory
+      reconstruction
+- [ ] CUDA witness run — `tests/gpu/test_cuda.py` (suite is written: every
+      method × every legal precision; awaiting its first pass on a GPU box)
 - [ ] Inference slice: streaming generation, adapter hot-load, batch generate
 - [ ] ShadowLM CLI
 - [ ] ShadowLM Studio
