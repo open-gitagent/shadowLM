@@ -15,7 +15,7 @@ Driven hard (many steps, facts-style data), the model learns to *recall* facts
 from its memory experts instead of hallucinating them.
 
 Index embeddings come from a small sentence-transformer (384-dim); retrieval is
-a FAISS L2 lookup. Needs `pip install shadowlm[retrieval]`.
+an exact L2 lookup. Needs `pip install shadowlm[retrieval]`.
 """
 
 from __future__ import annotations
@@ -26,33 +26,26 @@ from pathlib import Path
 EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 INDEX_DIM = 384
 
-_INDEX_FILE = "memory_index.faiss"
 _STORE_FILE = "memory_store.npz"
 _CONFIG_FILE = "more_config.json"
 
 
 class MemoryIndex:
-    """The frozen memory: fact embeddings behind a FAISS nearest-neighbor index.
+    """The frozen memory: fact embeddings behind an exact nearest-neighbor index.
 
     Keys are embeddings of each fact's prompt side (what a query should match);
-    values are embeddings of the full fact (what gets fused back in).
+    values are embeddings of the full fact (what gets fused back in). Search is
+    exact brute-force in numpy — dependency-free and OpenMP-free (an in-process
+    ANN library's OpenMP runtime conflicts with torch's). At million-fact scale
+    the GPU worker swaps in an approximate index; the interface stays the same.
     """
 
     def __init__(self, keys, values) -> None:
-        import os  # noqa: PLC0415
-
-        # faiss and torch each bundle an OpenMP runtime; loaded together (torch
-        # arrives via transformers) the duplicate runtimes segfault on faiss's
-        # first parallel search. Allow the duplicate and search single-threaded.
-        os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "True")
-        import faiss  # noqa: PLC0415
         import numpy as np  # noqa: PLC0415
 
-        faiss.omp_set_num_threads(1)
         self.keys = np.ascontiguousarray(keys, dtype="float32")
         self.values = np.ascontiguousarray(values, dtype="float32")
-        self._faiss = faiss.IndexFlatL2(self.keys.shape[1])
-        self._faiss.add(self.keys)
+        self._keys_sq = (self.keys ** 2).sum(axis=1)  # cached for L2 distance
 
     @classmethod
     def build(cls, inputs: list[str], outputs: list[str]) -> "MemoryIndex":
@@ -70,11 +63,11 @@ class MemoryIndex:
 
         import numpy as np  # noqa: PLC0415
 
-        for dep in ("sentence_transformers", "faiss"):
+        for dep in ("sentence_transformers",):
             if importlib.util.find_spec(dep) is None:
                 raise ImportError(
-                    "mixture of retrieval experts needs sentence-transformers + "
-                    "faiss: pip install shadowlm[retrieval]"
+                    "mixture of retrieval experts needs sentence-transformers: "
+                    "pip install shadowlm[retrieval]"
                 )
         facts = [f"{i}\n{o}" for i, o in zip(inputs, outputs)]
         with tempfile.TemporaryDirectory() as tmp:
@@ -106,16 +99,18 @@ class MemoryIndex:
 
         q = np.ascontiguousarray(queries, dtype="float32")
         k = min(k, len(self.keys))
-        _, idx = self._faiss.search(q, k)
+        # exact L2: ||q||² - 2 q·K + ||K||² (first term constant per row — skip)
+        dist = self._keys_sq[None, :] - 2.0 * (q @ self.keys.T)
+        idx = np.argpartition(dist, kth=k - 1, axis=1)[:, :k]
+        # sort the k hits for determinism
+        order = np.argsort(np.take_along_axis(dist, idx, axis=1), axis=1)
+        idx = np.take_along_axis(idx, order, axis=1)
         return self.keys[idx], self.values[idx]
 
     def save(self, directory: str | Path) -> None:
-        import faiss  # noqa: PLC0415
         import numpy as np  # noqa: PLC0415
 
-        directory = Path(directory)
-        faiss.write_index(self._faiss, str(directory / _INDEX_FILE))
-        np.savez(directory / _STORE_FILE, keys=self.keys, values=self.values)
+        np.savez(Path(directory) / _STORE_FILE, keys=self.keys, values=self.values)
 
     @classmethod
     def load(cls, directory: str | Path) -> "MemoryIndex":
@@ -146,7 +141,7 @@ def make_memory_attention(base_attn, hidden_size: int, index: MemoryIndex,
 
         def __call__(self, x, *args, **kwargs):
             out = self.base(x, *args, **kwargs)
-            # project in float32 — the index, faiss, and numpy all live there
+            # project in float32 — the index and numpy live there
             q = self.q_out(self.q_in(x.astype(mx.float32)))  # [B, L, INDEX_DIM]
 
             # retrieval — frozen; detach, materialize, and copy before numpy
@@ -182,6 +177,93 @@ def attach(model, index: MemoryIndex, *, rank: int, k: int, num_layers: int) -> 
         layer.self_attn = make_memory_attention(attn, size, index, rank=rank, k=k)
         wrapped += 1
     return wrapped
+
+
+# ---- torch ------------------------------------------------------------------
+# PyTorch is eager, so retrieval lives directly in forward under no_grad — no
+# custom training loop needed; the standard trainer drives it.
+
+WRAPPER_PARAM_NAMES = ("q_in", "q_out", "v_in", "v_out")
+_WRAPPER_WEIGHTS_FILE = "retrieval_experts.pt"
+
+
+def make_memory_attention_torch(base_attn, hidden_size: int, index: MemoryIndex,
+                                *, rank: int, k: int):
+    """Torch twin of `make_memory_attention` — wraps one HF attention module."""
+    import math  # noqa: PLC0415
+
+    import torch  # noqa: PLC0415
+    from torch import nn  # noqa: PLC0415
+
+    class MemoryAttention(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.base = base_attn
+            self.q_in = nn.Linear(hidden_size, rank, bias=False)
+            self.q_out = nn.Linear(rank, INDEX_DIM, bias=False)
+            self.v_in = nn.Linear(INDEX_DIM, rank, bias=False)
+            self.v_out = nn.Linear(rank, hidden_size, bias=False)
+            nn.init.zeros_(self.v_out.weight)  # start as a no-op
+            self._index = index  # plain attribute — not a parameter
+
+        def forward(self, hidden_states, *args, **kwargs):
+            out = self.base(hidden_states, *args, **kwargs)
+            attn_out = out[0] if isinstance(out, tuple) else out
+
+            # float32 throughout: the index lives there, and autocast may have
+            # produced bf16 activations, which numpy cannot represent
+            q = self.q_out(self.q_in(hidden_states.float())).float()  # [B, L, INDEX_DIM]
+            B, L, D = q.shape
+            with torch.no_grad():
+                q_np = q.detach().reshape(B * L, D).cpu().numpy()
+                keys_np, values_np = self._index.lookup(q_np, k)
+            keys = torch.from_numpy(keys_np).to(q.device).reshape(B, L, -1, D)
+            values = torch.from_numpy(values_np).to(q.device).reshape(B, L, -1, D)
+
+            scores = (q.unsqueeze(2) * keys).sum(-1) / math.sqrt(D)
+            weights = scores.softmax(-1)                       # [B, L, k]
+            memory = (weights.unsqueeze(-1) * values).sum(2)   # [B, L, D]
+
+            fused = self.v_out(self.v_in(memory)).to(attn_out.dtype)
+            if isinstance(out, tuple):
+                return (attn_out + fused,) + out[1:]
+            return attn_out + fused
+
+    return MemoryAttention()
+
+
+def attach_torch(model, index: MemoryIndex, *, rank: int, k: int,
+                 num_layers: int) -> int:
+    """Wrap the last `num_layers` attention modules of an HF causal LM."""
+    decoder = model.model if hasattr(model, "model") else model
+    layers = decoder.layers[-num_layers:] if num_layers > 0 else decoder.layers
+    hidden_size = model.config.hidden_size
+    wrapped = 0
+    for layer in layers:
+        attn = getattr(layer, "self_attn", None)
+        if attn is None or hasattr(attn, "q_in"):  # missing, or already wrapped
+            continue
+        layer.self_attn = make_memory_attention_torch(
+            attn, hidden_size, index, rank=rank, k=k)
+        wrapped += 1
+    return wrapped
+
+
+def save_torch_wrappers(model, directory: str | Path) -> None:
+    """Persist just the retrieval-projection weights from a full state dict."""
+    import torch  # noqa: PLC0415
+
+    state = {name: tensor for name, tensor in model.state_dict().items()
+             if any(f".{p}." in name for p in WRAPPER_PARAM_NAMES)}
+    torch.save(state, Path(directory) / _WRAPPER_WEIGHTS_FILE)
+
+
+def load_torch_wrappers(model, directory: str | Path) -> None:
+    import torch  # noqa: PLC0415
+
+    state = torch.load(Path(directory) / _WRAPPER_WEIGHTS_FILE,
+                       map_location="cpu", weights_only=True)
+    model.load_state_dict(state, strict=False)
 
 
 def write_config(directory: str | Path, *, base_model: str, rank: int, k: int,

@@ -23,7 +23,6 @@ preference = [
 ]
 # Mixture of Retrieval Experts (method="more") — fact index + retrieval.
 retrieval = [
-    "faiss-cpu>=1.8",
     "sentence-transformers>=3.0",
 ]
 # CUDA / CPU — the PyTorch / HuggingFace path.
