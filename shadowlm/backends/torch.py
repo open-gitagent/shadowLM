@@ -133,7 +133,8 @@ class TorchBackend(Backend):
             return self._finetune_grpo(dataset, config, callbacks, output_dir,
                                        spec, reward_fns)
         if spec.adapter == methods.ADAPTER_MORE:
-            return self._finetune_more(dataset, config, callbacks, output_dir)
+            return self._finetune_more(dataset, config, callbacks, output_dir,
+                                       eval_dataset)
 
         # Adapter methods (lora/dora/cpt/...) attach PEFT adapters once; a spec
         # with adapter="none" trains the full weights. raw_text methods already
@@ -245,10 +246,14 @@ class TorchBackend(Backend):
         from transformers import TrainerCallback  # noqa: PLC0415
         from trl import GRPOConfig, GRPOTrainer  # noqa: PLC0415
 
+        if len(dataset) and "weight" in dataset.rows[0] and "messages" in dataset.rows[0]:
+            # trajectory-native: pre-collected rollouts with group advantages
+            return self._finetune_trajectory_grpo(dataset, config, callbacks,
+                                                  output_dir, spec)
         if not reward_fns:
             raise ValueError(
-                "method='grpo' needs reward_fns=[...] — each is "
-                "fn(prompts, completions, answer, types=None) -> list[float]"
+                "method='grpo' needs reward_fns=[...] (or TrajectoryGroups) — "
+                "each fn is fn(prompts, completions, answer, types=None) -> list[float]"
             )
         if not len(dataset) or "prompt" not in dataset.rows[0]:
             raise ValueError("method='grpo' needs rows with a 'prompt' column")
@@ -326,6 +331,105 @@ class TorchBackend(Backend):
         callbacks.log(f"[torch:{self.device}] grpo done · {output_dir}")
         return FinetuneResult(checkpoint=output_dir, final_loss=final_loss)
 
+    def _finetune_trajectory_grpo(self, dataset: Dataset, config: TrainConfig,
+                                  callbacks: Callbacks, output_dir: str,
+                                  spec) -> FinetuneResult:
+        """Advantage-weighted policy gradient over collected trajectories.
+
+        Rows are {"messages", "weight"} (weight = group-relative advantage);
+        loss = weight × NLL of the assistant tokens. Eager custom loop —
+        per-sequence weighting isn't expressible in the stock trainers.
+        """
+        import random as _random  # noqa: PLC0415
+        import time as _time  # noqa: PLC0415
+
+        import torch  # noqa: PLC0415
+        import torch.nn.functional as F  # noqa: PLC0415
+
+        already_peft = getattr(self.model, "peft_config", None) is not None
+        if spec.trains_adapters and not already_peft:
+            from peft import LoraConfig, get_peft_model  # noqa: PLC0415
+            self.model = get_peft_model(self.model, LoraConfig(
+                r=config.lora_r, lora_alpha=config.lora_alpha,
+                lora_dropout=config.lora_dropout,
+                target_modules=list(config.resolved_target_modules()),
+                bias="none", task_type="CAUSAL_LM",
+            ))
+
+        def ids(msgs, **kw):
+            out = self.tokenizer.apply_chat_template(msgs, tokenize=True,
+                                                     return_dict=True, **kw)
+            return list(out["input_ids"])
+
+        examples = []
+        for row in dataset.rows:
+            msgs = row["messages"]
+            full = ids(msgs)[:config.max_seq_length]
+            prompt_len = len(ids(msgs[:-1], add_generation_prompt=True))
+            if prompt_len >= len(full):
+                continue
+            examples.append((full, prompt_len, float(row["weight"])))
+        if not examples:
+            raise ValueError("no usable trajectories after tokenization")
+
+        device = next(self.model.parameters()).device
+        pad = self.tokenizer.pad_token_id
+        batch_size = max(1, min(config.per_device_train_batch_size, len(examples)))
+        iters = resolve_total_steps(config, len(examples))
+        params = [p for p in self.model.parameters() if p.requires_grad]
+        opt = torch.optim.AdamW(params, lr=config.learning_rate,
+                                weight_decay=config.weight_decay)
+        rng = _random.Random(config.seed)
+
+        def batches():
+            while True:
+                order = list(range(len(examples)))
+                rng.shuffle(order)
+                for i in range(0, len(order) - batch_size + 1, batch_size):
+                    chunk = [examples[j] for j in order[i:i + batch_size]]
+                    L = max(len(t) for t, _, _ in chunk)
+                    toks = torch.tensor(
+                        [t + [pad] * (L - len(t)) for t, _, _ in chunk], device=device)
+                    mask = torch.tensor([
+                        [1.0 if p <= j + 1 < len(t) else 0.0 for j in range(L - 1)]
+                        for t, p, _ in chunk], device=device)
+                    weights = torch.tensor([w for _, _, w in chunk], device=device)
+                    yield toks, mask, weights
+
+        callbacks.log(
+            f"[torch:{self.device}] trajectory-grpo on {self.model_name} · "
+            f"{len(examples)} trajectories · {iters} iters · lr {config.learning_rate:g}"
+        )
+        self.model.train()
+        start = _time.time()
+        accum = max(1, config.gradient_accumulation_steps)
+        last_loss = None
+        for it, (toks, mask, weights) in zip(range(1, iters + 1), batches()):
+            logits = self.model(toks[:, :-1]).logits.float()
+            ce = F.cross_entropy(logits.transpose(1, 2), toks[:, 1:],
+                                 reduction="none")
+            per_seq = (ce * mask).sum(-1) / mask.sum(-1).clamp(min=1)
+            loss = (weights * per_seq).mean() / accum
+            loss.backward()
+            if it % accum == 0:
+                opt.step()
+                opt.zero_grad()
+            last_loss = round(float(loss) * accum, 4)
+            if it % config.logging_steps == 0:
+                callbacks.step(Metric(step=it, loss=last_loss,
+                                      lr=config.learning_rate,
+                                      elapsed_s=round(_time.time() - start, 2)))
+            if callbacks.stopped():
+                break
+        self._restore_inference_state()
+
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        self.model.save_pretrained(str(out))
+        self.tokenizer.save_pretrained(str(out))
+        callbacks.log(f"[torch:{self.device}] done · final pg loss {last_loss} · {out}")
+        return FinetuneResult(checkpoint=str(out), final_loss=last_loss)
+
     def _train_dataset(self, dataset: Dataset, *, raw_text: bool = False):
         """An HF dataset rendered the way inference will see it.
 
@@ -355,7 +459,7 @@ class TorchBackend(Backend):
         return HFDataset.from_list([{"messages": r["messages"]} for r in rows])
 
     def _finetune_more(self, dataset: Dataset, config: TrainConfig, callbacks: Callbacks,
-                       output_dir: str) -> FinetuneResult:
+                       output_dir: str, eval_dataset: Dataset | None = None) -> FinetuneResult:
         """Mixture of Retrieval Experts on torch.
 
         Eager execution lets retrieval run inside forward under no_grad, so the
@@ -406,12 +510,19 @@ class TorchBackend(Backend):
         # 3. standard supervised training over the facts (chat-templated, so
         #    training and inference see the same rendering)
         train_ds = self._train_dataset(dataset)
+        has_eval = eval_dataset is not None and len(eval_dataset) > 0
+        eval_ds = self._train_dataset(eval_dataset) if has_eval else None
 
         class _Bridge(TrainerCallback):
             def on_log(self, args, state, control, logs=None, **kw):
                 if logs and "loss" in logs:
                     callbacks.step(Metric(step=state.global_step, loss=float(logs["loss"]),
                                           lr=float(logs.get("learning_rate", 0.0))))
+
+            def on_evaluate(self, args, state, control, metrics=None, **kw):
+                if metrics and "eval_loss" in metrics:
+                    callbacks.eval(Metric(step=state.global_step,
+                                          loss=float(metrics["eval_loss"])))
 
         args = SFTConfig(
             output_dir=output_dir,
@@ -424,6 +535,8 @@ class TorchBackend(Backend):
             lr_scheduler_type=config.lr_scheduler_type,
             optim=self._resolved_optim(config, accel.plan("none", backend="torch")),
             logging_steps=config.logging_steps,
+            eval_strategy="steps" if has_eval else "no",
+            eval_steps=config.resolved_eval_steps(config.max_steps or 1),
             seed=config.seed,
             max_length=config.max_seq_length,
             use_cpu=(self.device == "cpu"),
@@ -436,8 +549,8 @@ class TorchBackend(Backend):
         )
         with quiet_backend():
             trainer = SFTTrainer(model=self.model, processing_class=self.tokenizer,
-                                 train_dataset=train_ds, args=args,
-                                 callbacks=[_Bridge()])
+                                 train_dataset=train_ds, eval_dataset=eval_ds,
+                                 args=args, callbacks=[_Bridge()])
             result = trainer.train()
         self.model = trainer.model
         self._restore_inference_state()
