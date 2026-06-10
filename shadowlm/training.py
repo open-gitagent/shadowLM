@@ -44,7 +44,7 @@ class TrainConfig:
     warmup_steps: int = 5
     warmup_ratio: float | None = None  # fraction of total steps; overrides warmup_steps
     num_train_epochs: float | None = None
-    max_steps: int | None = 60  # one of max_steps / num_train_epochs drives length
+    max_steps: int | None = None  # one of max_steps / num_train_epochs; neither → 60 steps
     weight_decay: float = 0.01
     max_grad_norm: float | None = None  # gradient clipping (torch)
     lr_scheduler_type: str = "linear"  # "linear" | "cosine" | "constant"
@@ -324,7 +324,9 @@ def resolve_total_steps(config: TrainConfig, n_examples: int) -> int:
     """
     if config.max_steps:
         return config.max_steps
-    effective_batch = max(1, config.per_device_train_batch_size * config.gradient_accumulation_steps)
-    steps_per_epoch = max(1, math.ceil(n_examples / effective_batch))
-    epochs = config.num_train_epochs or 1.0
-    return max(1, math.ceil(steps_per_epoch * epochs))
+    if config.num_train_epochs:
+        effective_batch = max(
+            1, config.per_device_train_batch_size * config.gradient_accumulation_steps)
+        steps_per_epoch = max(1, math.ceil(n_examples / effective_batch))
+        return max(1, math.ceil(steps_per_epoch * config.num_train_epochs))
+    return 60  # neither given — a sensible short default
