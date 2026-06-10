@@ -52,6 +52,11 @@ never the method name.
 | `dpo`   | preference optimization on `{prompt, chosen, rejected}` pairs vs a frozen reference (`beta=0.1`) | either | 5e-6 |
 | `grpo`  | RL from reward functions (`reward_fns=[...]`) or collected `TrajectoryGroup`s | either | 5e-6 |
 | `more`  | **mixture of retrieval experts** — facts embedded into a frozen index fused into attention; near-zero-hallucination recall (`retrieval_k`, `retrieval_layers`) | either | 1e-4 |
+| `bitfit` | train only the bias terms (~0.1% of params) | **unquantized required** | 5e-4 |
+| `prompt` | soft prompts — `num_virtual_tokens` learned vectors, model frozen (torch) | either | 5e-3 |
+| `ptuning` | p-tuning — prompt embeddings via a small encoder (torch) | either | 5e-3 |
+| `adapter` | bottleneck adapter modules after each layer (width = `lora_r`) | either | 1e-4 |
+| `prefix` | prefix tuning — registered, blocked by an upstream peft/transformers-5 bug (clear error) | — | — |
 
 SFT methods train on chat/instruction/text data; `dpo` trains on preference
 pairs (the `preference` format, auto-detected from `chosen`/`rejected` columns);
