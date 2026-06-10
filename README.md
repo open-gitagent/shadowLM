@@ -1,8 +1,38 @@
+<p align="center">
+  <img src="./assets/banner.png" alt="ShadowLM Trainer — any open model, any harness, any method">
+</p>
+
+<p align="center">
+  <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-E5484D">
+  <img alt="Python 3.10+" src="https://img.shields.io/badge/python-3.10%2B-16120E">
+  <img alt="Methods" src="https://img.shields.io/badge/training_methods-12-E5484D">
+  <img alt="Core dependencies" src="https://img.shields.io/badge/core_dependencies-0-16120E">
+</p>
+
+<details>
+  <summary>Table of contents</summary>
+
+- [Why ShadowLM Trainer](#why-shadowlm-trainer)
+- [Backends](#backends)
+- [Training methods](#training-methods)
+- [Install & run](#install--run)
+- [The shadow accelerator](#the-shadow-accelerator)
+- [Training parameters](#training-parameters)
+- [API surface](#api-surface)
+- [Layout](#layout)
+- [The road ahead](#the-road-ahead)
+- [License](#license)
+
+</details>
+
 # ShadowLM Trainer
 
-**A fine-tuning SDK that fits in your head.**
+**A fine-tuning SDK. Any open model. Any harness. Any method.**
 
-> **Any open model. Any harness. Any method.**
+```bash
+pip install 'shadowlm[all]'      # the full package — every dependency included
+pip install shadowlm             # core SDK only (zero dependencies)
+```
 
 ```python
 import shadowlm as slm
@@ -19,15 +49,21 @@ model.save("out/", fmt="adapter")                            # ship it
 Change `method="lora"` to `qlora`, `dora`, `full`, `dpo`, `grpo`, `bitfit`,
 `prompt`, `adapter`, `more`… and nothing else changes. That's the whole idea.
 
+**Why "shadow"?** Because the model you train here is meant to *shadow* the
+frontier model behind your agent: `slm.capture()` records the traffic the big
+rented model handles, you fine-tune a small open model on it, run it in the
+big one's shadow until it performs identically — then switch, and own the
+weights. The SDK is that engine; [ShadowLM Studio](#shadowlm-studio) will run
+the full loop.
+
 ## Why ShadowLM Trainer
 
 - **Twelve training methods, one argument.** LoRA to full fine-tuning to DPO to
   RL-from-rewards to soft prompts — every technique is a declarative spec the
   backends read. Adding your own is one file.
-- **Mixture of Retrieval Experts (`more`)** — ShadowLM's signature method. Facts
-  are embedded into a frozen index fused *into attention*; the model learns to
-  look facts up instead of hallucinating them. Exact recall of held-in facts,
-  verified on both backends, before and after reload.
+- **Mixture of Retrieval Experts (`more`)** — ShadowLM's signature method: facts
+  fused into attention so the model looks them up instead of hallucinating them
+  ([details below](#mixture-of-retrieval-experts--teach-facts-not-vibes)).
 - **Agent RL, built in.** Collect multi-step rollouts, score whole episodes with
   an LLM judge, train with DPO or trajectory-level GRPO. No reward math required.
   `slm.capture(model)` turns any OpenAI-compatible harness into trajectories —
@@ -44,7 +80,7 @@ Change `method="lora"` to `qlora`, `dora`, `full`, `dpo`, `grpo`, `bitfit`,
 - **Pure-stdlib core.** `pip install shadowlm` has zero dependencies; training
   backends are opt-in extras for your hardware.
 
-## Backends — one interface, CUDA is the target
+## Backends
 
 **`torch` (CUDA) is the production backend** — PyTorch + `transformers` + `trl`
 + `peft`, the stack serious training runs on. `mlx` exists so the *same code*
@@ -165,20 +201,29 @@ register(TrainingMethod(
 
 ## Install & run
 
-The core SDK is **pure-stdlib**. Add a backend for your hardware:
+`pip install 'shadowlm[all]'` gives you everything for a CUDA / CPU box.
+Prefer picking parts? Each extra is independent:
+
+| extra | what it adds |
+|-------|--------------|
+| `[torch]` | training on CUDA / CPU — `transformers` + `trl` + `peft` + `torch` |
+| `[mlx]` | the local-dev backend (`mlx-lm`) |
+| `[preference]` | dpo / grpo on the mlx backend (`mlx-lm-lora`) |
+| `[retrieval]` | the `more` method — fact index (`sentence-transformers`) |
+| `[mlx-all]` | everything for the local dev loop |
+
+To run the examples, grab the repo:
 
 ```bash
 git clone https://github.com/khushpatel/shadowLM && cd shadowLM
-python3 -m venv .venv && source .venv/bin/activate
-pip install -e '.[mlx]'        # Apple Silicon   (or '.[torch]' on CUDA/CPU)
-
-python examples/quickstart.py   # datasets → finetune → inference, end to end
+python3 -m venv .venv && source .venv/bin/activate && pip install -e '.[mlx]'
+python examples/quickstart.py    # datasets → finetune → inference, end to end
 ```
 
 No hardware handy? `examples/colab_quickstart.ipynb` runs the same flow on a
 free Colab GPU.
 
-Output (MLX, Apple Silicon — a 0.5B model, 3.5 seconds of training):
+Output (mlx backend, a 0.5B model — 3.5 seconds of training):
 
 ```
 Dataset('sample_dataset', format='chat', rows=8)
@@ -195,10 +240,6 @@ after: The capital of France is Paris.
 ```
 
 ### CUDA box
-
-```bash
-pip install -e '.[torch]'
-```
 
 ```python
 model = slm.load("Qwen/Qwen2.5-0.5B-Instruct", backend="torch",
@@ -333,7 +374,6 @@ examples/
   colab_quickstart.ipynb  the full tour on a Colab GPU
   colab_gpu_tests.ipynb   CUDA verification suite (method × precision matrix)
   retrieval_experts.py mixture of retrieval experts — exact fact recall
-  colab_quickstart.ipynb  the quickstart in a browser — free Colab GPU, no setup
   sample_dataset.jsonl
 tests/
   gpu/test_cuda.py     CUDA verification — every method × every legal precision,
@@ -362,11 +402,9 @@ progress bar you see in the examples.
 ### ShadowLM Studio
 
 The multi-user destination: a web service and remote-GPU workers wrapping this
-SDK. Studio runs the enterprise migration loop — baseline on a rented frontier
-model → collect & fine-tune → **shadow mode** (your model runs behind the same
-agent until it's proven) → gradual switch. That loop is where the name comes
-from: the small model you own *shadows* the big one you rent, until the evals
-say it doesn't have to.
+SDK. Studio runs the enterprise migration loop end to end — baseline on the
+rented frontier model → collect & fine-tune → **shadow mode** (your model runs
+behind the same agent until it's proven) → gradual switch.
 
 - **Job queue → CUDA workers** — submit from the browser or the SDK, train on
   the GPU pool; the torch backend is already the production path.
@@ -387,8 +425,20 @@ Current status:
 - [x] Shadow accelerator (gradient checkpointing, flash-attn, fused optim)
 - [x] Harness capture proxy — OpenAI-compatible, SSE streaming, trajectory
       reconstruction
-- [ ] CUDA witness run — `tests/gpu/test_cuda.py` (suite is written: every
-      method × every legal precision; awaiting its first pass on a GPU box)
-- [ ] Inference slice: streaming generation, adapter hot-load, batch generate
 - [ ] ShadowLM CLI
 - [ ] ShadowLM Studio
+
+## Contributing
+
+Adding a training method is one file (see [Bring your own method](#bring-your-own-method));
+bug reports with a failing snippet are gold. Fork → branch → PR. Give the repo a
+⭐ if it trains something for you — it genuinely helps others find it.
+
+## Star history
+
+[![Star History Chart](https://api.star-history.com/svg?repos=khushpatel/shadowLM&type=Date)](https://star-history.com/#khushpatel/shadowLM&Date)
+
+## License
+
+[MIT](./LICENSE) — built by [Lyzr Research Labs](https://lyzr.ai) · maintained by
+[Khush Patel](mailto:khush@lyzr.ai) · `slm♥`

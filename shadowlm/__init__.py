@@ -1,4 +1,4 @@
-"""ShadowLM Trainer — a fine-tuning SDK that fits in your head.
+"""ShadowLM Trainer — a fine-tuning SDK.
 
 Any open model. Any harness. Any method.
 

@@ -29,14 +29,15 @@ _HEART = r"""
 ╚══════════════════════════════════════════════════════╝"""
 
 _NAME = r"""
-███████╗██╗  ██╗ █████╗ ██████╗  ██████╗ ██╗    ██╗██╗     ███╗   ███╗
-██╔════╝██║  ██║██╔══██╗██╔══██╗██╔═══██╗██║    ██║██║     ████╗ ████║
-███████╗███████║███████║██║  ██║██║   ██║██║ █╗ ██║██║     ██╔████╔██║
-╚════██║██╔══██║██╔══██║██║  ██║██║   ██║██║███╗██║██║     ██║╚██╔╝██║
-███████║██║  ██║██║  ██║██████╔╝╚██████╔╝╚███╔███╔╝███████╗██║ ╚═╝ ██║
-╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝╚═════╝  ╚═════╝  ╚══╝╚══╝ ╚══════╝╚═╝     ╚═╝
-               datasets  →  finetune  →  inference     
-                 from  Lyzr  Research  Labs ·  ♥
+███████╗ ██╗                    ██╗                     ██╗      ███╗   ███╗
+██╔════╝ ██║                    ██║                     ██║      ████╗ ████║
+███████╗ ███████╗  █████╗   ██████║  █████╗  ██╗ █╗ ██╗ ██║      ██╔████╔██║
+╚════██║ ██╔══██╗ ██╔══██║ ██╔══██║ ██╔══██╗ ██║███╗██║ ██║      ██║╚██╔╝██║
+███████║ ██║  ██║ ╚██████║ ╚██████║ ╚█████╔╝ ╚███╔███╔╝ ███████╗ ██║ ╚═╝ ██║
+╚══════╝ ╚═╝  ╚═╝  ╚═════╝  ╚═════╝  ╚════╝   ╚══╝╚══╝  ╚══════╝ ╚═╝     ╚═╝
+                            T  R  A  I  N  E  R
+               any open model  ·  any harness  ·  any method
+                    from  Lyzr  Research  Labs  ·  slm♥
 """
 
 # The full banner prints on the first training session of the process; later
@@ -54,7 +55,10 @@ def run_on_main_rank(fn):
 
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
-        rank = int(os.environ.get("RANK") or os.environ.get("LOCAL_RANK") or 0)
+        try:
+            rank = int(os.environ.get("RANK") or os.environ.get("LOCAL_RANK") or 0)
+        except ValueError:  # launcher set RANK to something non-numeric
+            rank = 0
         if rank == 0:
             return fn(*args, **kwargs)
         return None
@@ -64,11 +68,11 @@ def run_on_main_rank(fn):
 
 @run_on_main_rank
 def print_ascii_art(*, once: bool = True) -> None:
-    """Print the shadowLM banner — full art first, a compact line after."""
+    """Print the ShadowLM Trainer banner — full art first, a compact line after."""
     global _sessions
     _sessions += 1
     if once and _sessions > 1:
-        print(f"\n♥ shadowLM · training session #{_sessions}\n")
+        print(f"\nslm♥ ShadowLM Trainer · training session #{_sessions}\n")
         return
     print(_HEART)
     print(_NAME)

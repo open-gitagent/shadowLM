@@ -59,6 +59,14 @@ torch = [
     "accelerate>=0.33",
     "torch>=2.3",
 ]
+# The full package for a CUDA/CPU box: training + retrieval, all dependencies.
+all = [
+    "shadowlm[torch,retrieval]",
+]
+# The full local-dev-loop package: mlx training + preference + retrieval.
+mlx-all = [
+    "shadowlm[mlx,preference,retrieval]",
+]
 
 [tool.setuptools.packages.find]
 include = ["shadowlm*"]

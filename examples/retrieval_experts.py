@@ -28,7 +28,7 @@ facts = [
 ]
 
 model = slm.load(MODEL)
-q = "What is the access code for the Meridian vault?"
+q = "access code of Meridian vault?, just spit out the code, no explanations"
 print("before:", model.generate(q, max_new_tokens=20, temperature=0.0).strip())
 
 # 2. memory-tune: index the facts, fuse retrieval into attention, train ------
