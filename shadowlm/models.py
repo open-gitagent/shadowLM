@@ -125,6 +125,14 @@ class Model:
         Extra keyword args (`max_steps`, `learning_rate`, `lora_r`, ...) override the
         `TrainConfig` defaults. Pass `on_step`/`on_eval` to observe metrics live.
         """
+        from .rl import TrajectoryGroup, weighted_rows  # noqa: PLC0415
+
+        if isinstance(dataset, TrajectoryGroup) or (
+                isinstance(dataset, list) and dataset
+                and isinstance(dataset[0], TrajectoryGroup)):
+            if method != "grpo":
+                raise ValueError("trajectory groups train with method='grpo'")
+            dataset = Dataset.from_list(weighted_rows(dataset), name="trajectories")
         if not isinstance(dataset, Dataset):
             dataset = Dataset.from_list(list(dataset))
         if isinstance(eval_dataset, str):

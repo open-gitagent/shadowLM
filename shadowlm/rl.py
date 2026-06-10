@@ -85,6 +85,16 @@ class TrajectoryGroup:
     def worst(self) -> Trajectory:
         return min(self.trajectories, key=lambda t: t.reward)
 
+    def advantages(self) -> list[float]:
+        """Group-normalized advantages: (reward − group mean) / group std."""
+        rewards = [t.reward for t in self.trajectories]
+        if not rewards:
+            return []
+        mean = sum(rewards) / len(rewards)
+        var = sum((r - mean) ** 2 for r in rewards) / len(rewards)
+        std = var ** 0.5
+        return [(r - mean) / (std or 1.0) for r in rewards]
+
     def to_preference_rows(self) -> list[dict]:
         """Best-vs-worst preference pairs for `finetune(method="dpo")`.
 
@@ -104,6 +114,32 @@ class TrajectoryGroup:
             "chosen": best.final_content(),
             "rejected": worst.final_content(),
         }]
+
+
+def weighted_rows(groups: "list[TrajectoryGroup] | TrajectoryGroup") -> list[dict]:
+    """Trajectory groups → advantage-weighted training rows for method='grpo'.
+
+    Each row is {"messages": ..., "weight": advantage}; the trainer scales each
+    trajectory's loss by its group-relative advantage (push above-average
+    attempts up, below-average down). Zero-variance groups carry no signal and
+    are skipped.
+    """
+    if isinstance(groups, TrajectoryGroup):
+        groups = [groups]
+    rows: list[dict] = []
+    for g in groups:
+        advs = g.advantages()
+        if not advs or all(a == 0.0 for a in advs):
+            continue  # all rewards equal — nothing to learn from this group
+        for t, a in zip(g.trajectories, advs):
+            if t.messages:
+                rows.append({"messages": t.messages, "weight": a})
+    if not rows:
+        raise ValueError(
+            "no trainable trajectories — score the groups first (judge_group or "
+            "set trajectory.reward); groups with all-equal rewards are skipped"
+        )
+    return rows
 
 
 def _render_attempts(group: TrajectoryGroup) -> str:
