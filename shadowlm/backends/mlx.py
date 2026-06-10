@@ -102,10 +102,17 @@ class MLXBackend(Backend):
         self.adapter = adapter
         # Memory-tuned adapters carry their own index + wrapper config and are
         # re-attached by hand; plain adapters go through the normal loader.
+        from .. import bottleneck  # noqa: PLC0415
         more_cfg = more.read_config(adapter) if adapter else None
+        bn_cfg = bottleneck.read_config(adapter) if adapter else None
         with quiet_backend():  # swallow huggingface_hub "Fetching files" tqdm
             self.model, self.tokenizer = load(
-                name, adapter_path=None if more_cfg else adapter)
+                name, adapter_path=None if (more_cfg or bn_cfg) else adapter)
+        if bn_cfg:
+            self.model.freeze()
+            bottleneck.attach_mlx(self.model, rank=bn_cfg["rank"])
+            self.model.load_weights(str(Path(adapter) / "adapters.safetensors"),
+                                    strict=False)
         if more_cfg:
             from mlx_lm.tuner.utils import linear_to_lora_layers  # noqa: PLC0415
 
@@ -170,12 +177,40 @@ class MLXBackend(Backend):
         if spec.adapter == methods.ADAPTER_MORE:
             return self._finetune_more(dataset, config, callbacks, output_dir,
                                        eval_dataset, iters)
+        if spec.adapter in ("prompt", "ptuning", "prefix"):
+            raise RuntimeError(
+                f"method={config.method!r} (soft-prompt family) runs on the torch "
+                "backend — load with backend='torch'."
+            )
         if not spec.trains_adapters:
             # Full fine-tune: every transformer block trains.
             num_layers = len(model.layers)
             model.freeze()
             for layer in model.layers:
                 layer.unfreeze()
+        elif spec.adapter == "bitfit":
+            if not self._lora_applied:
+                model.freeze()
+                model.unfreeze(keys=["bias"], strict=False)
+                n_bias = sum(v.size for _, v in
+                             __import__("mlx.utils", fromlist=["tree_flatten"])
+                             .tree_flatten(model.trainable_parameters()))
+                if n_bias == 0:
+                    raise RuntimeError(
+                        "method='bitfit' found no bias parameters in this model."
+                    )
+                callbacks.log(f"[mlx] bitfit: training {n_bias:,} bias parameters")
+                self._lora_applied = True
+            num_layers = len(model.layers)
+        elif spec.adapter == "bottleneck":
+            if not self._lora_applied:
+                from .. import bottleneck  # noqa: PLC0415
+                model.freeze()
+                wrapped = bottleneck.attach_mlx(model, rank=config.lora_r)
+                callbacks.log(f"[mlx] bottleneck adapters (r={config.lora_r}) "
+                              f"on {wrapped} layers")
+                self._lora_applied = True
+            num_layers = len(model.layers)
         elif not self._lora_applied:
             model.freeze()
             linear_to_lora_layers(model, num_layers, self._lora_params(config),
@@ -262,6 +297,9 @@ class MLXBackend(Backend):
             mx.eval(model.parameters())
 
         self._write_adapter_config(out, config, num_layers)
+        if spec.adapter == "bottleneck":
+            from .. import bottleneck  # noqa: PLC0415
+            bottleneck.write_config(out, base_model=self.model_name, rank=config.lora_r)
         # Remember enough to write a self-contained adapter later via save().
         self._train_config = config
         self._num_layers = num_layers
@@ -694,7 +732,7 @@ class MLXBackend(Backend):
     def _write_adapter_config(self, out: Path, config: TrainConfig, num_layers: int) -> None:
         # Shape mlx_lm.load(..., adapter_path=out) expects to re-attach the adapter.
         spec = methods.get(config.method)
-        fine_tune_type = spec.adapter if spec.trains_adapters else "full"
+        fine_tune_type = spec.adapter if spec.adapter in ("lora", "dora") else "full"
         (out / "adapter_config.json").write_text(json.dumps({
             "fine_tune_type": fine_tune_type,
             "num_layers": num_layers,
