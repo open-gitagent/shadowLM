@@ -243,8 +243,12 @@ def attach_torch(model, index: MemoryIndex, *, rank: int, k: int,
         attn = getattr(layer, "self_attn", None)
         if attn is None or hasattr(attn, "q_in"):  # missing, or already wrapped
             continue
-        layer.self_attn = make_memory_attention_torch(
+        wrapper = make_memory_attention_torch(
             attn, hidden_size, index, rank=rank, k=k)
+        device = next(attn.parameters()).device
+        for proj in (wrapper.q_in, wrapper.q_out, wrapper.v_in, wrapper.v_out):
+            proj.to(device)
+        layer.self_attn = wrapper
         wrapped += 1
     return wrapped
 

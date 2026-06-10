@@ -16,15 +16,21 @@ PARAM_NAMES = ("adapter_down", "adapter_up")
 
 
 # ---- mlx --------------------------------------------------------------------
-def attach_mlx(model, *, rank: int) -> int:
-    import mlx.core as mx  # noqa: PLC0415
-    import mlx.nn as nn  # noqa: PLC0415
+class _MLXBottleneck:  # populated lazily so the module imports without mlx
+    cls = None
 
-    hidden = model.args.hidden_size if hasattr(model, "args") else None
 
-    def make(base, size):
+def _mlx_bottleneck_cls():
+    if _MLXBottleneck.cls is None:
+        import mlx.core as mx  # noqa: PLC0415
+        import mlx.nn as nn  # noqa: PLC0415
+
         class Bottleneck(nn.Module):
-            def __init__(self) -> None:
+            """One shared class for every layer — mlx grad checkpointing keys
+            on the layer type, so per-layer minted classes would checkpoint
+            only the first layer."""
+
+            def __init__(self, base, size: int, rank: int) -> None:
                 super().__init__()
                 self.base = base
                 self.adapter_down = nn.Linear(size, rank, bias=False)
@@ -32,18 +38,24 @@ def attach_mlx(model, *, rank: int) -> int:
                 self.adapter_up.weight = mx.zeros_like(self.adapter_up.weight)
 
             def __call__(self, x, *args, **kwargs):
+                import mlx.nn as nn  # noqa: PLC0415
                 out = self.base(x, *args, **kwargs)
                 delta = self.adapter_up(nn.gelu(self.adapter_down(out)))
                 return out + delta.astype(out.dtype)
 
-        return Bottleneck()
+        _MLXBottleneck.cls = Bottleneck
+    return _MLXBottleneck.cls
 
+
+def attach_mlx(model, *, rank: int) -> int:
+    hidden = model.args.hidden_size if hasattr(model, "args") else None
+    cls = _mlx_bottleneck_cls()
     wrapped = 0
     for i, layer in enumerate(model.layers):
         if hasattr(layer, "adapter_down"):
             continue
         size = hidden or layer.self_attn.q_proj.weight.shape[1]
-        model.layers[i] = make(layer, size)
+        model.layers[i] = cls(layer, size, rank)
         wrapped += 1
     return wrapped
 
@@ -81,7 +93,11 @@ def attach_torch(model, *, rank: int) -> int:
     for i, layer in enumerate(decoder.layers):
         if hasattr(layer, "adapter_down"):
             continue
-        decoder.layers[i] = make(layer)
+        wrapper = make(layer)
+        device = next(layer.parameters()).device
+        wrapper.adapter_down.to(device)
+        wrapper.adapter_up.to(device)
+        decoder.layers[i] = wrapper
         wrapped += 1
     return wrapped
 
