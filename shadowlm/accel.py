@@ -46,6 +46,8 @@ def plan(mode: str, *, backend: str, n_layers: int = 0, has_flash: bool = False)
     backend: "mlx" | "torch". n_layers: the model's transformer-block count.
     has_flash: whether a flash-attention kernel is importable (torch only).
     """
+    if mode not in ("none", "shadow", "auto"):
+        raise ValueError(f"unknown accelerator {mode!r} (expected auto|shadow|none)")
     if mode == "none":
         return ShadowPlan()
     force = mode == "shadow"
