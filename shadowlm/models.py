@@ -81,6 +81,14 @@ def _parse_reply(raw: str) -> Reply:
         if obj and "name" in obj:
             calls.append(obj)
     content = _TOOL_CALL_RE.sub("", raw).strip()
+    if not calls and "<tool_call>" in raw:
+        # the generation budget can cut output before </tool_call> — salvage
+        # the unclosed block rather than dropping the call
+        tail = raw.split("<tool_call>", 1)[1]
+        obj = _first_json_object(tail)
+        if obj and "name" in obj:
+            calls.append(obj)
+            content = raw.split("<tool_call>", 1)[0].strip()
     return Reply(content=content, tool_calls=calls, raw=raw)
 
 
