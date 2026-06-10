@@ -31,7 +31,7 @@ from .base import (
 )
 
 # Importing a technique module registers it.
-from . import cpt, dora, dpo, full, grpo, lora, more, qlora  # noqa: E402, F401
+from . import adapter, bitfit, cpt, dora, dpo, full, grpo, lora, more, prefix, ptuning, qlora, soft_prompt  # noqa: E402, F401
 
 __all__ = [
     "ADAPTER_DORA",
