@@ -98,9 +98,15 @@ class TorchBackend(Backend):
                 from safetensors.torch import load_file  # noqa: PLC0415
                 self.model.load_state_dict(
                     load_file(str(Path(adapter) / "bitfit.safetensors")), strict=False)
+                for pname, p in self.model.named_parameters():
+                    p.requires_grad_(pname.endswith(".bias"))
+                self.model._shadow_surface = methods.ADAPTER_BITFIT
             elif bn_cfg:
+                for p in self.model.parameters():
+                    p.requires_grad_(False)
                 bottleneck.attach_torch(self.model, rank=bn_cfg["rank"])
                 bottleneck.load_torch(self.model, adapter)
+                self.model._shadow_surface = methods.ADAPTER_BOTTLENECK
             elif more_cfg:
                 # Rebuild in the training order: wrap attention, peft on top,
                 # then the trained wrapper weights and the fact index.
@@ -110,6 +116,7 @@ class TorchBackend(Backend):
                                   num_layers=more_cfg["num_layers"])
                 self.model = PeftModel.from_pretrained(self.model, adapter)
                 more.load_torch_wrappers(self.model, adapter)
+                self.model._shadow_surface = methods.ADAPTER_MORE
             else:
                 self.model = PeftModel.from_pretrained(self.model, adapter)
 
@@ -201,8 +208,7 @@ class TorchBackend(Backend):
             per_device_train_batch_size=config.per_device_train_batch_size,
             gradient_accumulation_steps=config.gradient_accumulation_steps,
             warmup_steps=config.resolved_warmup(total),
-            max_steps=config.max_steps or -1,
-            num_train_epochs=config.num_train_epochs or 1.0,
+            max_steps=total,
             learning_rate=config.learning_rate,
             weight_decay=config.weight_decay,
             lr_scheduler_type=config.lr_scheduler_type,
@@ -295,8 +301,7 @@ class TorchBackend(Backend):
             gradient_accumulation_steps=config.gradient_accumulation_steps,
             max_completion_length=config.grpo_max_completion_length,
             beta=config.beta,
-            max_steps=config.max_steps or -1,
-            num_train_epochs=config.num_train_epochs or 1.0,
+            max_steps=resolve_total_steps(config, len(rows)),
             learning_rate=config.learning_rate,
             lr_scheduler_type=config.lr_scheduler_type,
             logging_steps=config.logging_steps,
@@ -470,6 +475,12 @@ class TorchBackend(Backend):
 
         from .. import more  # noqa: PLC0415
 
+        existing = self._attached_surface()
+        if existing not in (None, methods.ADAPTER_MORE):
+            raise RuntimeError(
+                f"this model already hosts a {existing!r} trainable surface; "
+                "load a fresh model for method='more'."
+            )
         # 1. index the facts (embedding runs in a subprocess)
         chat = dataset.as_chat() if dataset.format != "text" else None
         if chat is not None:
@@ -480,35 +491,42 @@ class TorchBackend(Backend):
                        for r in chat.rows]
         else:
             inputs = outputs = dataset.to_texts()
-        index = more.MemoryIndex.build(inputs, outputs)
-        self._more_index = index
-        callbacks.log(f"[more] indexed {len(index)} retrieval experts")
+        if existing == methods.ADAPTER_MORE:
+            index = self._more_index  # continued training reuses the surface
+        else:
+            index = more.MemoryIndex.build(inputs, outputs)
+            self._more_index = index
+            callbacks.log(f"[more] indexed {len(index)} retrieval experts")
 
         # 2. wrap attention, then LoRA on top (peft matches q_proj etc. by
         #    suffix, so it still finds them inside the wrapper)
         n_layers = min(config.retrieval_layers,
                        len((self.model.model if hasattr(self.model, "model")
                             else self.model).layers))
-        wrapped = more.attach_torch(self.model, index, rank=config.lora_r,
-                                    k=config.retrieval_k, num_layers=n_layers)
-        self.model = get_peft_model(self.model, LoraConfig(
-            r=config.lora_r, lora_alpha=config.lora_alpha,
-            lora_dropout=config.lora_dropout,
-            target_modules=list(config.resolved_target_modules()),
-            bias="none", task_type="CAUSAL_LM",
-        ))
-        # peft froze everything but LoRA — the retrieval projections train too
-        for name, param in self.model.named_parameters():
-            if any(f".{p}." in name for p in more.WRAPPER_PARAM_NAMES):
-                param.requires_grad_(True)
-        callbacks.log(f"[more] memory attention + lora on {wrapped} layers "
-                      f"(k={config.retrieval_k}, r={config.lora_r})")
+        if existing != methods.ADAPTER_MORE:
+            wrapped = more.attach_torch(self.model, index, rank=config.lora_r,
+                                        k=config.retrieval_k, num_layers=n_layers)
+            self.model = get_peft_model(self.model, LoraConfig(
+                r=config.lora_r, lora_alpha=config.lora_alpha,
+                lora_dropout=config.lora_dropout,
+                target_modules=list(config.resolved_target_modules()),
+                bias="none", task_type="CAUSAL_LM",
+            ))
+            # peft froze everything but LoRA — the retrieval projections train too
+            for name, param in self.model.named_parameters():
+                if any(f".{p}." in name for p in more.WRAPPER_PARAM_NAMES):
+                    param.requires_grad_(True)
+            self.model._shadow_surface = methods.ADAPTER_MORE
+            callbacks.log(f"[more] memory attention + lora on {wrapped} layers "
+                          f"(k={config.retrieval_k}, r={config.lora_r})")
 
         # 3. standard supervised training over the facts (chat-templated, so
         #    training and inference see the same rendering)
         train_ds = self._train_dataset(dataset)
         has_eval = eval_dataset is not None and len(eval_dataset) > 0
         eval_ds = self._train_dataset(eval_dataset) if has_eval else None
+
+        more_total = resolve_total_steps(config, len(dataset))
 
         class _Bridge(TrainerCallback):
             def on_log(self, args, state, control, logs=None, **kw):
@@ -525,15 +543,14 @@ class TorchBackend(Backend):
             output_dir=output_dir,
             per_device_train_batch_size=config.per_device_train_batch_size,
             gradient_accumulation_steps=config.gradient_accumulation_steps,
-            warmup_steps=config.resolved_warmup(config.max_steps or 1),
-            max_steps=config.max_steps or -1,
-            num_train_epochs=config.num_train_epochs or 1.0,
+            warmup_steps=config.resolved_warmup(more_total),
+            max_steps=more_total,
             learning_rate=config.learning_rate,
             lr_scheduler_type=config.lr_scheduler_type,
             optim=self._resolved_optim(config, accel.plan("none", backend="torch")),
             logging_steps=config.logging_steps,
             eval_strategy="steps" if has_eval else "no",
-            eval_steps=config.resolved_eval_steps(config.max_steps or 1),
+            eval_steps=config.resolved_eval_steps(more_total),
             seed=config.seed,
             max_length=config.max_seq_length,
             use_cpu=(self.device == "cpu"),
@@ -565,14 +582,36 @@ class TorchBackend(Backend):
         callbacks.log(f"[torch:{self.device}] more done · final loss {final_loss} · {out}")
         return FinetuneResult(checkpoint=str(out), final_loss=final_loss)
 
+    def _attached_surface(self) -> str | None:
+        """Which trainable surface this model currently hosts, if any."""
+        marked = getattr(self.model, "_shadow_surface", None)
+        if marked:
+            return marked
+        if getattr(self.model, "peft_config", None) is not None:
+            return "peft"
+        return None
+
     def _attach_trainable(self, spec, config: TrainConfig, callbacks: Callbacks) -> None:
-        """Attach the method's trainable surface once (repeat finetunes reuse it)."""
+        """Attach the method's trainable surface once.
+
+        A model hosts exactly one surface kind: repeating the same kind reuses
+        it (continued training); mixing kinds raises instead of silently
+        training one surface while saving another.
+        """
         adapter = spec.adapter
+        wanted = ("peft" if adapter in (methods.ADAPTER_LORA, methods.ADAPTER_DORA,
+                                        methods.ADAPTER_PROMPT, methods.ADAPTER_PTUNING)
+                  else adapter)
+        existing = self._attached_surface()
+        if existing is not None:
+            if existing == wanted:
+                return  # same surface — continue training it
+            raise RuntimeError(
+                f"this model already hosts a {existing!r} trainable surface; "
+                f"method {config.method!r} needs {wanted!r}. Load a fresh model."
+            )
         if adapter == methods.ADAPTER_NONE:
             return  # full fine-tune: everything already trains
-        if getattr(self.model, "peft_config", None) is not None \
-                or hasattr(self.model, "_shadow_surface"):
-            return  # already attached by a previous finetune on this model
 
         if adapter in (methods.ADAPTER_LORA, methods.ADAPTER_DORA):
             from peft import LoraConfig, get_peft_model  # noqa: PLC0415
@@ -584,20 +623,20 @@ class TorchBackend(Backend):
                 use_rslora=config.use_rslora,
                 bias="none", task_type="CAUSAL_LM",
             ))
-        elif adapter in ("prompt", "ptuning"):
+        elif adapter in (methods.ADAPTER_PROMPT, methods.ADAPTER_PTUNING):
             from peft import (  # noqa: PLC0415
                 PromptEncoderConfig,
                 PromptTuningConfig,
                 get_peft_model,
             )
-            cfg_cls = {"prompt": PromptTuningConfig,
-                       "ptuning": PromptEncoderConfig}[adapter]
+            cfg_cls = {methods.ADAPTER_PROMPT: PromptTuningConfig,
+                       methods.ADAPTER_PTUNING: PromptEncoderConfig}[adapter]
             self.model = get_peft_model(self.model, cfg_cls(
                 task_type="CAUSAL_LM",
                 num_virtual_tokens=config.num_virtual_tokens,
             ))
             callbacks.log(f"[torch] {adapter}: {config.num_virtual_tokens} virtual tokens")
-        elif adapter == "bitfit":
+        elif adapter == methods.ADAPTER_BITFIT:
             for p in self.model.parameters():
                 p.requires_grad_(False)
             n = 0
@@ -610,15 +649,25 @@ class TorchBackend(Backend):
                     "method='bitfit' found no bias parameters — this architecture "
                     "(Llama-style) has none. Use a Qwen-family model, or another method."
                 )
-            self.model._shadow_surface = "bitfit"
+            self._enable_checkpointable_inputs()
+            self.model._shadow_surface = methods.ADAPTER_BITFIT
             callbacks.log(f"[torch] bitfit: training {n:,} bias parameters")
-        elif adapter == "bottleneck":
+        elif adapter == methods.ADAPTER_BOTTLENECK:
             from .. import bottleneck  # noqa: PLC0415
             for p in self.model.parameters():
                 p.requires_grad_(False)
             wrapped = bottleneck.attach_torch(self.model, rank=config.lora_r)
-            self.model._shadow_surface = "bottleneck"
+            self._enable_checkpointable_inputs()
+            self.model._shadow_surface = methods.ADAPTER_BOTTLENECK
             callbacks.log(f"[torch] bottleneck adapters (r={config.lora_r}) on {wrapped} layers")
+        else:
+            raise RuntimeError(f"torch backend has no attach path for adapter kind {adapter!r}")
+
+    def _enable_checkpointable_inputs(self) -> None:
+        """Gradient checkpointing needs an input that requires grad; peft does
+        this itself, custom surfaces (bitfit/bottleneck) must ask for it."""
+        if hasattr(self.model, "enable_input_require_grads"):
+            self.model.enable_input_require_grads()
 
     def _save_trained(self, trainer, spec, config: TrainConfig, output_dir: str) -> None:
         """Persist what the method trained, in a form load(adapter=) can rebuild."""
@@ -627,14 +676,14 @@ class TorchBackend(Backend):
         out = Path(output_dir)
         out.mkdir(parents=True, exist_ok=True)
         adapter = spec.adapter
-        if adapter == "bitfit":
+        if adapter == methods.ADAPTER_BITFIT:
             from safetensors.torch import save_file  # noqa: PLC0415
             state = {k: v.contiguous() for k, v in self.model.state_dict().items()
                      if k.endswith(".bias")}
             save_file(state, str(out / "bitfit.safetensors"))
             (out / "bitfit_config.json").write_text(_json.dumps(
                 {"type": "bitfit", "base_model": self.model_name}, indent=2))
-        elif adapter == "bottleneck":
+        elif adapter == methods.ADAPTER_BOTTLENECK:
             from .. import bottleneck  # noqa: PLC0415
             bottleneck.save_torch(self.model, out)
             bottleneck.write_config(out, base_model=self.model_name, rank=config.lora_r)
@@ -709,8 +758,7 @@ class TorchBackend(Backend):
             per_device_train_batch_size=config.per_device_train_batch_size,
             gradient_accumulation_steps=config.gradient_accumulation_steps,
             warmup_steps=config.resolved_warmup(total),
-            max_steps=config.max_steps or -1,
-            num_train_epochs=config.num_train_epochs or 1.0,
+            max_steps=total,
             learning_rate=config.learning_rate,
             weight_decay=config.weight_decay,
             lr_scheduler_type=config.lr_scheduler_type,
@@ -767,11 +815,32 @@ class TorchBackend(Backend):
         return self.tokenizer.decode(out[0][prompt_len:], skip_special_tokens=True)
 
     def save(self, path: str, *, fmt: str = "adapter") -> str:
-        Path(path).mkdir(parents=True, exist_ok=True)
-        if fmt == "merged" and hasattr(self.model, "merge_and_unload"):
+        import json as _json  # noqa: PLC0415
+
+        out = Path(path)
+        out.mkdir(parents=True, exist_ok=True)
+        surface = self._attached_surface()
+        if fmt == "merged" and surface in (methods.ADAPTER_BITFIT,
+                                           methods.ADAPTER_BOTTLENECK,
+                                           methods.ADAPTER_MORE):
+            raise RuntimeError(f"fmt='merged' isn't supported for the {surface!r} surface")
+        if surface == methods.ADAPTER_BITFIT:
+            from safetensors.torch import save_file  # noqa: PLC0415
+            state = {k: v.contiguous() for k, v in self.model.state_dict().items()
+                     if k.endswith(".bias")}
+            save_file(state, str(out / "bitfit.safetensors"))
+            (out / "bitfit_config.json").write_text(_json.dumps(
+                {"type": "bitfit", "base_model": self.model_name}, indent=2))
+        elif surface == methods.ADAPTER_BOTTLENECK:
+            from .. import bottleneck  # noqa: PLC0415
+            rank = next(v.shape[0] for k, v in self.model.state_dict().items()
+                        if k.endswith(".adapter_down.weight"))
+            bottleneck.save_torch(self.model, out)
+            bottleneck.write_config(out, base_model=self.model_name, rank=int(rank))
+        elif fmt == "merged" and hasattr(self.model, "merge_and_unload"):
             merged = self.model.merge_and_unload()
-            merged.save_pretrained(path)
+            merged.save_pretrained(str(out))
         else:
-            self.model.save_pretrained(path)
-        self.tokenizer.save_pretrained(path)
-        return path
+            self.model.save_pretrained(str(out))
+        self.tokenizer.save_pretrained(str(out))
+        return str(out)
