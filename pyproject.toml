@@ -5,9 +5,34 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "shadowlm"
 version = "0.1.0"
-description = "A beautiful, minimal fine-tuning SDK: datasets → finetune → inference."
+description = "ShadowLM Trainer — fine-tune any open model, from any harness, with any method."
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
+authors = [
+    {name = "Lyzr Research Labs"},
+]
+maintainers = [
+    {name = "Khush Patel", email = "khush@lyzr.ai"},
+]
+keywords = [
+    "fine-tuning", "llm", "lora", "qlora", "dpo", "grpo", "rlhf",
+    "mlx", "pytorch", "peft", "agents", "training",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 # The core SDK is pure-stdlib: `pip install shadowlm` gives you the full API. A
 # training backend is opt-in: [mlx] on Apple Silicon, [torch] on CUDA/CPU.
 dependencies = []
