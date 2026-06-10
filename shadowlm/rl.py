@@ -8,9 +8,9 @@ The shape of agent reinforcement learning in shadowLM:
      compared within the group, so only relative quality matters.
   3. Score rewards by hand, or let a judge model rank the group for you
      (`judge_group`) — no hand-written reward function needed.
-  4. Train: `group.to_preference_rows()` turns judged groups into preference
-     pairs for `finetune(method="dpo")` today; trajectory-native GRPO lands
-     with the GPU worker.
+  4. Train: pass the scored groups straight to `finetune(groups,
+     method="grpo")` (advantage-weighted policy gradient), or turn them into
+     preference pairs with `group.to_preference_rows()` for DPO.
 
     judge = slm.load("mlx-community/Qwen2.5-7B-Instruct-4bit")
     group = slm.TrajectoryGroup(rollout(model, task) for _ in range(6))

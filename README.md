@@ -44,7 +44,7 @@ never the method name.
 
 | method | what it does | base model | default LR |
 |--------|--------------|------------|------------|
-| `lora`  | LoRA adapters | 16-bit | 2e-4 |
+| `lora`  | LoRA adapters | either | 2e-4 |
 | `qlora` | LoRA adapters, lowest memory | **4-bit required** | 2e-4 |
 | `dora`  | weight-decomposed LoRA, often better at low rank | either | 2e-4 |
 | `full`  | update every transformer weight | **unquantized required** | 2e-5 |
@@ -125,7 +125,7 @@ register(TrainingMethod(
   `num_train_epochs`, `weight_decay`, `max_grad_norm`*, `lr_scheduler_type`
   (linear / cosine / constant — real schedules on both backends), `optim`*, `seed`
 - **data** — `max_seq_length`, `packing`*, `train_on_completions` (mask the prompt,
-  learn only on responses)
+  learn only on responses — mlx; torch masks via prompt/completion data automatically)
 - **logging / checkpoints** — `logging_steps`, `eval_steps` (int, or a 0–1 fraction
   of total steps), `save_steps` (mid-run checkpoints), `resume_from_checkpoint`,
   `report_to`*
@@ -195,7 +195,7 @@ model.save("out/", fmt="merged")
 | `ds.split(test_size=0.1, seed=0)` | held-out train/eval split → `(train, eval)` |
 | `ds[0:100]`, `ds.head()`, `ds.columns`, `len(ds)` | row slicing & inspection |
 | `slm.load(name, backend=, accelerator=, device=, load_in_4bit=, adapter=)` | load a model (or attach a trained adapter) |
-| `model.finetune(ds, method="lora"\|"qlora"\|"dora"\|"full"\|"cpt", eval_dataset=ds\|"auto", on_step=, on_eval=, **hyperparams)` | train; returns a `TrainingRun` (`eval_dataset="auto"` holds out 10%) |
+| `model.finetune(ds, method=<any of 12 — see Training methods>, eval_dataset=ds\|"auto", reward_fns=, on_step=, on_eval=, **hyperparams)` | train; returns a `TrainingRun` (`eval_dataset="auto"` holds out 10%) |
 | `model.generate(prompt, ...)` | single-prompt inference |
 | `model.chat(messages, tools=...)` → `Reply` | multi-turn chat via the model's chat template; OpenAI-style tool schemas in, parsed `reply.tool_calls` out |
 | `model.save(path, fmt="adapter"\|"merged")` | export |
@@ -254,9 +254,12 @@ shadowlm/
   models.py            Model (finetune / generate / save) and load()
   runs.py              run history — list / load / resume / delete past runs
   accel.py             the shadow accelerator — optimization planning
+  more.py              mixture of retrieval experts (index + attention fusion)
+  bottleneck.py        Houlsby-style bottleneck adapters
+  rl.py                Trajectory, TrajectoryGroup, judge rewards
   methods/             training techniques — one module per method
     base.py            TrainingMethod spec + registry
-    lora.py qlora.py dora.py full.py cpt.py
+    lora qlora dora full cpt dpo grpo more bitfit soft_prompt ptuning adapter
   backends/
     base.py            Backend interface + Callbacks bridge
     mlx.py             MLXBackend  — Apple Silicon (Metal GPU)

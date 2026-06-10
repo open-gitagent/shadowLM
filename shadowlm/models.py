@@ -113,11 +113,10 @@ class Model:
     ) -> TrainingRun:
         """Finetune on `dataset`, returning a `TrainingRun`.
 
-        method: any registered training method — built-ins are "lora" (16-bit
-        base), "qlora" (4-bit base, lowest memory), "dora" (weight-decomposed
-        LoRA), "full" (all weights; unquantized base), and "cpt" (continued
-        pretraining on raw text). See `shadowlm.methods` to list or register
-        methods. The default learning rate comes from the method's spec.
+        method: any registered training method — built-ins are lora, qlora,
+        dora, full, cpt, dpo, grpo, more, bitfit, prompt, ptuning, and adapter.
+        See `shadowlm.methods` to list or register methods. The default
+        learning rate comes from the method's spec.
 
         Pass `eval_dataset` (and optionally `eval_steps`) to evaluate on a held-out
         set during training; eval loss lands in `run.eval_metrics` / `run.eval_loss`.
