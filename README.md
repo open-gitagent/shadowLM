@@ -56,7 +56,6 @@ never the method name.
 | `prompt` | soft prompts — `num_virtual_tokens` learned vectors, model frozen (torch) | either | 5e-3 |
 | `ptuning` | p-tuning — prompt embeddings via a small encoder (torch) | either | 5e-3 |
 | `adapter` | bottleneck adapter modules after each layer (width = `lora_r`) | either | 1e-4 |
-| `prefix` | prefix tuning — registered, blocked by an upstream peft/transformers-5 bug (clear error) | — | — |
 
 SFT methods train on chat/instruction/text data; `dpo` trains on preference
 pairs (the `preference` format, auto-detected from `chosen`/`rejected` columns);

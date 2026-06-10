@@ -64,7 +64,7 @@ class TrainConfig:
     retrieval_k: int = 2  # memories retrieved per token
     retrieval_layers: int = 8  # how many attention layers (from the top) get memory
 
-    # soft-prompt family (prompt, ptuning, prefix)
+    # soft-prompt family (prompt, ptuning)
     num_virtual_tokens: int = 16  # learned virtual tokens prepended to the input
 
     # logging / checkpoints

@@ -584,12 +584,6 @@ class TorchBackend(Backend):
                 use_rslora=config.use_rslora,
                 bias="none", task_type="CAUSAL_LM",
             ))
-        elif adapter == "prefix":
-            raise RuntimeError(
-                "prefix tuning is blocked by an upstream incompatibility between "
-                "peft's KV-prefix injection and transformers 5's attention masks "
-                "(verified to crash). Use method='prompt' or 'ptuning' instead."
-            )
         elif adapter in ("prompt", "ptuning"):
             from peft import (  # noqa: PLC0415
                 PromptEncoderConfig,

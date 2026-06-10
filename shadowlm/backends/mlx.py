@@ -177,7 +177,7 @@ class MLXBackend(Backend):
         if spec.adapter == methods.ADAPTER_MORE:
             return self._finetune_more(dataset, config, callbacks, output_dir,
                                        eval_dataset, iters)
-        if spec.adapter in ("prompt", "ptuning", "prefix"):
+        if spec.adapter in ("prompt", "ptuning"):
             raise RuntimeError(
                 f"method={config.method!r} (soft-prompt family) runs on the torch "
                 "backend — load with backend='torch'."
