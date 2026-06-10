@@ -1,6 +1,10 @@
 # shadowLM
 
-A beautiful, minimal **fine-tuning SDK**: `datasets → finetune → inference`.
+**A fine-tuning SDK that fits in your head.**
+
+`datasets → finetune → inference` — five lines, twelve training methods, one
+argument to switch between them. Develop on a MacBook, ship the same script to
+a CUDA box.
 
 ```python
 import shadowlm as slm
@@ -14,10 +18,33 @@ print(model.generate("What is the capital of France?"))      # inference
 model.save("out/", fmt="adapter")                            # ship it
 ```
 
-The SDK is the core. A multi-user **studio** (web service + remote-GPU workers)
-will wrap this exact SDK later — but the beautiful, runnable thing comes first.
+Change `method="lora"` to `qlora`, `dora`, `full`, `dpo`, `grpo`, `bitfit`,
+`prompt`, `adapter`, `more`… and nothing else changes. That's the whole idea.
 
-## Backends — CUDA is the target, one interface everywhere
+## Why shadowLM
+
+- **Twelve training methods, one argument.** LoRA to full fine-tuning to DPO to
+  RL-from-rewards to soft prompts — every technique is a declarative spec the
+  backends read. Adding your own is one file.
+- **Mixture of Retrieval Experts (`more`)** — shadowLM's signature method. Facts
+  are embedded into a frozen index fused *into attention*; the model learns to
+  look facts up instead of hallucinating them. Exact recall of held-in facts,
+  verified on both backends, before and after reload.
+- **Agent RL, built in.** Collect multi-step rollouts, score whole episodes with
+  an LLM judge, train with DPO or trajectory-level GRPO. No reward math required.
+- **The shadow accelerator.** One knob (`accelerator="shadow"`) that turns on the
+  optimizations that are *safe for your model and hardware* — and logs exactly
+  what it enabled. No silent magic.
+- **Runs are records.** Every finetune persists status, config, and metrics.
+  Terminal loss charts, sparklines, resumable checkpoints, run history that
+  survives the process.
+- **Honest engineering.** No mock backends, no silently-ignored arguments (the
+  mlx backend *tells you* when a torch-only knob doesn't apply), base-model
+  requirements enforced with errors that say what to do instead.
+- **Pure-stdlib core.** `pip install shadowlm` has zero dependencies; training
+  backends are opt-in extras for your hardware.
+
+## Backends — one interface, CUDA is the target
 
 **`torch` (CUDA) is the production backend** — PyTorch + `transformers` + `trl`
 + `peft`, the stack serious training runs on. `mlx` exists so the *same code*
@@ -73,14 +100,33 @@ On CUDA, dpo/grpo ride on trl (`DPOTrainer` / `GRPOTrainer`); on Apple Silicon
 they need `pip install shadowlm[preference]`. ORPO / PPO-style RLHF exist in
 the substrates and follow the same `trainer=` slot.
 
-`more` (Mixture of Retrieval Experts) is for *facts*: each training fact is
-embedded into a frozen FAISS index; wrapped attention layers retrieve each
-token's nearest memories and attend over them through small trainable
-projections (plus LoRA for capacity). The model learns to look facts up
-instead of hallucinating them, and the index travels inside the adapter dir —
-`load(adapter=...)` rebuilds everything (verified on both backends: exact
-recall of held-in facts, before and after reload). Needs
-`pip install shadowlm[retrieval]`.
+### Mixture of Retrieval Experts — teach facts, not vibes
+
+`more` is for *facts*: each training fact is embedded into a frozen FAISS
+index; wrapped attention layers retrieve each token's nearest memories and
+attend over them through small trainable projections (plus LoRA for capacity).
+The model learns to look facts up instead of hallucinating them, and the index
+travels inside the adapter dir — `load(adapter=...)` rebuilds everything
+(verified on both backends: exact recall of held-in facts, before and after
+reload). Needs `pip install shadowlm[retrieval]`.
+
+### Train any harness without opening the box
+
+Every agent must call a model, so the model API is the one boundary that
+always exists. `slm.capture(model)` serves an OpenAI-compatible endpoint,
+records every call your harness makes, and reconstructs multi-turn episodes
+(prefix-merged) into trajectories:
+
+```python
+with slm.capture(model) as proxy:            # http://127.0.0.1:8327/v1
+    run_my_agent(base_url=proxy.base_url)    # any OpenAI-client harness, unchanged
+trajectories = proxy.trajectories()
+group = slm.judge_group(slm.TrajectoryGroup(trajectories), judge=judge)
+run = model.finetune([group], method="grpo")
+```
+
+The async rollout-service tier (gateways, prewarming, fleet-scale trainers)
+belongs to the studio.
 
 ### Agent RL: trajectories + judge rewards
 
@@ -100,6 +146,8 @@ the scored groups two ways: `group.to_preference_rows()` → DPO, or directly �
 gradient over the trajectories (rewards normalized within each group, loss on
 assistant tokens only). Collect on-policy rollouts, score, train, repeat.
 
+### Bring your own method
+
 Base requirements are enforced with clear errors (e.g. `qlora` on a 16-bit model
 tells you to load a 4-bit one). Adding a technique is one file:
 
@@ -113,6 +161,61 @@ register(TrainingMethod(
     default_learning_rate=1e-4,
 ))
 ```
+
+## Install & run
+
+The core SDK is **pure-stdlib**. Add a backend for your hardware:
+
+```bash
+git clone https://github.com/khushpatel/shadowLM && cd shadowLM
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e '.[mlx]'        # Apple Silicon   (or '.[torch]' on CUDA/CPU)
+
+python examples/quickstart.py   # datasets → finetune → inference, end to end
+```
+
+Output (MLX, Apple Silicon — a 0.5B model, 3.5 seconds of training):
+
+```
+Dataset('sample_dataset', format='chat', rows=8)
+before: The capital of France is Paris.
+[shadow] enabled: gradient checkpointing
+[mlx:gpu] finetuning Qwen2.5-0.5B-Instruct-4bit · lora · 8 examples · 40 iters · lora r=16 on 24 layers · lr 0.0002 (linear, warmup 5)
+  [████████████████████████] step   40/40  loss 0.0718  lr 5.00e-05  11.7 st/s  1,048 tok/s
+[mlx] done · final loss 0.0718 · adapter ~/.shadowlm/runs/Qwen2.5-0.5B-Instruct-4bit-…
+
+  loss  ▇▆█▇▆▇▇█▅▅▄▅▃▂▃▃▁▂▂▂▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁  4.2120 → 0.0718
+  ♥ succeeded · 40 steps · 3.5s
+
+after: The capital of France is Paris.
+```
+
+### CUDA box
+
+```bash
+pip install -e '.[torch]'
+```
+
+```python
+model = slm.load("Qwen/Qwen2.5-0.5B-Instruct", backend="torch",
+                 accelerator="shadow", load_in_4bit=True)
+run = model.finetune(ds, method="qlora", max_steps=60)
+model.save("out/", fmt="merged")
+```
+
+## The shadow accelerator
+
+`accelerator="shadow"` is shadowLM's in-house optimization layer. It sits on top of
+whichever backend is active and turns on the speed/memory optimizations that are
+*safe for the current model and hardware*:
+
+- gradient checkpointing (trade compute for VRAM on bigger models)
+- flash-attention-2 (on CUDA, when available)
+- a fused optimizer
+
+Modes: `"auto"` (default — enable what helps at the current size), `"shadow"`
+(force all on), `"none"` (off). It is honest — it logs exactly what it enabled and
+no-ops when an optimization wouldn't help.
 
 ## Training parameters
 
@@ -131,58 +234,6 @@ register(TrainingMethod(
   `report_to`*
 
 \* torch-backend only; the mlx backend logs a note instead of silently ignoring.
-
-## The shadow accelerator
-
-`accelerator="shadow"` is shadowLM's in-house optimization layer. It sits on top of
-whichever backend is active and turns on the speed/memory optimizations that are
-*safe for the current model and hardware*:
-
-- gradient checkpointing (trade compute for VRAM on bigger models)
-- flash-attention-2 (on CUDA, when available)
-- a fused optimizer
-
-Modes: `"auto"` (default — enable what helps at the current size), `"shadow"`
-(force all on), `"none"` (off). It is honest — it logs exactly what it enabled and
-no-ops when an optimization wouldn't help.
-
-## Install & run
-
-The core SDK is **pure-stdlib**. Add a backend for your hardware:
-
-```bash
-cd /Users/patel/shadowLM
-python3 -m venv .venv && source .venv/bin/activate
-pip install -e '.[mlx]'        # Apple Silicon   (or '.[torch]' on CUDA/CPU)
-
-python examples/quickstart.py   # datasets → finetune → inference, end to end
-```
-
-Output (MLX, Apple Silicon — a 0.5B model, ~3s of training):
-
-```
-Dataset('sample_dataset', format='chat', rows=8)
-before: The capital of France is Paris.
-[shadow] enabled: gradient checkpointing
-[mlx:gpu] finetuning Qwen2.5-0.5B-Instruct-4bit · lora · 8 examples · 40 iters · lora r=16
-  [████████████████████████] step   40/40  loss 0.0813  lr 2.00e-04
-status=succeeded  final loss=0.0813  took 3.2s
-loss curve: ▆█▇▅▄▃▂▁▁▁▁▁▁▁▁▁▁▁▁▁
-after: The capital of France is Paris.
-```
-
-### CUDA box
-
-```bash
-pip install -e '.[torch]'
-```
-
-```python
-model = slm.load("Qwen/Qwen2.5-0.5B-Instruct", backend="torch",
-                 accelerator="shadow", load_in_4bit=True)
-run = model.finetune(ds, method="qlora", max_steps=60)
-model.save("out/", fmt="merged")
-```
 
 ## API surface
 
@@ -210,7 +261,7 @@ Every run records itself — `succeeded`, `failed` (with the error), or `stopped
 to keep mid-run checkpoints so even interrupted runs are resumable.
 
 Pass `on_step` / `on_eval` to `finetune` to stream `Metric(step, loss, lr, ...)`
-as training happens — that's the hook the studio's live charts will use.
+as training happens — that's the hook ShadowLM Studio's live charts will use.
 
 ### Train / eval split
 
@@ -273,14 +324,50 @@ examples/
   judge_rewards.py     LLM-as-judge rewards → preference pairs → DPO
   tool_calling.py      tool schemas in, parsed calls out, tool loop, training
   runs_and_charts.py   run history + terminal loss/LR/eval charts
+  harness_capture.py   record a black-box agent through the proxy, then train
   retrieval_experts.py mixture of retrieval experts — exact fact recall
   sample_dataset.jsonl
 ```
 
-## Roadmap
+## The road ahead
+
+The SDK is the core, and it ships first. Everything that follows wraps this
+exact API — nothing gets reimplemented.
+
+### ShadowLM CLI
+
+The SDK from your shell — fine-tune without opening Python:
+
+```bash
+shadowlm finetune data.jsonl --model Qwen/Qwen2.5-0.5B-Instruct --method lora
+shadowlm runs                  # run history, status, final losses
+shadowlm plot <run-id>         # terminal loss charts
+shadowlm chat out/adapter/     # talk to what you trained
+```
+
+Same methods, same accelerator, same run records — `on_step` streams the same
+progress bar you see in the examples.
+
+### ShadowLM Studio
+
+The multi-user destination: a web service and remote-GPU workers wrapping this
+SDK.
+
+- **Job queue → CUDA workers** — submit from the browser or the SDK, train on
+  the GPU pool; the torch backend is already the production path.
+- **Live training charts** — streamed over the `on_step` / `on_eval` hooks that
+  exist today; `run.series()` is the data feed.
+- **Team run history** — the `run.json` records every finetune already writes,
+  made shared and searchable.
+- **Dataset + adapter registry** — upload, version, and one-click attach what
+  the SDK's `Dataset` and `load(adapter=)` already understand.
+
+Current status:
 
 - [x] SDK: datasets → finetune → inference on mlx / torch
+- [x] 12 training methods incl. MoRE, trajectory GRPO, judge rewards
 - [x] Train/eval split with held-out validation loss
 - [x] Shadow accelerator (gradient checkpointing, flash-attn, fused optim)
 - [ ] Inference slice: streaming generation, adapter hot-load, batch generate
-- [ ] Studio: web service + MongoDB job queue + remote-GPU workers over this SDK
+- [ ] ShadowLM CLI
+- [ ] ShadowLM Studio

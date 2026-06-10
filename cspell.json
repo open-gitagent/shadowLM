@@ -67,6 +67,8 @@
     "libomp",
     "toks",
     "rollout",
-    "rollouts"
+    "rollouts",
+    "prewarming",
+    "prewarm"
   ]
 }
