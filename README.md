@@ -50,7 +50,7 @@ never the method name.
 | `full`  | update every transformer weight | **unquantized required** | 2e-5 |
 | `cpt`   | continued pretraining on raw domain text (no chat template) | either | 5e-5 |
 | `dpo`   | preference optimization on `{prompt, chosen, rejected}` pairs vs a frozen reference (`beta=0.1`) | either | 5e-6 |
-| `grpo`  | RL from programmable reward functions (`reward_fns=[...]`) | either | 5e-6 |
+| `grpo`  | RL from reward functions (`reward_fns=[...]`) or collected `TrajectoryGroup`s | either | 5e-6 |
 | `more`  | **mixture of retrieval experts** — facts embedded into a frozen index fused into attention; near-zero-hallucination recall (`retrieval_k`, `retrieval_layers`) | either | 1e-4 |
 
 SFT methods train on chat/instruction/text data; `dpo` trains on preference
@@ -90,9 +90,11 @@ run = model.finetune(group.to_preference_rows(), method="dpo")
 ```
 
 `judge_group` asks a judge model to score attempts against a rubric (with a
-best/worst ranking fallback that keeps small local judges reliable), then
-best-vs-worst pairs feed DPO. Trajectory-native GRPO arrives with the GPU
-worker.
+best/worst ranking fallback that keeps small local judges reliable). Train on
+the scored groups two ways: `group.to_preference_rows()` → DPO, or directly —
+`model.finetune(groups, method="grpo")` runs advantage-weighted policy
+gradient over the trajectories (rewards normalized within each group, loss on
+assistant tokens only). Collect on-policy rollouts, score, train, repeat.
 
 Base requirements are enforced with clear errors (e.g. `qlora` on a 16-bit model
 tells you to load a 4-bit one). Adding a technique is one file:

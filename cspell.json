@@ -64,6 +64,9 @@
     "dtype",
     "dtypes",
     "ckpt",
-    "libomp"
+    "libomp",
+    "toks",
+    "rollout",
+    "rollouts"
   ]
 }
