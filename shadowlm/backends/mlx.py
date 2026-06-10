@@ -291,15 +291,28 @@ class MLXBackend(Backend):
 
         model, tokenizer = self.model, self.tokenizer
         num_layers = self._attach_retrieval_experts(dataset, config, callbacks)
-        if eval_dataset is not None:
-            callbacks.log("[more] note: eval during training not supported yet — skipped")
 
         n = len(dataset)
-        batch_size = max(1, min(config.per_device_train_batch_size, n))
+        has_eval = eval_dataset is not None and len(eval_dataset) > 0
+        batch_size = max(1, min(config.per_device_train_batch_size, n,
+                                len(eval_dataset) if has_eval else n))
         data = iterate_batches(
             CacheDataset(_to_mlx_dataset(dataset, tokenizer)),
             batch_size, config.max_seq_length, loop=True,
         )
+        eval_every = config.resolved_eval_steps(iters) if has_eval else iters + 1
+
+        def eval_loss() -> float:
+            losses = []
+            batches = iterate_batches(
+                CacheDataset(_to_mlx_dataset(eval_dataset, tokenizer)),
+                batch_size, config.max_seq_length, loop=False)
+            for batch, lengths in batches:
+                loss, _ = default_loss(model, batch, lengths)
+                mx.eval(loss)
+                losses.append(float(loss))
+            return sum(losses) / max(1, len(losses))
+
         opt = optim.Adam(learning_rate=_build_lr(config, iters))
         loss_and_grad = nn.value_and_grad(model, default_loss)
         accum = max(1, config.gradient_accumulation_steps)
@@ -327,6 +340,9 @@ class MLXBackend(Backend):
                     lr=float(opt.learning_rate),
                     elapsed_s=round(_time.time() - start, 2),
                 ))
+            if it % eval_every == 0 or (has_eval and it == iters):
+                callbacks.eval(Metric(step=it, loss=round(eval_loss(), 4),
+                                      elapsed_s=round(_time.time() - start, 2)))
             if callbacks.stopped():
                 break
 
@@ -342,6 +358,110 @@ class MLXBackend(Backend):
         self._num_layers = num_layers
         self._tuned = True
         callbacks.log(f"[mlx] done · final loss {last_loss} · adapter {out}")
+        return FinetuneResult(checkpoint=str(out), final_loss=last_loss)
+
+    def _finetune_trajectory_grpo(self, dataset: Dataset, config: TrainConfig,
+                                  callbacks: Callbacks, output_dir: str, spec,
+                                  iters: int) -> FinetuneResult:
+        """Advantage-weighted policy gradient over collected trajectories.
+
+        Each row is {"messages", "weight"} where weight is the group-relative
+        advantage. Loss = weight × NLL of the assistant tokens — above-average
+        attempts are reinforced, below-average suppressed. On-policy: collect
+        rollouts from the current model, score, train, repeat. Runs uncompiled
+        (per-sequence weighting isn't expressible in the stock trainer).
+        """
+        import time as _time  # noqa: PLC0415
+
+        import mlx.core as mx  # noqa: PLC0415
+        import mlx.nn as nn  # noqa: PLC0415
+        import mlx.optimizers as optim  # noqa: PLC0415
+        from mlx.utils import tree_flatten, tree_map  # noqa: PLC0415
+        from mlx_lm.tuner.utils import linear_to_lora_layers  # noqa: PLC0415
+
+        model, tokenizer = self.model, self.tokenizer
+        num_layers = min(DEFAULT_LORA_LAYERS, len(model.layers))
+        if not self._lora_applied:
+            model.freeze()
+            linear_to_lora_layers(model, num_layers, self._lora_params(config),
+                                  use_dora=(spec.adapter == methods.ADAPTER_DORA))
+            self._lora_applied = True
+
+        # Tokenize once: full conversation + prompt length for masking.
+        examples = []
+        for row in dataset.rows:
+            msgs = row["messages"]
+            full = tokenizer.apply_chat_template(msgs)
+            prompt_len = len(tokenizer.apply_chat_template(
+                msgs[:-1], add_generation_prompt=True))
+            full = full[:config.max_seq_length]
+            if prompt_len >= len(full):
+                continue
+            examples.append((full, prompt_len, float(row["weight"])))
+        if not examples:
+            raise ValueError("no usable trajectories after tokenization")
+
+        pad = tokenizer.eos_token_id
+        batch_size = max(1, min(config.per_device_train_batch_size, len(examples)))
+
+        def batches():
+            import random as _random  # noqa: PLC0415
+            rng = _random.Random(config.seed)
+            while True:
+                order = list(range(len(examples)))
+                rng.shuffle(order)
+                for i in range(0, len(order) - batch_size + 1, batch_size):
+                    chunk = [examples[j] for j in order[i:i + batch_size]]
+                    L = max(len(t) for t, _, _ in chunk)
+                    toks = mx.array([t + [pad] * (L - len(t)) for t, _, _ in chunk])
+                    # mask over targets (positions 1..L-1): assistant tokens only
+                    mask = mx.array([
+                        [1.0 if p_len <= j + 1 < len(t) else 0.0 for j in range(L - 1)]
+                        for t, p_len, _ in chunk])
+                    weights = mx.array([w for _, _, w in chunk])
+                    yield toks, mask, weights
+
+        def pg_loss(mdl, toks, mask, weights):
+            logits = mdl(toks[:, :-1])
+            ce = nn.losses.cross_entropy(logits, toks[:, 1:], reduction="none")
+            per_seq = (ce * mask).sum(-1) / mx.maximum(mask.sum(-1), 1)
+            return (weights * per_seq).mean()
+
+        opt = optim.Adam(learning_rate=_build_lr(config, iters))
+        loss_and_grad = nn.value_and_grad(model, pg_loss)
+        accum = max(1, config.gradient_accumulation_steps)
+        callbacks.log(
+            f"[mlx:{self.device}] trajectory-grpo on {self.model_name} · "
+            f"{len(examples)} trajectories · {iters} iters · lr {config.learning_rate:g}"
+        )
+        start = _time.time()
+        grads_acc = None
+        last_loss = None
+        for it, (toks, mask, weights) in zip(range(1, iters + 1), batches()):
+            loss, grads = loss_and_grad(model, toks, mask, weights)
+            grads_acc = grads if grads_acc is None else tree_map(
+                lambda a, b: a + b, grads_acc, grads)
+            if it % accum == 0:
+                opt.update(model, tree_map(lambda g: g / accum, grads_acc))
+                grads_acc = None
+            mx.eval(loss, model.parameters())
+            last_loss = round(float(loss), 4)
+            if it % config.logging_steps == 0:
+                callbacks.step(Metric(step=it, loss=last_loss,
+                                      lr=float(opt.learning_rate),
+                                      elapsed_s=round(_time.time() - start, 2)))
+            if callbacks.stopped():
+                break
+
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        mx.save_safetensors(str(out / "adapters.safetensors"),
+                            dict(tree_flatten(model.trainable_parameters())))
+        self._write_adapter_config(out, config, num_layers)
+        self._train_config = config
+        self._num_layers = num_layers
+        self._tuned = True
+        callbacks.log(f"[mlx] done · final pg loss {last_loss} · adapter {out}")
         return FinetuneResult(checkpoint=str(out), final_loss=last_loss)
 
     def _finetune_dpo(self, dataset: Dataset, config: TrainConfig, callbacks: Callbacks,
@@ -443,13 +563,17 @@ class MLXBackend(Backend):
         from mlx_lm import load as mlx_load  # noqa: PLC0415
         from mlx_lm.tuner.utils import linear_to_lora_layers  # noqa: PLC0415
 
-        if not reward_fns:
-            raise ValueError(
-                "method='grpo' needs reward_fns=[...] — each is "
-                "fn(prompts, completions, answer, types=None) -> list[float]"
-            )
         model, tokenizer = self.model, self.tokenizer
         n = len(dataset)
+        if n and "weight" in dataset.rows[0] and "messages" in dataset.rows[0]:
+            # trajectory-native: pre-collected rollouts with group advantages
+            return self._finetune_trajectory_grpo(dataset, config, callbacks,
+                                                  output_dir, spec, iters)
+        if not reward_fns:
+            raise ValueError(
+                "method='grpo' needs reward_fns=[...] (or TrajectoryGroups) — "
+                "each fn is fn(prompts, completions, answer, types=None) -> list[float]"
+            )
         if n == 0 or "prompt" not in dataset.rows[0]:
             raise ValueError("method='grpo' needs rows with a 'prompt' column "
                              "(and optionally 'answer' for accuracy-style rewards)")
