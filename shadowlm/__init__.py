@@ -1,4 +1,6 @@
-"""shadowLM — a beautiful, minimal fine-tuning SDK.
+"""ShadowLM Trainer — a fine-tuning SDK that fits in your head.
+
+Any open model. Any harness. Any method.
 
     import shadowlm as slm
 
