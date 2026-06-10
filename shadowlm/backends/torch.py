@@ -88,7 +88,20 @@ class TorchBackend(Backend):
             self.tokenizer.pad_token = self.tokenizer.eos_token
         if adapter:
             from peft import PeftModel  # noqa: PLC0415
-            self.model = PeftModel.from_pretrained(self.model, adapter)
+
+            from .. import more  # noqa: PLC0415
+            more_cfg = more.read_config(adapter)
+            if more_cfg:
+                # Rebuild in the training order: wrap attention, peft on top,
+                # then the trained wrapper weights and the fact index.
+                self._more_index = more.MemoryIndex.load(adapter)
+                more.attach_torch(self.model, self._more_index,
+                                  rank=more_cfg["rank"], k=more_cfg["index_k"],
+                                  num_layers=more_cfg["num_layers"])
+                self.model = PeftModel.from_pretrained(self.model, adapter)
+                more.load_torch_wrappers(self.model, adapter)
+            else:
+                self.model = PeftModel.from_pretrained(self.model, adapter)
 
     def finetune(self, dataset: Dataset, config: TrainConfig, callbacks: Callbacks,
                  output_dir: str, eval_dataset: Dataset | None = None,
@@ -120,10 +133,7 @@ class TorchBackend(Backend):
             return self._finetune_grpo(dataset, config, callbacks, output_dir,
                                        spec, reward_fns)
         if spec.adapter == methods.ADAPTER_MORE:
-            raise NotImplementedError(
-                "memory tuning (method='more') is on the mlx backend today; "
-                "the torch wiring is next on the roadmap."
-            )
+            return self._finetune_more(dataset, config, callbacks, output_dir)
 
         # Adapter methods (lora/dora/cpt/...) attach PEFT adapters once; a spec
         # with adapter="none" trains the full weights. raw_text methods already
@@ -142,9 +152,10 @@ class TorchBackend(Backend):
                 task_type="CAUSAL_LM",
             ))
 
-        train_ds = HFDataset.from_dict({"text": dataset.to_texts()})
+        train_ds = self._train_dataset(dataset, raw_text=spec.raw_text)
         has_eval = eval_dataset is not None and len(eval_dataset) > 0
-        eval_ds = HFDataset.from_dict({"text": eval_dataset.to_texts()}) if has_eval else None
+        eval_ds = (self._train_dataset(eval_dataset, raw_text=spec.raw_text)
+                   if has_eval else None)
         optim_name = self._resolved_optim(config, shadow)
 
         # Bridge the transformers Trainer callbacks → our Callbacks.
@@ -206,6 +217,7 @@ class TorchBackend(Backend):
             per_device_eval_batch_size=config.per_device_train_batch_size,
             seed=config.seed,
             max_length=config.max_seq_length,
+            use_cpu=(self.device == "cpu"),
             disable_tqdm=True,  # shadowLM prints its own progress
             report_to=list(config.report_to),
             **extra,
@@ -287,6 +299,7 @@ class TorchBackend(Backend):
             lr_scheduler_type=config.lr_scheduler_type,
             logging_steps=config.logging_steps,
             seed=config.seed,
+            use_cpu=(self.device == "cpu"),
             disable_tqdm=True,
             report_to=list(config.report_to),
         )
@@ -308,9 +321,146 @@ class TorchBackend(Backend):
         trainer.save_model(output_dir)
         self.tokenizer.save_pretrained(output_dir)
         self.model = trainer.model
+        self._restore_inference_state()
         final_loss = float(result.training_loss) if result else None
         callbacks.log(f"[torch:{self.device}] grpo done · {output_dir}")
         return FinetuneResult(checkpoint=output_dir, final_loss=final_loss)
+
+    def _train_dataset(self, dataset: Dataset, *, raw_text: bool = False):
+        """An HF dataset rendered the way inference will see it.
+
+        Chat-able rows are passed as conversational rows ({"messages": ...}) so
+        trl applies the chat template itself — training on alpaca-style raw
+        text while inference uses the chat template wrecks generation once
+        memorization kicks in, and pre-rendering the template to text gets its
+        special tokens re-split. raw_text (CPT) trains on plain text.
+        """
+        from datasets import Dataset as HFDataset  # noqa: PLC0415
+
+        from ..data import CHAT, INSTRUCTION, SHAREGPT  # noqa: PLC0415
+
+        if raw_text or dataset.format not in (CHAT, SHAREGPT, INSTRUCTION) \
+                or not getattr(self.tokenizer, "chat_template", None):
+            return HFDataset.from_dict({"text": dataset.to_texts()})
+        chat = dataset.as_chat()
+        rows = chat.rows
+        # prompt/completion schema → trl masks the prompt by default (loss on
+        # the assistant reply only), which keeps small models from memorizing
+        # system headers verbatim on fact-style data
+        if all(r["messages"] and r["messages"][-1]["role"] == "assistant" for r in rows):
+            return HFDataset.from_list([
+                {"prompt": r["messages"][:-1], "completion": [r["messages"][-1]]}
+                for r in rows
+            ])
+        return HFDataset.from_list([{"messages": r["messages"]} for r in rows])
+
+    def _finetune_more(self, dataset: Dataset, config: TrainConfig, callbacks: Callbacks,
+                       output_dir: str) -> FinetuneResult:
+        """Mixture of Retrieval Experts on torch.
+
+        Eager execution lets retrieval run inside forward under no_grad, so the
+        standard SFTTrainer drives training. LoRA rides alongside the wrapper
+        projections for capacity, exactly like the mlx implementation.
+        """
+        from datasets import Dataset as HFDataset  # noqa: PLC0415
+        from peft import LoraConfig, get_peft_model  # noqa: PLC0415
+        from transformers import TrainerCallback  # noqa: PLC0415
+        from trl import SFTConfig, SFTTrainer  # noqa: PLC0415
+
+        from .. import more  # noqa: PLC0415
+
+        # 1. index the facts (embedding runs in a subprocess)
+        chat = dataset.as_chat() if dataset.format != "text" else None
+        if chat is not None:
+            inputs = [next((m["content"] for m in r["messages"] if m["role"] == "user"), "")
+                      for r in chat.rows]
+            outputs = [next((m["content"] for m in reversed(r["messages"])
+                             if m["role"] == "assistant"), "")
+                       for r in chat.rows]
+        else:
+            inputs = outputs = dataset.to_texts()
+        index = more.MemoryIndex.build(inputs, outputs)
+        self._more_index = index
+        callbacks.log(f"[more] indexed {len(index)} retrieval experts")
+
+        # 2. wrap attention, then LoRA on top (peft matches q_proj etc. by
+        #    suffix, so it still finds them inside the wrapper)
+        n_layers = min(config.retrieval_layers,
+                       len((self.model.model if hasattr(self.model, "model")
+                            else self.model).layers))
+        wrapped = more.attach_torch(self.model, index, rank=config.lora_r,
+                                    k=config.retrieval_k, num_layers=n_layers)
+        self.model = get_peft_model(self.model, LoraConfig(
+            r=config.lora_r, lora_alpha=config.lora_alpha,
+            lora_dropout=config.lora_dropout,
+            target_modules=list(config.resolved_target_modules()),
+            bias="none", task_type="CAUSAL_LM",
+        ))
+        # peft froze everything but LoRA — the retrieval projections train too
+        for name, param in self.model.named_parameters():
+            if any(f".{p}." in name for p in more.WRAPPER_PARAM_NAMES):
+                param.requires_grad_(True)
+        callbacks.log(f"[more] memory attention + lora on {wrapped} layers "
+                      f"(k={config.retrieval_k}, r={config.lora_r})")
+
+        # 3. standard supervised training over the facts (chat-templated, so
+        #    training and inference see the same rendering)
+        train_ds = self._train_dataset(dataset)
+
+        class _Bridge(TrainerCallback):
+            def on_log(self, args, state, control, logs=None, **kw):
+                if logs and "loss" in logs:
+                    callbacks.step(Metric(step=state.global_step, loss=float(logs["loss"]),
+                                          lr=float(logs.get("learning_rate", 0.0))))
+
+        args = SFTConfig(
+            output_dir=output_dir,
+            per_device_train_batch_size=config.per_device_train_batch_size,
+            gradient_accumulation_steps=config.gradient_accumulation_steps,
+            warmup_steps=config.resolved_warmup(config.max_steps or 1),
+            max_steps=config.max_steps or -1,
+            num_train_epochs=config.num_train_epochs or 1.0,
+            learning_rate=config.learning_rate,
+            lr_scheduler_type=config.lr_scheduler_type,
+            optim=self._resolved_optim(config, accel.plan("none", backend="torch")),
+            logging_steps=config.logging_steps,
+            seed=config.seed,
+            max_length=config.max_seq_length,
+            use_cpu=(self.device == "cpu"),
+            disable_tqdm=True,
+            report_to=[],
+        )
+        callbacks.log(
+            f"[torch:{self.device}] more on {self.model_name} · {len(dataset)} facts · "
+            f"retrieval k={config.retrieval_k} on {n_layers} layers"
+        )
+        with quiet_backend():
+            trainer = SFTTrainer(model=self.model, processing_class=self.tokenizer,
+                                 train_dataset=train_ds, args=args,
+                                 callbacks=[_Bridge()])
+            result = trainer.train()
+        self.model = trainer.model
+        self._restore_inference_state()
+
+        # 4. persist: peft adapter + wrapper weights + index + config
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        trainer.save_model(output_dir)
+        self.tokenizer.save_pretrained(output_dir)
+        more.save_torch_wrappers(self.model, out)
+        index.save(out)
+        more.write_config(out, base_model=self.model_name, rank=config.lora_r,
+                          k=config.retrieval_k, num_layers=n_layers)
+        final_loss = float(result.training_loss) if result else None
+        callbacks.log(f"[torch:{self.device}] more done · final loss {final_loss} · {out}")
+        return FinetuneResult(checkpoint=str(out), final_loss=final_loss)
+
+    def _restore_inference_state(self) -> None:
+        """Trainers leave train-mode residue (use_cache off, train() flags)."""
+        self.model.eval()
+        cfg = getattr(self.model, "config", None)
+        if cfg is not None and hasattr(cfg, "use_cache"):
+            cfg.use_cache = True
 
     def _resolved_optim(self, config: TrainConfig, shadow) -> str:
         """Pick an optimizer that exists on this device.
@@ -381,6 +531,7 @@ class TorchBackend(Backend):
             eval_strategy="steps" if has_eval else "no",
             eval_steps=config.resolved_eval_steps(total),
             seed=config.seed,
+            use_cpu=(self.device == "cpu"),
             disable_tqdm=True,
             report_to=list(config.report_to),
         )
@@ -398,6 +549,7 @@ class TorchBackend(Backend):
         trainer.save_model(output_dir)
         self.tokenizer.save_pretrained(output_dir)
         self.model = trainer.model
+        self._restore_inference_state()
         final_loss = float(result.training_loss) if result else None
         callbacks.log(f"[torch:{self.device}] dpo done · final loss {final_loss} · {output_dir}")
         return FinetuneResult(checkpoint=output_dir, final_loss=final_loss)
