@@ -117,6 +117,8 @@ class TorchBackend(Backend):
                 self.model = PeftModel.from_pretrained(self.model, adapter)
                 more.load_torch_wrappers(self.model, adapter)
                 self.model._shadow_surface = methods.ADAPTER_MORE
+                self._more_meta = {"rank": more_cfg["rank"], "k": more_cfg["index_k"],
+                                   "num_layers": more_cfg["num_layers"]}
             else:
                 self.model = PeftModel.from_pretrained(self.model, adapter)
 
@@ -517,6 +519,8 @@ class TorchBackend(Backend):
                 if any(f".{p}." in name for p in more.WRAPPER_PARAM_NAMES):
                     param.requires_grad_(True)
             self.model._shadow_surface = methods.ADAPTER_MORE
+            self._more_meta = {"rank": config.lora_r, "k": config.retrieval_k,
+                               "num_layers": n_layers}
             callbacks.log(f"[more] memory attention + lora on {wrapped} layers "
                           f"(k={config.retrieval_k}, r={config.lora_r})")
 
@@ -599,16 +603,19 @@ class TorchBackend(Backend):
         training one surface while saving another.
         """
         adapter = spec.adapter
-        wanted = ("peft" if adapter in (methods.ADAPTER_LORA, methods.ADAPTER_DORA,
-                                        methods.ADAPTER_PROMPT, methods.ADAPTER_PTUNING)
-                  else adapter)
+        peft_family = (methods.ADAPTER_LORA, methods.ADAPTER_DORA,
+                       methods.ADAPTER_PROMPT, methods.ADAPTER_PTUNING)
         existing = self._attached_surface()
         if existing is not None:
-            if existing == wanted:
+            # "peft" is the fallback for externally loaded adapters whose exact
+            # kind we can't know — any peft-family method may continue those.
+            if existing == adapter or (existing == "peft" and adapter in peft_family):
+                if adapter in (methods.ADAPTER_BITFIT, methods.ADAPTER_BOTTLENECK):
+                    self._enable_checkpointable_inputs()  # idempotent; reload paths skip it
                 return  # same surface — continue training it
             raise RuntimeError(
                 f"this model already hosts a {existing!r} trainable surface; "
-                f"method {config.method!r} needs {wanted!r}. Load a fresh model."
+                f"method {config.method!r} needs {adapter!r}. Load a fresh model."
             )
         if adapter == methods.ADAPTER_NONE:
             return  # full fine-tune: everything already trains
@@ -623,6 +630,7 @@ class TorchBackend(Backend):
                 use_rslora=config.use_rslora,
                 bias="none", task_type="CAUSAL_LM",
             ))
+            self.model._shadow_surface = adapter
         elif adapter in (methods.ADAPTER_PROMPT, methods.ADAPTER_PTUNING):
             from peft import (  # noqa: PLC0415
                 PromptEncoderConfig,
@@ -635,6 +643,7 @@ class TorchBackend(Backend):
                 task_type="CAUSAL_LM",
                 num_virtual_tokens=config.num_virtual_tokens,
             ))
+            self.model._shadow_surface = adapter
             callbacks.log(f"[torch] {adapter}: {config.num_virtual_tokens} virtual tokens")
         elif adapter == methods.ADAPTER_BITFIT:
             for p in self.model.parameters():
@@ -837,6 +846,14 @@ class TorchBackend(Backend):
                         if k.endswith(".adapter_down.weight"))
             bottleneck.save_torch(self.model, out)
             bottleneck.write_config(out, base_model=self.model_name, rank=int(rank))
+        elif surface == methods.ADAPTER_MORE:
+            from .. import more  # noqa: PLC0415
+            meta = self._more_meta
+            self.model.save_pretrained(str(out))  # the peft adapter
+            more.save_torch_wrappers(self.model, out)
+            self._more_index.save(out)
+            more.write_config(out, base_model=self.model_name, rank=meta["rank"],
+                              k=meta["k"], num_layers=meta["num_layers"])
         elif fmt == "merged" and hasattr(self.model, "merge_and_unload"):
             merged = self.model.merge_and_unload()
             merged.save_pretrained(str(out))
