@@ -29,6 +29,8 @@
 
 **A fine-tuning SDK. Any open model. Any harness. Any method.**
 
+Open source · built by [Lyzr Research Labs](https://lyzr.ai) · maintained by [Khush Patel](mailto:khush@lyzr.ai) · `slm♥`
+
 ```bash
 pip install 'shadowlm[all]'      # the full package — every dependency included
 pip install shadowlm             # core SDK only (zero dependencies)
@@ -443,5 +445,4 @@ bug reports with a failing snippet are gold. Fork → branch → PR. Give the re
 
 ## License
 
-[MIT](./LICENSE) — built by [Lyzr Research Labs](https://lyzr.ai) · maintained by
-[Khush Patel](mailto:khush@lyzr.ai) · `slm♥`
+[MIT](./LICENSE) · `slm♥`
