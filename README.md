@@ -247,16 +247,22 @@ A Typer + Rich command, included in `[all]` (or `pip install 'shadowlm[cli]'`):
 
 ```bash
 shadowlm finetune data.jsonl --model Qwen/Qwen2.5-0.5B-Instruct --method lora
+shadowlm finetune --config run.yaml --dry-run   # reproducible runs, preview first
+shadowlm generate out/adapter/ "Hello"          # one-shot inference (scripting)
+shadowlm chat out/adapter/                       # interactive (base auto-resolved)
+shadowlm export out/adapter/ --to merged/ --format merged
 shadowlm runs                  # run history: status, steps, losses, duration
 shadowlm plot <run-id>         # terminal loss charts for any recorded run
-shadowlm chat out/adapter/     # talk to what you trained (base model auto-resolved)
 shadowlm methods               # the registered methods, defaults included
 ```
 
 Headline hyperparameters are typed flags (`--max-steps`, `--lora-r`, `--lr`,
 `--epochs`, …); every other `TrainConfig` field is reachable through
-`--set field=value`, validated against the dataclass — so the CLI can't drift
-from the SDK. The library itself stays pure-stdlib; only the CLI pulls in Typer.
+`--set field=value` or a `--config run.yaml` file (**flags override config
+override defaults**), all validated against the dataclass — so the CLI can't
+drift from the SDK. `--dry-run` prints the fully-resolved config without
+training; `--hf-token` / `HF_TOKEN` covers gated models. The library itself
+stays pure-stdlib; only the CLI pulls in Typer.
 
 ### CUDA box
 
