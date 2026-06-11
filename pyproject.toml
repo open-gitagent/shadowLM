@@ -37,6 +37,9 @@ classifiers = [
 # training backend is opt-in: [mlx] on Apple Silicon, [torch] on CUDA/CPU.
 dependencies = []
 
+[project.scripts]
+shadowlm = "shadowlm.cli:main"
+
 [project.optional-dependencies]
 # Apple Silicon — the native path (Metal GPU).
 mlx = [
