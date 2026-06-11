@@ -1,0 +1,67 @@
+# Publish to PyPI on every version tag (v0.1.0, v0.2.0, ...).
+#
+# Uses PyPI Trusted Publishing (OIDC) — no API tokens stored in GitHub.
+# One-time setup on PyPI: project → Settings → Publishing → add GitHub:
+#   owner: open-gitagent · repo: shadowLM · workflow: publish.yml · environment: pypi
+
+name: publish
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check versions agree (tag == pyproject == __init__)
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PYPROJECT=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          INIT=$(python -c "import re; print(re.search(r'__version__ = \"(.+?)\"', open('shadowlm/__init__.py').read()).group(1))")
+          echo "tag=$TAG pyproject=$PYPROJECT __init__=$INIT"
+          if [ "$TAG" != "$PYPROJECT" ] || [ "$TAG" != "$INIT" ]; then
+            echo "::error::version mismatch — bump pyproject.toml AND shadowlm/__init__.py to $TAG"
+            exit 1
+          fi
+
+      - name: Build sdist + wheel
+        run: |
+          python -m pip install --quiet build twine
+          python -m build
+          twine check dist/*
+
+      - name: Smoke-test the wheel (clean install, import, CLI)
+        run: |
+          python -m venv /tmp/smoke
+          /tmp/smoke/bin/pip install --quiet dist/*.whl
+          /tmp/smoke/bin/python -c "import shadowlm; print(shadowlm.__version__)"
+          /tmp/smoke/bin/shadowlm --version
+          /tmp/smoke/bin/shadowlm methods
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/shadowlm/
+    permissions:
+      id-token: write  # OIDC — this is what replaces the API token
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
