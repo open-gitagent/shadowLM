@@ -243,7 +243,7 @@ after: The capital of France is Paris.
 
 ### The CLI
 
-Everything above, without opening Python — installed with the package:
+A Typer + Rich command, included in `[all]` (or `pip install 'shadowlm[cli]'`):
 
 ```bash
 shadowlm finetune data.jsonl --model Qwen/Qwen2.5-0.5B-Instruct --method lora
@@ -253,9 +253,10 @@ shadowlm chat out/adapter/     # talk to what you trained (base model auto-resol
 shadowlm methods               # the registered methods, defaults included
 ```
 
-Every `TrainConfig` hyperparameter is a flag (`--max-steps`, `--lora-r`,
-`--num-train-epochs`, …) — generated from the dataclass, so the CLI can't
-drift from the SDK. `shadowlm finetune --help` lists them all.
+Headline hyperparameters are typed flags (`--max-steps`, `--lora-r`, `--lr`,
+`--epochs`, …); every other `TrainConfig` field is reachable through
+`--set field=value`, validated against the dataclass — so the CLI can't drift
+from the SDK. The library itself stays pure-stdlib; only the CLI pulls in Typer.
 
 ### CUDA box
 
@@ -372,7 +373,8 @@ shadowlm/
   bottleneck.py        Houlsby-style bottleneck adapters
   rl.py                Trajectory, TrajectoryGroup, judge rewards
   capture.py           OpenAI-compatible capture proxy — record any harness
-  cli.py               the `shadowlm` command — finetune/runs/plot/chat/methods
+  cli.py               the `shadowlm` command (Typer + Rich) — [cli] extra
+  _cli_entry.py        stdlib entry shim — friendly message if [cli] is missing
   methods/             training techniques — one module per method
     base.py            TrainingMethod spec + registry
     lora qlora dora full cpt dpo grpo more bitfit soft_prompt ptuning adapter

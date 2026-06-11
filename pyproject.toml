@@ -43,7 +43,7 @@ Repository = "https://github.com/open-gitagent/shadowLM"
 Issues = "https://github.com/open-gitagent/shadowLM/issues"
 
 [project.scripts]
-shadowlm = "shadowlm.cli:main"
+shadowlm = "shadowlm._cli_entry:main"
 
 [project.optional-dependencies]
 # Apple Silicon — the native path (Metal GPU).
@@ -58,6 +58,12 @@ preference = [
 retrieval = [
     "sentence-transformers>=3.0",
 ]
+# The polished `shadowlm` command (Typer + Rich). The library itself stays
+# pure-stdlib; only the CLI rendering needs these.
+cli = [
+    "typer>=0.12",
+    "rich>=13",
+]
 # CUDA / CPU — the PyTorch / HuggingFace path.
 torch = [
     "datasets>=2.20",
@@ -67,13 +73,13 @@ torch = [
     "accelerate>=0.33",
     "torch>=2.3",
 ]
-# The full package for a CUDA/CPU box: training + retrieval, all dependencies.
+# The full package for a CUDA/CPU box: training + retrieval + CLI.
 all = [
-    "shadowlm[torch,retrieval]",
+    "shadowlm[torch,retrieval,cli]",
 ]
-# The full local-dev-loop package: mlx training + preference + retrieval.
+# The full local-dev-loop package: mlx training + preference + retrieval + CLI.
 mlx-all = [
-    "shadowlm[mlx,preference,retrieval]",
+    "shadowlm[mlx,preference,retrieval,cli]",
 ]
 
 [tool.setuptools.packages.find]
