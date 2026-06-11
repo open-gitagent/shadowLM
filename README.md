@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./assets/banner.png" alt="ShadowLM Trainer — any open model, any harness, any method">
+  <img src="https://raw.githubusercontent.com/open-gitagent/shadowLM/main/assets/banner.png" alt="ShadowLM Trainer — any open model, any harness, any method">
 </p>
 
 <p align="center">

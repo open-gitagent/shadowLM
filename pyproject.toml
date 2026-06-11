@@ -37,6 +37,11 @@ classifiers = [
 # training backend is opt-in: [mlx] on Apple Silicon, [torch] on CUDA/CPU.
 dependencies = []
 
+[project.urls]
+Homepage = "https://github.com/open-gitagent/shadowLM"
+Repository = "https://github.com/open-gitagent/shadowLM"
+Issues = "https://github.com/open-gitagent/shadowLM/issues"
+
 [project.scripts]
 shadowlm = "shadowlm.cli:main"
 
