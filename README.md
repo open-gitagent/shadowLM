@@ -239,6 +239,22 @@ before: The capital of France is Paris.
 after: The capital of France is Paris.
 ```
 
+### The CLI
+
+Everything above, without opening Python — installed with the package:
+
+```bash
+shadowlm finetune data.jsonl --model Qwen/Qwen2.5-0.5B-Instruct --method lora
+shadowlm runs                  # run history: status, steps, losses, duration
+shadowlm plot <run-id>         # terminal loss charts for any recorded run
+shadowlm chat out/adapter/     # talk to what you trained (base model auto-resolved)
+shadowlm methods               # the registered methods, defaults included
+```
+
+Every `TrainConfig` hyperparameter is a flag (`--max-steps`, `--lora-r`,
+`--num-train-epochs`, …) — generated from the dataclass, so the CLI can't
+drift from the SDK. `shadowlm finetune --help` lists them all.
+
 ### CUDA box
 
 ```python
@@ -354,6 +370,7 @@ shadowlm/
   bottleneck.py        Houlsby-style bottleneck adapters
   rl.py                Trajectory, TrajectoryGroup, judge rewards
   capture.py           OpenAI-compatible capture proxy — record any harness
+  cli.py               the `shadowlm` command — finetune/runs/plot/chat/methods
   methods/             training techniques — one module per method
     base.py            TrainingMethod spec + registry
     lora qlora dora full cpt dpo grpo more bitfit soft_prompt ptuning adapter
@@ -385,20 +402,6 @@ tests/
 The SDK is the core, and it ships first. Everything that follows wraps this
 exact API — nothing gets reimplemented.
 
-### ShadowLM CLI
-
-The SDK from your shell — fine-tune without opening Python:
-
-```bash
-shadowlm finetune data.jsonl --model Qwen/Qwen2.5-0.5B-Instruct --method lora
-shadowlm runs                  # run history, status, final losses
-shadowlm plot <run-id>         # terminal loss charts
-shadowlm chat out/adapter/     # talk to what you trained
-```
-
-Same methods, same accelerator, same run records — `on_step` streams the same
-progress bar you see in the examples.
-
 ### ShadowLM Studio
 
 The multi-user destination: a web service and remote-GPU workers wrapping this
@@ -425,7 +428,7 @@ Current status:
 - [x] Shadow accelerator (gradient checkpointing, flash-attn, fused optim)
 - [x] Harness capture proxy — OpenAI-compatible, SSE streaming, trajectory
       reconstruction
-- [ ] ShadowLM CLI
+- [x] ShadowLM CLI — finetune / runs / plot / chat / methods from the shell
 - [ ] ShadowLM Studio
 
 ## Contributing
