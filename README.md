@@ -215,7 +215,7 @@ Prefer picking parts? Each extra is independent:
 To run the examples, grab the repo:
 
 ```bash
-git clone https://github.com/khushpatel/shadowLM && cd shadowLM
+git clone https://github.com/open-gitagent/shadowLM && cd shadowLM
 python3 -m venv .venv && source .venv/bin/activate && pip install -e '.[mlx]'
 python examples/quickstart.py    # datasets → finetune → inference, end to end
 ```
@@ -436,7 +436,7 @@ bug reports with a failing snippet are gold. Fork → branch → PR. Give the re
 
 ## Star history
 
-[![Star History Chart](https://api.star-history.com/svg?repos=khushpatel/shadowLM&type=Date)](https://star-history.com/#khushpatel/shadowLM&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=open-gitagent/shadowLM&type=Date)](https://star-history.com/#open-gitagent/shadowLM&Date)
 
 ## License
 
