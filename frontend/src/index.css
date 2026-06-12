@@ -1,0 +1,53 @@
+@import "tailwindcss";
+
+@theme {
+  --color-ink: #16120e;
+  --color-umbra: #221c16;
+  --color-panel: #2a231c;
+  --color-bone: #f2eae0;
+  --color-faded: #9a8f82;
+  --color-heart: #e5484d;
+  --color-okay: #3fb950;
+  --color-gold: #d29922;
+  --color-seam: #3a3129;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+html, body, #root { height: 100%; }
+
+body {
+  color: var(--color-bone);
+  font-family: var(--font-mono);
+  font-size: 14px;
+  background:
+    radial-gradient(1100px 520px at 78% -8%, #2e1b17 0%, transparent 60%),
+    radial-gradient(800px 500px at -10% 110%, #221713 0%, transparent 55%),
+    var(--color-ink);
+}
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: var(--color-seam); border-radius: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+
+input, select, textarea {
+  background: var(--color-umbra);
+  border: 1px solid var(--color-seam);
+  border-radius: 8px;
+  padding: 8px 11px;
+  font: inherit;
+  color: var(--color-bone);
+}
+input:focus, select:focus, textarea:focus {
+  outline: 1px solid var(--color-heart);
+}
+
+@keyframes rise { from { opacity: 0; transform: translateY(5px); } }
+@keyframes drop { from { opacity: 0; transform: translateY(-6px); } }
+@keyframes breathe {
+  50% { box-shadow: 0 0 96px #e5484d5c, 0 0 26px #e5484d44, 0 22px 50px #000a; }
+}
+@keyframes blink { 40% { opacity: 0.25; } }
+@keyframes pulsedot { 50% { opacity: 0.35; } }
+
+.rise { animation: rise 0.18s ease-out; }
+.drop { animation: drop 0.14s ease-out; }

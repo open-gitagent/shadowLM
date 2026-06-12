@@ -297,8 +297,23 @@ def make_handler(server: Server, api_key: str | None):
         def do_GET(self):  # noqa: N802
             parts = self.path.split("?")[0].strip("/").split("/")
             if parts == [""]:  # the dashboard — no auth for the shell page;
-                from .webui import HTML  # noqa: PLC0415 — the API stays authed
-                self._send(200, HTML.encode(), ctype="text/html; charset=utf-8")
+                static_index = Path(__file__).parent / "_static" / "index.html"
+                if static_index.exists():  # the compiled React studio
+                    self._send(200, static_index.read_bytes(),
+                               ctype="text/html; charset=utf-8")
+                else:  # no-build fallback: the single-file vanilla SPA
+                    from .webui import HTML  # noqa: PLC0415 — API stays authed
+                    self._send(200, HTML.encode(), ctype="text/html; charset=utf-8")
+                return
+            if parts[0] == "assets" and len(parts) == 2 and ".." not in parts[1]:
+                asset = Path(__file__).parent / "_static" / "assets" / parts[1]
+                if asset.is_file():
+                    ctype = ("text/javascript" if asset.suffix == ".js"
+                             else "text/css" if asset.suffix == ".css"
+                             else "application/octet-stream")
+                    self._send(200, asset.read_bytes(), ctype=ctype)
+                else:
+                    self._error(404, "no such asset")
                 return
             if parts == ["logo.png"]:
                 try:

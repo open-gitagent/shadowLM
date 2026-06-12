@@ -15,3 +15,6 @@ out/
 
 # OS / editor
 .DS_Store
+
+# Frontend toolchain (the built UI ships in shadowlm/_static/)
+frontend/node_modules/
