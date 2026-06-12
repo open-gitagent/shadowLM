@@ -71,6 +71,75 @@ def _rebuild_dataset(d: dict | None) -> Dataset | None:
     return Dataset.from_list(d["rows"], format=d.get("format"))
 
 
+# A small curated catalog for the dashboard's Models page. `gated` = needs an
+# HF token; `dev` = the fast local-loop pick.
+_MODEL_CATALOG = [
+    {"id": "mlx-community/Qwen2.5-0.5B-Instruct-4bit", "params": "0.5B",
+     "note": "fastest dev loop (mlx, 4-bit)", "gated": False, "dev": True},
+    {"id": "Qwen/Qwen2.5-0.5B-Instruct", "params": "0.5B",
+     "note": "small + capable", "gated": False, "dev": False},
+    {"id": "Qwen/Qwen2.5-1.5B-Instruct", "params": "1.5B",
+     "note": "quality jump, still light", "gated": False, "dev": False},
+    {"id": "Qwen/Qwen2.5-3B-Instruct", "params": "3B",
+     "note": "serious task model", "gated": False, "dev": False},
+    {"id": "HuggingFaceTB/SmolLM2-360M-Instruct", "params": "360M",
+     "note": "tiny experiments", "gated": False, "dev": False},
+    {"id": "meta-llama/Llama-3.2-1B-Instruct", "params": "1B",
+     "note": "llama family", "gated": True, "dev": False},
+    {"id": "meta-llama/Llama-3.2-3B-Instruct", "params": "3B",
+     "note": "llama family", "gated": True, "dev": False},
+    {"id": "google/gemma-2-2b-it", "params": "2B",
+     "note": "gemma family", "gated": True, "dev": False},
+]
+
+
+class DatasetStore:
+    """Datasets uploaded through the dashboard — JSONL on disk, survives restarts."""
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self.root.mkdir(parents=True, exist_ok=True)
+
+    def save(self, name: str, rows: list[dict]) -> dict:
+        ds = Dataset.from_list(rows)  # validates + detects format
+        ds_id = uuid.uuid4().hex[:10]
+        (self.root / f"{ds_id}.jsonl").write_text(
+            "\n".join(json.dumps(r) for r in rows))
+        meta = {"dataset_id": ds_id, "name": name or f"dataset-{ds_id[:4]}",
+                "format": ds.format, "rows": len(rows),
+                "created": int(time.time())}
+        (self.root / f"{ds_id}.json").write_text(json.dumps(meta))
+        return meta
+
+    def list(self) -> list[dict]:
+        metas = []
+        for p in sorted(self.root.glob("*.json")):
+            try:
+                metas.append(json.loads(p.read_text()))
+            except (json.JSONDecodeError, OSError):
+                continue
+        return sorted(metas, key=lambda m: m.get("created", 0), reverse=True)
+
+    def rows(self, ds_id: str) -> list[dict] | None:
+        p = self.root / f"{ds_id}.jsonl"
+        if not p.exists():
+            return None
+        return [json.loads(line) for line in p.read_text().splitlines() if line.strip()]
+
+    def meta(self, ds_id: str) -> dict | None:
+        p = self.root / f"{ds_id}.json"
+        return json.loads(p.read_text()) if p.exists() else None
+
+    def delete(self, ds_id: str) -> bool:
+        found = False
+        for suffix in (".json", ".jsonl"):
+            p = self.root / f"{ds_id}{suffix}"
+            if p.exists():
+                p.unlink()
+                found = True
+        return found
+
+
 class Server:
     """Job store + the single training worker + an inference slot."""
 
@@ -81,6 +150,7 @@ class Server:
         self.device = device
         self.work_root = work_root
         self.jobs: dict[str, _Job] = {}
+        self.datasets = DatasetStore(work_root / "datasets")
         self.queue: "queue.Queue[str]" = queue.Queue()
         self._lock = threading.Lock()          # job-store mutations
         self._model_lock = threading.Lock()    # one model computation at a time
@@ -100,6 +170,17 @@ class Server:
             job.status = "running"
             try:
                 payload = job._payload  # attached at submit time
+                # dataset by reference (dashboard) or inline rows (SDK)
+                if payload.get("dataset_id"):
+                    rows = self.datasets.rows(payload["dataset_id"])
+                    if rows is None:
+                        raise ValueError(f"unknown dataset {payload['dataset_id']!r}")
+                    payload["dataset"] = {"rows": rows, "format": None}
+                if payload.get("eval_dataset") == "auto":
+                    full = _rebuild_dataset(payload["dataset"])
+                    train, ev = full.split(test_size=0.1)
+                    payload["dataset"] = {"rows": train.rows, "format": train.format}
+                    payload["eval_dataset"] = {"rows": ev.rows, "format": ev.format}
                 with self._model_lock:
                     be = select_backend(self.backend_name,
                                         accelerator=self.accelerator,
@@ -231,6 +312,23 @@ def make_handler(server: Server, api_key: str | None):
                         "method": (j._payload.get("config", {}) or {}).get("method"),
                     } for j in server.jobs.values()]
                 self._send(200, {"jobs": jobs[::-1]})  # newest first
+            elif parts == ["v1", "datasets"]:
+                self._send(200, {"datasets": server.datasets.list()})
+            elif len(parts) == 3 and parts[:2] == ["v1", "datasets"]:
+                meta = server.datasets.meta(parts[2])
+                if meta is None:
+                    self._error(404, f"unknown dataset {parts[2]!r}")
+                else:
+                    rows = server.datasets.rows(parts[2]) or []
+                    self._send(200, {**meta, "preview": rows[:8]})
+            elif parts == ["v1", "models"]:
+                recent = []
+                with server._lock:
+                    for j in server.jobs.values():
+                        if j.base_model not in recent:
+                            recent.append(j.base_model)
+                self._send(200, {"catalog": _MODEL_CATALOG, "recent": recent,
+                                 "server_backend": server.backend_name})
             elif parts == ["v1", "methods"]:
                 from . import methods as _methods  # noqa: PLC0415
                 self._send(200, {"methods": [{
@@ -266,10 +364,18 @@ def make_handler(server: Server, api_key: str | None):
             try:
                 if parts == ["v1", "finetunes"]:
                     body = self._body()
-                    for req in ("base_model", "config", "dataset"):
+                    for req in ("base_model", "config"):
                         if not body.get(req):
                             return self._error(422, f"missing field {req!r}")
+                    if not body.get("dataset") and not body.get("dataset_id"):
+                        return self._error(422, "provide 'dataset' rows or a 'dataset_id'")
                     self._send(202, {"job_id": server.submit(body)})
+                elif parts == ["v1", "datasets"]:
+                    body = self._body()
+                    rows = body.get("rows")
+                    if not rows or not isinstance(rows, list):
+                        return self._error(422, "provide 'rows': a list of JSON objects")
+                    self._send(201, server.datasets.save(body.get("name", ""), rows))
                 elif len(parts) == 4 and parts[:2] == ["v1", "finetunes"] \
                         and parts[3] == "cancel":
                     if (job := self._job_or_404(parts[2])):
@@ -299,6 +405,18 @@ def make_handler(server: Server, api_key: str | None):
                     self._error(404, f"no route: POST {self.path}")
             except Exception as e:  # noqa: BLE001 — report, keep serving
                 self._error(500, f"{type(e).__name__}: {e}")
+
+        def do_DELETE(self):  # noqa: N802
+            if not self._authed():
+                return
+            parts = self.path.split("?")[0].strip("/").split("/")
+            if len(parts) == 3 and parts[:2] == ["v1", "datasets"]:
+                if server.datasets.delete(parts[2]):
+                    self._send(200, {"ok": True})
+                else:
+                    self._error(404, f"unknown dataset {parts[2]!r}")
+            else:
+                self._error(404, f"no route: DELETE {self.path}")
 
     return Handler
 
