@@ -85,3 +85,6 @@ mlx-all = [
 
 [tool.setuptools.packages.find]
 include = ["shadowlm*"]
+
+[tool.setuptools.package-data]
+shadowlm = ["_assets/*.png"]

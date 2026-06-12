@@ -12,6 +12,7 @@ HTML = r"""<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ShadowLM · slm♥</title>
+<link rel="icon" type="image/png" href="/logo.png">
 <style>
   :root {
     --ink:#16120E; --umbra:#221C16; --panel:#2A231C; --bone:#F2EAE0;
@@ -24,8 +25,12 @@ HTML = r"""<!doctype html>
   /* ---- left sidebar ---- */
   #side { width:212px; min-width:212px; display:flex; flex-direction:column;
           border-right:1px solid var(--line); padding:16px 10px; gap:2px; }
-  #side .brand { padding:4px 12px 16px; font-weight:700; }
+  #side .brand { padding:4px 12px 16px; font-weight:700; display:flex;
+                 gap:10px; align-items:center; }
+  #side .brand img { width:36px; height:36px; border-radius:9px;
+                     border:1px solid var(--line); }
   #side .brand .mark { color:var(--heart); }
+  #side .brand .sub { font-weight:400; }
   #side a { color:var(--muted); text-decoration:none; padding:9px 12px;
             border-radius:9px; font-size:13.5px; display:flex; gap:9px;
             align-items:center; }
@@ -88,6 +93,29 @@ HTML = r"""<!doctype html>
   .msg.slm { background:var(--umbra); border:1px solid var(--line); }
   .msg.slm::before { content:"slm♥ "; color:var(--heart); font-weight:700; }
   .back { color:var(--heart); text-decoration:none; font-size:12.5px; }
+  /* ---- training wizard ---- */
+  .steps { display:flex; gap:0; margin:18px 0 26px; max-width:860px; }
+  .step { flex:1; text-align:center; position:relative; color:var(--muted);
+          font-size:12px; padding-top:30px; cursor:default; }
+  .step::before { content:attr(data-n); position:absolute; top:0; left:50%;
+    transform:translateX(-50%); width:24px; height:24px; line-height:22px;
+    border-radius:50%; border:1px solid var(--line); background:var(--umbra);
+    font-size:11px; }
+  .step::after { content:""; position:absolute; top:12px; left:calc(50% + 14px);
+    width:calc(100% - 28px); height:1px; background:var(--line); }
+  .step:last-child::after { display:none; }
+  .step.done { color:var(--bone); cursor:pointer; }
+  .step.done::before { content:"✓"; color:var(--ok); border-color:var(--ok); }
+  .step.cur { color:var(--bone); }
+  .step.cur::before { color:#fff; background:var(--heart);
+                      border-color:var(--heart); font-weight:700; }
+  .wizbody { max-width:860px; }
+  .wizfoot { display:flex; gap:10px; margin-top:22px; max-width:860px; }
+  .methodcard { cursor:pointer; }
+  .methodcard:hover { border-color:var(--muted); }
+  .methodcard.sel { border-color:var(--heart);
+                    box-shadow:0 0 0 1px var(--heart) inset; }
+  .review td:first-child { color:var(--muted); width:180px; }
   /* ---- playground ---- */
   #pg { display:flex; flex-direction:column; height:100%; min-height:0; }
   #pg-controls { display:flex; gap:8px; flex-wrap:wrap; align-items:center;
@@ -112,7 +140,9 @@ HTML = r"""<!doctype html>
 </head>
 <body>
 <aside id="side">
-  <div class="brand"><span class="mark">slm♥</span> ShadowLM</div>
+  <div class="brand"><img src="/logo.png" alt="ShadowLM">
+    <div>ShadowLM<div class="sub"><span class="mark">slm♥</span> trainer</div></div>
+  </div>
   <a href="#datasets"><span class="n">1</span>Datasets</a>
   <a href="#models"><span class="n">2</span>Models</a>
   <a href="#train"><span class="n">3</span>Trainings</a>
@@ -264,49 +294,197 @@ async function pageModels() {
 window.useModel = id => { S.pick.model = id; location.hash = "#train"; };
 window.tryModel = id => { S.pick.model = id; location.hash = "#playground"; };
 
-// ====== TRAININGS (configure & launch) ============================================
+// ====== TRAININGS — the guided wizard =============================================
+const WIZ_STEPS = ["Data", "Model", "Method", "Tune", "Launch"];
+const REC = f => f === "preference" ? ["dpo"]
+           : f === "text" ? ["cpt"]
+           : f === "prompt" ? ["grpo"]
+           : ["lora", "qlora", "dora"];  // chat / sharegpt / instruction
+const LORA_FAMILY = ["lora", "qlora", "dora", "adapter", "more"];
+
+function wiz() {
+  if (!S.wiz) S.wiz = { step: 0, ds: null, model: null, method: null,
+    p: { steps: 60, lorar: 16, lr: "", batch: 2, eval: false } };
+  return S.wiz;
+}
+
 async function pageTrain() {
   if (!S.datasets.length) S.datasets = (await api("/v1/datasets")).datasets;
   if (!S.methods.length) S.methods = (await api("/v1/methods")).methods;
-  const mOpts = S.methods.map(m =>
-    `<option value="${m.name}" ${m.name==="lora"?"selected":""}>${m.name} — ${esc(m.description.slice(0,58))}</option>`).join("");
+  if (!S.models.catalog.length) S.models = await api("/v1/models");
+  const w = wiz();
+  // arriving with a pick from another page pre-completes that step
+  if (S.pick.dataset) { w.ds = S.pick.dataset; S.pick.dataset = null;
+                        w.step = Math.max(w.step, 1); }
+  if (S.pick.model)   { w.model = S.pick.model; S.pick.model = null;
+                        w.step = Math.max(w.step, 2); }
+  renderWiz();
+}
+
+function renderWiz() {
+  const w = wiz();
+  const can = [!!w.ds, !!w.model, !!w.method, true, true];
   $("#page").innerHTML = `
     <h2>New training</h2>
-    <p class="lead">dataset → model → method. Everything else has defaults.</p>
-    <form class="stack" id="trainform">
-      <div class="pair"><label>dataset</label>
-        <select id="t-ds" required>
-          <option value="">— pick a dataset —</option>
-          ${S.datasets.map(d => `<option value="${d.dataset_id}"
-            ${S.pick.dataset===d.dataset_id?"selected":""}>${esc(d.name)} (${d.rows} rows, ${d.format})</option>`).join("")}
-        </select></div>
-      <div class="pair"><label>model</label>
-        <input id="t-model" required placeholder="HF hub id — see Models tab"
-               value="${esc(S.pick.model || "mlx-community/Qwen2.5-0.5B-Instruct-4bit")}"></div>
-      <div class="pair"><label>method</label><select id="t-method">${mOpts}</select></div>
-      <div class="pair"><label>max steps</label><input id="t-steps" type="number" value="60" min="1"></div>
-      <div class="pair"><label>lora r</label><input id="t-lorar" type="number" value="16" min="1"></div>
-      <div class="pair"><label>learning rate</label><input id="t-lr" placeholder="per-method default"></div>
-      <div class="pair"><label>batch size</label><input id="t-batch" type="number" value="2" min="1"></div>
-      <div class="pair"><label>held-out eval</label>
-        <label class="rowflex"><input type="checkbox" id="t-eval" style="width:auto"> hold out 10% — watch for overfitting</label></div>
-      <div class="pair"><label></label>
-        <button class="primary" style="justify-self:start">start training ›</button></div>
-    </form>`;
-  $("#trainform").addEventListener("submit", async e => {
-    e.preventDefault();
-    const config = { method: $("#t-method").value,
-      max_steps: +$("#t-steps").value || 60, lora_r: +$("#t-lorar").value || 16,
-      per_device_train_batch_size: +$("#t-batch").value || 2 };
-    if ($("#t-lr").value) config.learning_rate = parseFloat($("#t-lr").value);
-    const out = await api("/v1/finetunes", {method:"POST", body:JSON.stringify({
-      base_model: $("#t-model").value, config,
-      dataset_id: $("#t-ds").value,
-      eval_dataset: $("#t-eval").checked ? "auto" : null,
-      load_in_4bit: false, max_seq_length: 2048 })});
-    location.hash = "#runs/" + out.job_id;
-  });
+    <p class="lead">five decisions, in the order they depend on each other —
+       everything else has defaults.</p>
+    <div class="steps">
+      ${WIZ_STEPS.map((s, i) => `<div class="step
+        ${i < w.step ? "done" : i === w.step ? "cur" : ""}" data-n="${i + 1}"
+        ${i < w.step ? `onclick="wizGo(${i})"` : ""}>${s}</div>`).join("")}
+    </div>
+    <div class="wizbody" id="wizbody"></div>
+    <div class="wizfoot" id="wizfoot"></div>`;
+  [wizData, wizModel, wizMethod, wizTune, wizLaunch][w.step]();
+  const foot = $("#wizfoot");
+  if (w.step > 0) foot.innerHTML += `<button class="ghost" onclick="wizGo(${w.step - 1})">‹ back</button>`;
+  if (w.step < 4) foot.innerHTML += `<button class="primary" id="wiznext"
+      ${can[w.step] ? "" : "disabled"} onclick="wizGo(${w.step + 1})">continue ›</button>`;
 }
+window.wizGo = n => { wiz().step = n; renderWiz(); };
+
+// step 1 — Data: the dataset decides what training even means
+function wizData() {
+  const w = wiz();
+  $("#wizbody").innerHTML = `
+    <div class="grid cards">
+      ${S.datasets.map(d => `
+        <div class="card methodcard ${w.ds === d.dataset_id ? "sel" : ""}"
+             onclick="wizPickDs('${d.dataset_id}')">
+          <div class="rowflex" style="justify-content:space-between">
+            <h4>${esc(d.name)}</h4><span class="pill">${d.format}</span></div>
+          <div class="meta">${d.rows} rows</div>
+        </div>`).join("")}
+      <div class="card"><h4>New dataset</h4>
+        <div class="meta">paste or upload on the Datasets page</div>
+        <button class="ghost" style="margin-top:10px"
+                onclick="location.hash='#datasets'">go to Datasets ›</button>
+      </div>
+    </div>`;
+}
+window.wizPickDs = id => { const w = wiz(); w.ds = id; renderWiz(); };
+
+// step 2 — Model
+function wizModel() {
+  const w = wiz();
+  const card = m => `
+    <div class="card methodcard ${w.model === m.id ? "sel" : ""}"
+         onclick="wizPickModel('${m.id}')">
+      <div class="rowflex" style="justify-content:space-between">
+        <h4>${esc(m.id.split("/").pop())}</h4>
+        <span>${m.dev ? '<span class="pill green">dev pick</span>' : ""}
+        ${m.gated ? '<span class="pill gold">HF token</span>' : ""}</span></div>
+      <div class="meta">${esc(m.id)}</div>
+      <div class="meta">${m.params || ""}${m.note ? " · " + esc(m.note) : ""}</div>
+    </div>`;
+  $("#wizbody").innerHTML = `
+    <div class="grid cards">
+      ${S.models.recent.filter(r => !S.models.catalog.some(c => c.id === r))
+        .map(id => card({ id, note: "recently trained here" })).join("")}
+      ${S.models.catalog.map(card).join("")}
+      <div class="card"><h4>Custom</h4>
+        <form class="rowflex" style="margin-top:8px"
+              onsubmit="event.preventDefault(); wizPickModel(this.q.value.trim())">
+          <input name="q" placeholder="org/model-name" style="flex:1"
+                 value="${esc(w.model && !S.models.catalog.some(c => c.id === w.model) ? w.model : "")}">
+          <button class="primary">use</button>
+        </form></div>
+    </div>`;
+}
+window.wizPickModel = id => { if (!id) return; const w = wiz(); w.model = id; renderWiz(); };
+
+// step 3 — Method: ranked by what the chosen data supports
+function wizMethod() {
+  const w = wiz();
+  const meta = S.datasets.find(d => d.dataset_id === w.ds) || {};
+  const rec = REC(meta.format);
+  const ordered = [...S.methods].sort((a, b) =>
+    (rec.includes(b.name) - rec.includes(a.name)));
+  $("#wizbody").innerHTML = `
+    <p class="sub" style="margin-bottom:12px">your dataset is
+      <b>${meta.format || "?"}</b> — recommended methods first.</p>
+    <div class="grid cards">
+      ${ordered.map(m => `
+        <div class="card methodcard ${w.method === m.name ? "sel" : ""}"
+             onclick="wizPickMethod('${m.name}')">
+          <div class="rowflex" style="justify-content:space-between">
+            <h4>${m.name}</h4>
+            <span>${rec.includes(m.name) ? '<span class="pill red">recommended</span>' : ""}
+            <span class="pill">${m.trainer}</span></span></div>
+          <div class="meta">${esc(m.description)}</div>
+          <div class="meta">default lr ${m.default_lr}</div>
+        </div>`).join("")}
+    </div>`;
+}
+window.wizPickMethod = name => {
+  const w = wiz(); w.method = name;
+  const m = S.methods.find(x => x.name === name);
+  if (m && !w.p.lrTouched) w.p.lr = String(m.default_lr);  // method teaches lr
+  renderWiz();
+};
+
+// step 4 — Tune: only the knobs this method actually has
+function wizTune() {
+  const w = wiz();
+  const showRank = LORA_FAMILY.includes(w.method);
+  $("#wizbody").innerHTML = `
+    <form class="stack" onsubmit="event.preventDefault()">
+      <div class="pair"><label>max steps</label>
+        <input id="z-steps" type="number" value="${w.p.steps}" min="1"
+               onchange="wiz().p.steps = +this.value"></div>
+      ${showRank ? `<div class="pair"><label>lora r ${w.method === "adapter" ? "(adapter width)" : ""}</label>
+        <input id="z-rank" type="number" value="${w.p.lorar}" min="1"
+               onchange="wiz().p.lorar = +this.value"></div>` : ""}
+      <div class="pair"><label>learning rate</label>
+        <input id="z-lr" value="${esc(w.p.lr)}"
+               onchange="wiz().p.lr = this.value; wiz().p.lrTouched = true"></div>
+      <div class="pair"><label>batch size</label>
+        <input id="z-batch" type="number" value="${w.p.batch}" min="1"
+               onchange="wiz().p.batch = +this.value"></div>
+      <div class="pair"><label>held-out eval</label>
+        <label class="rowflex"><input type="checkbox" ${w.p.eval ? "checked" : ""}
+          style="width:auto" onchange="wiz().p.eval = this.checked">
+          hold out 10% — see overfitting, not just training loss</label></div>
+    </form>`;
+}
+
+// step 5 — Launch: the dry-run, then the button
+function wizLaunch() {
+  const w = wiz();
+  const meta = S.datasets.find(d => d.dataset_id === w.ds) || {};
+  const m = S.methods.find(x => x.name === w.method) || {};
+  $("#wizbody").innerHTML = `
+    <table class="review">
+      <tr><td>dataset</td><td>${esc(meta.name || w.ds)} · ${meta.rows} rows · ${meta.format}</td></tr>
+      <tr><td>model</td><td>${esc(w.model)}</td></tr>
+      <tr><td>method</td><td>${w.method} <span class="pill">${m.trainer || ""}</span></td></tr>
+      <tr><td>max steps</td><td>${w.p.steps}</td></tr>
+      ${LORA_FAMILY.includes(w.method) ? `<tr><td>lora r</td><td>${w.p.lorar}</td></tr>` : ""}
+      <tr><td>learning rate</td><td>${esc(w.p.lr || "(method default)")}</td></tr>
+      <tr><td>batch size</td><td>${w.p.batch}</td></tr>
+      <tr><td>held-out eval</td><td>${w.p.eval ? "10% held out" : "off"}</td></tr>
+    </table>
+    <div class="rowflex" style="margin-top:18px">
+      <button class="primary" onclick="wizStart()">start training ›</button>
+      <span class="sub">this exact config runs — nothing hidden</span>
+    </div>
+    <div class="err" id="wizerr"></div>`;
+}
+window.wizStart = async () => {
+  const w = wiz();
+  const config = { method: w.method, max_steps: w.p.steps,
+                   per_device_train_batch_size: w.p.batch };
+  if (LORA_FAMILY.includes(w.method)) config.lora_r = w.p.lorar;
+  if (w.p.lr) config.learning_rate = parseFloat(w.p.lr);
+  try {
+    const out = await api("/v1/finetunes", { method: "POST", body: JSON.stringify({
+      base_model: w.model, config, dataset_id: w.ds,
+      eval_dataset: w.p.eval ? "auto" : null,
+      load_in_4bit: false, max_seq_length: 2048 }) });
+    S.wiz = null;  // next training starts fresh
+    location.hash = "#runs/" + out.job_id;
+  } catch (e) { $("#wizerr").textContent = e.message; }
+};
 
 // ====== RUNS ======================================================================
 async function pageRuns() {

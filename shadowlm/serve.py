@@ -300,6 +300,14 @@ def make_handler(server: Server, api_key: str | None):
                 from .webui import HTML  # noqa: PLC0415 — the API stays authed
                 self._send(200, HTML.encode(), ctype="text/html; charset=utf-8")
                 return
+            if parts == ["logo.png"]:
+                try:
+                    from importlib import resources  # noqa: PLC0415
+                    blob = (resources.files("shadowlm") / "_assets" / "logo.png").read_bytes()
+                    self._send(200, blob, ctype="image/png")
+                except (FileNotFoundError, ModuleNotFoundError):
+                    self._error(404, "no logo bundled")
+                return
             if not self._authed():
                 return
             if parts == ["v1", "health"]:
