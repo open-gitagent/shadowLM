@@ -4,7 +4,7 @@ One protocol, two implementations: `python -m shadowlm.serve` (the reference
 server in this package, backed by the local backend) and ShadowLM Studio (the
 hosted tier). The SDK's remote backend speaks to either — `backend="remote"`
 plus `SHADOWLM_API_URL` / `SHADOWLM_API_KEY` is all a caller configures.
-
+`
 Endpoints (JSON over HTTP, optional Bearer auth):
 
     GET  /v1/health                      → {ok, backend, version}

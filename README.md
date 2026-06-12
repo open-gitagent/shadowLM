@@ -417,10 +417,11 @@ shadowlm/
   rl.py                Trajectory, TrajectoryGroup, judge rewards
   capture.py           OpenAI-compatible capture proxy — record any harness
   remote.py            the remote protocol — stdlib HTTP client
-  serve.py             reference server: the protocol over the local backend
-  webui.py             the built-in dashboard — single-file SPA served at /
+  serve.py             reference server — UI + API on one port
   cli.py               the `shadowlm` command (Typer + Rich) — [cli] extra
   _cli_entry.py        stdlib entry shim — friendly message if [cli] is missing
+  _static/             the built React studio (shipped in the wheel)
+  _assets/logo.png     the chrome brain mark (favicon, sidebar)
   methods/             training techniques — one module per method
     base.py            TrainingMethod spec + registry
     lora qlora dora full cpt dpo grpo more bitfit soft_prompt ptuning adapter
@@ -429,6 +430,8 @@ shadowlm/
     mlx.py             MLXBackend  — Apple Silicon (Metal GPU)
     torch.py           TorchBackend — PyTorch (CUDA / CPU)
     remote.py          RemoteBackend — any ShadowLM server, over HTTP
+frontend/              the studio UI source (Vite + React + TS + Tailwind);
+                       `npm run build` → shadowlm/_static (ships in the wheel)
 examples/
   quickstart.py        datasets → finetune → inference, end to end
   train_eval_split.py  held-out validation + overfitting signal

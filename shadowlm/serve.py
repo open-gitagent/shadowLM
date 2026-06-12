@@ -34,6 +34,21 @@ from .training import Metric, TrainConfig
 
 DEFAULT_PORT = 8329
 
+# Shown only when running from a source checkout where the React app hasn't been
+# built. Every pip install ships the compiled UI in _static, so users never see
+# this — it's a hint for contributors, not a fallback UI.
+_NO_BUILD_PAGE = """<!doctype html><meta charset="utf-8">
+<title>ShadowLM</title>
+<body style="font:15px ui-monospace,monospace;background:#16120e;color:#f2eae0;
+ padding:64px;line-height:1.7">
+<h1 style="color:#e5484d">slm&#9829; ShadowLM</h1>
+<p>The API is running — but the studio UI hasn't been built in this checkout.</p>
+<pre style="background:#221c16;border:1px solid #3a3129;border-radius:10px;
+ padding:16px">cd frontend &amp;&amp; npm install &amp;&amp; npm run build</pre>
+<p>…then reload. Or <code>shadowlm serve --dev</code> for hot reload.
+ (pip installs ship the built UI — you only see this from source.)</p>
+</body>"""
+
 
 @dataclass
 class _Job:
@@ -296,14 +311,14 @@ def make_handler(server: Server, api_key: str | None):
         # ---- routes ---------------------------------------------------------
         def do_GET(self):  # noqa: N802
             parts = self.path.split("?")[0].strip("/").split("/")
-            if parts == [""]:  # the dashboard — no auth for the shell page;
+            if parts == [""]:  # the React studio shell — no auth for the page;
                 static_index = Path(__file__).parent / "_static" / "index.html"
-                if static_index.exists():  # the compiled React studio
+                if static_index.exists():  # the API itself stays authed
                     self._send(200, static_index.read_bytes(),
                                ctype="text/html; charset=utf-8")
-                else:  # no-build fallback: the single-file vanilla SPA
-                    from .webui import HTML  # noqa: PLC0415 — API stays authed
-                    self._send(200, HTML.encode(), ctype="text/html; charset=utf-8")
+                else:  # only on an unbuilt source checkout — build it or use --dev
+                    self._send(200, _NO_BUILD_PAGE.encode(),
+                               ctype="text/html; charset=utf-8")
                 return
             if parts[0] == "assets" and len(parts) == 2 and ".." not in parts[1]:
                 asset = Path(__file__).parent / "_static" / "assets" / parts[1]
