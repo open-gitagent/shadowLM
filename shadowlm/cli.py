@@ -48,6 +48,21 @@ app = typer.Typer(
     context_settings={"help_option_names": ["-h", "--help"]},
 )
 
+def _show_version(value: bool):
+    if value:
+        console.print(f"[slm]shadowlm[/slm] {__version__}  ·  slm♥")
+        raise typer.Exit()
+
+
+@app.callback()
+def _main(
+    version: Annotated[Optional[bool], typer.Option(
+        "--version", "-V", callback=_show_version, is_eager=True,
+        help="Show version and exit.")] = None,
+):
+    pass
+
+
 _STATUS_STYLE = {"succeeded": "ok", "failed": "bad", "stopped": "warn",
                  "running": "cyan", "pending": "muted"}
 

@@ -42,8 +42,17 @@ jobs:
       - name: Smoke-test the wheel (clean install, import, CLI)
         run: |
           python -m venv /tmp/smoke
+          # bare install: zero deps, library imports, CLI degrades with a hint
           /tmp/smoke/bin/pip install --quiet dist/*.whl
           /tmp/smoke/bin/python -c "import shadowlm; print(shadowlm.__version__)"
+          set +e
+          HINT=$(/tmp/smoke/bin/shadowlm --version 2>&1); CODE=$?
+          set -e
+          if [ "$CODE" -eq 0 ] || ! echo "$HINT" | grep -q "shadowlm\[cli\]"; then
+            echo "::error::bare-install CLI should exit non-zero with the [cli] hint"; exit 1
+          fi
+          # [cli] install: the full command works
+          /tmp/smoke/bin/pip install --quiet "$(ls dist/*.whl)[cli]"
           /tmp/smoke/bin/shadowlm --version
           /tmp/smoke/bin/shadowlm methods
 
