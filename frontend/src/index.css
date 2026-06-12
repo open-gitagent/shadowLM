@@ -1,6 +1,7 @@
 @import "tailwindcss";
 
 @theme {
+  /* Shadow & Heart — raw palette */
   --color-ink: #16120e;
   --color-umbra: #221c16;
   --color-panel: #2a231c;
@@ -10,6 +11,18 @@
   --color-okay: #3fb950;
   --color-gold: #d29922;
   --color-seam: #3a3129;
+  /* semantic aliases (shadcn-style) — components read these */
+  --color-background: #16120e;
+  --color-foreground: #f2eae0;
+  --color-card: #211b15;
+  --color-muted: #9a8f82;
+  --color-muted-foreground: #9a8f82;
+  --color-primary: #e5484d;
+  --color-primary-foreground: #ffffff;
+  --color-border: #3a3129;
+  --color-success: #3fb950;
+  --color-warning: #d29922;
+  --color-destructive: #e5484d;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 

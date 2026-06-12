@@ -1,7 +1,9 @@
 // The studio shell: brain-brand sidebar + hash router.
 import { useEffect, useState } from "react";
+import { LayoutGrid, Database, Cpu, FlaskConical, GitBranch, MessageSquare } from "lucide-react";
 import { apiKey, getHealth, getMethods } from "./api";
 import type { MethodInfo } from "./api";
+import Dashboard from "./pages/Dashboard";
 import Datasets from "./pages/Datasets";
 import Models from "./pages/Models";
 import Train from "./pages/Train";
@@ -20,15 +22,16 @@ function useHash(): string {
 }
 
 const NAV = [
-  { hash: "datasets", n: "1", label: "Datasets" },
-  { hash: "models", n: "2", label: "Models" },
-  { hash: "train", n: "3", label: "Trainings" },
-  { hash: "runs", n: "4", label: "Runs" },
-  { hash: "playground", n: "♥", label: "Playground" },
+  { hash: "dashboard", label: "Dashboard", Icon: LayoutGrid },
+  { hash: "datasets", label: "Datasets", Icon: Database },
+  { hash: "models", label: "Models", Icon: Cpu },
+  { hash: "train", label: "Trainings", Icon: FlaskConical },
+  { hash: "runs", label: "Runs", Icon: GitBranch },
+  { hash: "playground", label: "Playground", Icon: MessageSquare },
 ];
 
 export default function App() {
-  const hash = useHash() || "datasets";
+  const hash = useHash() || "dashboard";
   const [section, arg] = hash.split("/");
   const [health, setHealth] = useState("connecting…");
   const [methods, setMethods] = useState<MethodInfo[]>([]);
@@ -42,12 +45,13 @@ export default function App() {
   }, []);
 
   const page =
+    section === "datasets" ? <Datasets /> :
     section === "models" ? <Models /> :
     section === "train" ? <Train methods={methods} /> :
     section === "runs" && arg ? <RunDetail id={arg} /> :
     section === "runs" ? <Runs /> :
     section === "playground" ? <Playground /> :
-    <Datasets />;
+    <Dashboard />;
 
   return (
     <div className="flex h-full">
@@ -61,14 +65,14 @@ export default function App() {
             </div>
           </div>
         </div>
-        {NAV.map((n) => (
-          <a key={n.hash} href={`#${n.hash}`}
+        {NAV.map(({ hash: h, label, Icon }) => (
+          <a key={h} href={`#${h}`}
              className={`flex items-center gap-2.5 rounded-lg px-3 py-2 text-[13.5px] no-underline
-               ${section === n.hash
+               ${section === h
                  ? "bg-umbra text-bone shadow-[inset_2px_0_0_#e5484d]"
                  : "text-faded hover:text-bone"}`}>
-            <span className="w-4 text-center text-heart/85">{n.n}</span>
-            {n.label}
+            <Icon className={`size-4 ${section === h ? "text-heart" : ""}`} />
+            {label}
           </a>
         ))}
         <div className="flex-1" />
