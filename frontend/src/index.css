@@ -1,27 +1,29 @@
 @import "tailwindcss";
 
 @theme {
-  /* Shadow & Heart — raw palette */
-  --color-ink: #16120e;
-  --color-umbra: #221c16;
-  --color-panel: #2a231c;
-  --color-bone: #f2eae0;
-  --color-faded: #9a8f82;
+  /* Shadow & Heart — light cream + red (the banner aesthetic).
+     Raw tokens carry semantic roles so existing classes flip with the theme:
+     ink = page, umbra = raised/hover/input, bone = text, seam = border. */
+  --color-ink: #f4ebdd;
+  --color-umbra: #ece2d2;
+  --color-panel: #e2d6c4;
+  --color-bone: #2c2118;
+  --color-faded: #8a7c6b;
   --color-heart: #e5484d;
-  --color-okay: #3fb950;
-  --color-gold: #d29922;
-  --color-seam: #3a3129;
+  --color-okay: #2e9e4a;
+  --color-gold: #b07d10;
+  --color-seam: #dccdb9;
   /* semantic aliases (shadcn-style) — components read these */
-  --color-background: #16120e;
-  --color-foreground: #f2eae0;
-  --color-card: #211b15;
-  --color-muted: #9a8f82;
-  --color-muted-foreground: #9a8f82;
+  --color-background: #f4ebdd;
+  --color-foreground: #2c2118;
+  --color-card: #fcf8f1;
+  --color-muted: #8a7c6b;
+  --color-muted-foreground: #8a7c6b;
   --color-primary: #e5484d;
   --color-primary-foreground: #ffffff;
-  --color-border: #3a3129;
-  --color-success: #3fb950;
-  --color-warning: #d29922;
+  --color-border: #dccdb9;
+  --color-success: #2e9e4a;
+  --color-warning: #b07d10;
   --color-destructive: #e5484d;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 }
@@ -33,8 +35,8 @@ body {
   font-family: var(--font-mono);
   font-size: 14px;
   background:
-    radial-gradient(1100px 520px at 78% -8%, #2e1b17 0%, transparent 60%),
-    radial-gradient(800px 500px at -10% 110%, #221713 0%, transparent 55%),
+    radial-gradient(1100px 520px at 80% -10%, #f6d9cf 0%, transparent 58%),
+    radial-gradient(820px 520px at -8% 108%, #efe2cf 0%, transparent 55%),
     var(--color-ink);
 }
 
@@ -57,7 +59,7 @@ input:focus, select:focus, textarea:focus {
 @keyframes rise { from { opacity: 0; transform: translateY(5px); } }
 @keyframes drop { from { opacity: 0; transform: translateY(-6px); } }
 @keyframes breathe {
-  50% { box-shadow: 0 0 96px #e5484d5c, 0 0 26px #e5484d44, 0 22px 50px #000a; }
+  50% { box-shadow: 0 0 96px #e5484d40, 0 0 26px #e5484d33, 0 22px 50px #b8987033; }
 }
 @keyframes blink { 40% { opacity: 0.25; } }
 @keyframes pulsedot { 50% { opacity: 0.35; } }

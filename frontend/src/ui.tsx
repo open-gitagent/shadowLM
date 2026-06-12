@@ -33,7 +33,7 @@ export function Card({ selected, onClick, children, className = "" }: {
   return (
     <div
       onClick={onClick}
-      className={`rounded-xl border bg-gradient-to-b from-[#272019] to-[#211b15] p-3.5
+      className={`rounded-xl border bg-card p-3.5
         ${selected ? "border-heart shadow-[0_0_0_1px_#e5484d55]" : "border-seam"}
         ${onClick ? "cursor-pointer hover:border-faded transition-colors" : ""} ${className}`}
     >

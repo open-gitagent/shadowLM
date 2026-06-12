@@ -105,7 +105,7 @@ export default function Playground() {
       {/* the pairing bar */}
       <div className="flex flex-wrap items-center gap-2.5 pb-3.5">
         <button onClick={() => { setPanel(panel === "base" ? null : "base"); setQ(""); }}
-          className="flex items-center gap-2 rounded-xl border border-seam bg-gradient-to-b from-[#272019] to-umbra px-4 py-2.5 hover:border-faded">
+          className="flex items-center gap-2 rounded-xl border border-seam bg-card px-4 py-2.5 hover:border-faded">
           <span className="text-[10.5px] uppercase tracking-[.14em] text-faded">base</span>
           {model.split("/").pop()} ⌄
         </button>
@@ -113,7 +113,7 @@ export default function Playground() {
         <button onClick={() => { setPanel(panel === "shadow" ? null : "shadow"); setQ(""); }}
           className={`flex items-center gap-2 rounded-xl px-4 py-2.5
             ${adapter
-              ? "border border-heart bg-gradient-to-b from-[#272019] to-umbra shadow-[0_0_0_1px_#e5484d55,0_6px_26px_#e5484d2e]"
+              ? "border border-heart bg-card shadow-[0_0_0_1px_#e5484d55,0_6px_26px_#e5484d22]"
               : "border border-dashed border-seam text-faded hover:border-faded"}`}>
           <span className="text-[10.5px] uppercase tracking-[.14em] text-faded">shadow</span>
           {adapter ? `${adapter.slice(0, 8)} · ${shadowJob?.method ?? ""}` : "none"} ⌄
@@ -145,14 +145,14 @@ export default function Playground() {
       )}
 
       {panel && (
-        <div className="drop mb-3.5 rounded-2xl border border-seam bg-gradient-to-b from-panel to-[#241d17] p-3 shadow-[0_18px_44px_#0008]">
+        <div className="drop mb-3.5 rounded-2xl border border-seam bg-card p-3 shadow-[0_18px_44px_#b8987033]">
           <input className="search mb-2 w-full bg-ink" autoFocus value={q}
             placeholder={panel === "base" ? "search models, or type any HF id…" : "search your runs…"}
             onChange={(e) => setQ(e.target.value)} />
           <div className="max-h-72 overflow-y-auto">
             {panel === "base" && panelRows.map((r) => (
               <div key={r.id} onClick={() => { setModel(r.id); setAdapter(null); setPanel(null); }}
-                   className="flex cursor-pointer items-center justify-between gap-2 rounded-lg px-2.5 py-2 text-[13px] hover:bg-[#332a21]">
+                   className="flex cursor-pointer items-center justify-between gap-2 rounded-lg px-2.5 py-2 text-[13px] hover:bg-umbra">
                 <span>{r.id}</span>
                 <span className="flex items-center gap-1.5 text-right text-[11px] text-faded">
                   {r.dev && <Pill tone="green">dev pick</Pill>}
@@ -163,20 +163,20 @@ export default function Playground() {
             ))}
             {panel === "base" && q && !panelRows.some((r) => r.id.toLowerCase() === q.toLowerCase()) && (
               <div onClick={() => { setModel(q); setAdapter(null); setPanel(null); }}
-                   className="flex cursor-pointer items-center justify-between rounded-lg px-2.5 py-2 text-[13px] hover:bg-[#332a21]">
+                   className="flex cursor-pointer items-center justify-between rounded-lg px-2.5 py-2 text-[13px] hover:bg-umbra">
                 <span>use “{q}”</span><span className="text-[11px] text-faded">any HF hub id</span>
               </div>
             )}
             {panel === "shadow" && (
               <div onClick={() => { setAdapter(null); setPanel(null); }}
-                   className="flex cursor-pointer items-center justify-between rounded-lg px-2.5 py-2 text-[13px] hover:bg-[#332a21]">
+                   className="flex cursor-pointer items-center justify-between rounded-lg px-2.5 py-2 text-[13px] hover:bg-umbra">
                 <span>none</span><span className="text-[11px] text-faded">base model only</span>
               </div>
             )}
             {panel === "shadow" && panelRuns.map((j) => (
               <div key={j.job_id}
                    onClick={() => { setAdapter(j.job_id); setModel(j.base_model); setDuet(true); setPanel(null); }}
-                   className="flex cursor-pointer items-center justify-between gap-2 rounded-lg px-2.5 py-2 text-[13px] hover:bg-[#332a21]">
+                   className="flex cursor-pointer items-center justify-between gap-2 rounded-lg px-2.5 py-2 text-[13px] hover:bg-umbra">
                 <span>{j.job_id.slice(0, 10)} <Pill tone="red">{j.method ?? ""}</Pill></span>
                 <span className="text-right text-[11px] text-faded">
                   {(j.base_model || "").split("/").pop()}
@@ -196,8 +196,8 @@ export default function Playground() {
       <div ref={logRef} className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto py-3">
         {msgs.length === 0 ? (
           <div className="flex flex-1 flex-col items-center justify-center gap-4 text-center">
-            <div className="size-[104px] overflow-hidden rounded-[30px] border border-[#4a3a30]
-                            shadow-[0_0_70px_#e5484d40,0_0_18px_#e5484d33,0_22px_50px_#000a]
+            <div className="size-[104px] overflow-hidden rounded-[30px] border border-seam
+                            shadow-[0_0_70px_#e5484d33,0_0_18px_#e5484d22,0_22px_50px_#b8987033]
                             animate-[breathe_4.5s_ease-in-out_infinite]">
               <img src="/logo.png" alt="" className="size-full" />
             </div>
@@ -205,7 +205,7 @@ export default function Playground() {
               Talk to what you trained<span className="text-heart">.</span>
             </h1>
             <div className="flex flex-wrap justify-center gap-2">
-              <span className="rounded-full border border-seam bg-umbra/60 px-3.5 py-1 text-[12px] text-faded">
+              <span className="rounded-full border border-seam bg-umbra px-3.5 py-1 text-[12px] text-faded">
                 base · {model.split("/").pop()}</span>
               {adapter ? (
                 <span className="rounded-full border border-heart/40 px-3.5 py-1 text-[12px] text-heart">
@@ -215,7 +215,7 @@ export default function Playground() {
                       className="cursor-pointer rounded-full border border-heart/40 px-3.5 py-1 text-[12px] text-heart hover:border-heart">
                   pick a finetuned run — does it cast the same shadow? ›</span>
               )}
-              <span className="rounded-full border border-seam bg-umbra/60 px-3.5 py-1 text-[12px] text-faded">
+              <span className="rounded-full border border-seam bg-umbra px-3.5 py-1 text-[12px] text-faded">
                 runs on this server · nothing leaves it</span>
             </div>
           </div>
@@ -226,11 +226,11 @@ export default function Playground() {
             if (m.compare)
               return (
                 <div key={i} className="rise grid grid-cols-2 gap-2.5">
-                  <div className="rounded-xl border border-heart/55 bg-gradient-to-b from-[#272019] to-[#211b15] px-3.5 py-2.5 text-[13px] shadow-[0_0_0_1px_#e5484d33,0_6px_24px_#e5484d1f]">
+                  <div className="rounded-xl border border-heart/55 bg-card px-3.5 py-2.5 text-[13px] shadow-[0_0_0_1px_#e5484d22,0_6px_24px_#e5484d14]">
                     <b className="mb-1.5 block text-[10.5px] uppercase tracking-[.12em] text-heart">shadow ♥</b>
                     <span className="whitespace-pre-wrap">{m.tuned == null ? <Dots /> : m.tuned}</span>
                   </div>
-                  <div className="rounded-xl border border-seam bg-gradient-to-b from-[#272019] to-[#211b15] px-3.5 py-2.5 text-[13px]">
+                  <div className="rounded-xl border border-seam bg-card px-3.5 py-2.5 text-[13px]">
                     <b className="mb-1.5 block text-[10.5px] uppercase tracking-[.12em] text-faded">base</b>
                     <span className="whitespace-pre-wrap">{m.base == null ? <Dots /> : m.base}</span>
                   </div>
@@ -247,7 +247,7 @@ export default function Playground() {
       </div>
 
       <form onSubmit={send}
-            className="mt-3 flex items-center gap-2.5 rounded-2xl border border-seam bg-gradient-to-b from-[#241d17] to-[#201a14] py-1.5 pl-4 pr-1.5 transition-shadow focus-within:border-heart/55 focus-within:shadow-[0_0_0_1px_#e5484d33,0_8px_30px_#e5484d14]">
+            className="mt-3 flex items-center gap-2.5 rounded-2xl border border-seam bg-card py-1.5 pl-4 pr-1.5 transition-shadow focus-within:border-heart/55 focus-within:shadow-[0_0_0_1px_#e5484d33,0_8px_30px_#e5484d14]">
         <span className="font-bold text-heart">you ›</span>
         <input className="flex-1 border-none bg-transparent px-0 py-2 focus:outline-none"
                placeholder={adapter && duet ? "one prompt, two answers…" : "say something…"}
