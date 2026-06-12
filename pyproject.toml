@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "shadowlm"
-version = "0.2.0"
+version = "0.2.1"
 description = "ShadowLM Trainer — fine-tune any open model, from any harness, with any method."
 readme = "README.md"
 license = "MIT"

@@ -22,7 +22,7 @@ from .models import Model, Reply, load
 from .rl import Trajectory, TrajectoryGroup, judge_group
 from .training import Metric, TrainConfig, TrainingRun
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 __all__ = [
     "CaptureProxy",
