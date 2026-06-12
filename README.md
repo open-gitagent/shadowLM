@@ -92,6 +92,7 @@ develops fast on an Apple laptop before it ships to a GPU box.
 |---------|----------|--------|
 | `torch` | **CUDA GPU** (production), or CPU (`device="cpu"`) | `transformers` + `trl` + `peft` — SFT / DPO / GRPO |
 | `mlx`   | Apple Silicon | `mlx-lm` — the local dev loop |
+| `remote` | any ShadowLM server — `shadowlm serve` on a GPU box, or ShadowLM Studio | this same SDK, over HTTP |
 
 `auto` resolves CUDA → `torch`, else Apple Silicon → `mlx`, else `torch` on CPU.
 One device knob, no mock fallback. The whole torch path — SFT, DPO, GRPO, eval,
@@ -166,6 +167,32 @@ run = model.finetune([group], method="grpo")
 
 The async rollout-service tier (gateways, prewarming, fleet-scale trainers)
 belongs to the studio.
+
+### Train remotely — same five lines, someone else's GPU
+
+`backend="remote"` runs the identical API against any ShadowLM server. Live
+metrics stream back into the same progress bar, sparkline, and local run
+records; the trained adapter downloads automatically when the job finishes.
+
+```python
+model = slm.load("Qwen/Qwen2.5-0.5B-Instruct", backend="remote")  # SHADOWLM_API_URL
+run = model.finetune(ds, method="lora")        # trains on the server, live bar here
+print(model.generate("..."))                    # remote inference on the result
+```
+
+The reference server ships in the box — run it on the GPU machine:
+
+```bash
+shadowlm serve --port 8329                      # or: python -m shadowlm.serve
+SHADOWLM_API_KEY=secret shadowlm serve          # require Bearer auth
+```
+
+It speaks a small JSON protocol (submit / metrics / cancel / artifact /
+generate / chat — see `shadowlm/remote.py`) backed by the real local backend —
+no mock. ShadowLM Studio implements the same protocol at fleet scale. Client
+and server are both pure stdlib. One limit: `reward_fns` are Python functions
+and don't serialize — run those locally, or train on judge-scored trajectory
+groups (those serialize fine).
 
 ### Agent RL: trajectories + judge rewards
 
@@ -379,6 +406,8 @@ shadowlm/
   bottleneck.py        Houlsby-style bottleneck adapters
   rl.py                Trajectory, TrajectoryGroup, judge rewards
   capture.py           OpenAI-compatible capture proxy — record any harness
+  remote.py            the remote protocol — stdlib HTTP client
+  serve.py             reference server: the protocol over the local backend
   cli.py               the `shadowlm` command (Typer + Rich) — [cli] extra
   _cli_entry.py        stdlib entry shim — friendly message if [cli] is missing
   methods/             training techniques — one module per method
@@ -388,6 +417,7 @@ shadowlm/
     base.py            Backend interface + Callbacks bridge
     mlx.py             MLXBackend  — Apple Silicon (Metal GPU)
     torch.py           TorchBackend — PyTorch (CUDA / CPU)
+    remote.py          RemoteBackend — any ShadowLM server, over HTTP
 examples/
   quickstart.py        datasets → finetune → inference, end to end
   train_eval_split.py  held-out validation + overfitting signal
@@ -439,6 +469,8 @@ Current status:
 - [x] Harness capture proxy — OpenAI-compatible, SSE streaming, trajectory
       reconstruction
 - [x] ShadowLM CLI — finetune / runs / plot / chat / methods from the shell
+- [x] Remote backend + reference server — `backend="remote"`, live metric
+      streaming, artifact download; the protocol Studio implements at scale
 - [ ] ShadowLM Studio
 
 ## Contributing

@@ -61,4 +61,10 @@ def select_backend(name: str = "auto", *, accelerator: str = "auto",
             )
         return TorchBackend(device=device, accelerator=accelerator)
 
-    raise ValueError(f"unknown backend {name!r} (expected auto|mlx|torch)")
+    if name == "remote":
+        # Train wherever SHADOWLM_API_URL points — `python -m shadowlm.serve`
+        # on a GPU box, or ShadowLM Studio. Pure stdlib; always constructible.
+        from .remote import RemoteBackend
+        return RemoteBackend(device=device, accelerator=accelerator)
+
+    raise ValueError(f"unknown backend {name!r} (expected auto|mlx|torch|remote)")

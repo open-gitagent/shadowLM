@@ -417,6 +417,29 @@ def plot(
     console.print(rec.plot(metric, smooth=smooth, window=window, log=log, clip=clip))
 
 
+# ---- server -----------------------------------------------------------------
+@app.command(rich_help_panel="Server")
+def serve(
+    host: Annotated[str, typer.Option()] = "127.0.0.1",
+    port: Annotated[int, typer.Option()] = 8329,
+    backend: Annotated[str, typer.Option(help="auto | mlx | torch")] = "auto",
+    accelerator: Annotated[str, typer.Option(help="auto | shadow | none")] = "auto",
+    device: Annotated[str, typer.Option(help="auto | cuda | cpu (torch)")] = "auto",
+    work_dir: Annotated[Optional[str], typer.Option("--work-dir")] = None,
+):
+    """Run the ShadowLM reference server — clients connect with backend="remote".
+
+    Set SHADOWLM_API_KEY in the environment to require Bearer auth.
+    """
+    from .serve import main as serve_main  # noqa: PLC0415
+
+    argv = ["--host", host, "--port", str(port), "--backend", backend,
+            "--accelerator", accelerator, "--device", device]
+    if work_dir:
+        argv += ["--work-dir", work_dir]
+    raise typer.Exit(serve_main(argv))
+
+
 # ---- info -------------------------------------------------------------------
 def _methods_cmd():
     """List the registered training methods."""
