@@ -118,10 +118,39 @@ HTML = r"""<!doctype html>
   .review td:first-child { color:var(--muted); width:180px; }
   /* ---- playground ---- */
   #pg { display:flex; flex-direction:column; height:100%; min-height:0; }
-  #pg-controls { display:flex; gap:8px; flex-wrap:wrap; align-items:center;
-                 padding-bottom:14px; border-bottom:1px solid var(--line); }
+  #pg-top { display:flex; gap:10px; align-items:center; position:relative;
+            padding-bottom:12px; }
+  #pg-top .selbtn { display:flex; gap:8px; align-items:center; font-weight:700; }
+  #pg-top .selbtn .pill { font-weight:400; }
+  .pop { position:absolute; top:46px; left:0; z-index:10; width:520px;
+         background:var(--panel); border:1px solid var(--line);
+         border-radius:14px; padding:12px; box-shadow:0 18px 48px #0009; }
+  .tabs { display:flex; background:var(--ink); border-radius:999px; padding:3px;
+          margin-bottom:10px; }
+  .tabs button { flex:1; border:none; background:transparent; border-radius:999px;
+                 padding:7px; color:var(--muted); }
+  .tabs button.on { background:var(--umbra); color:var(--bone);
+                    box-shadow:inset 0 0 0 1px var(--line); }
+  .pop input.search { width:100%; margin-bottom:8px; }
+  .pop .list { max-height:300px; overflow-y:auto; }
+  .pop .item { display:flex; justify-content:space-between; align-items:center;
+               gap:8px; padding:9px 10px; border-radius:9px; cursor:pointer;
+               font-size:13px; }
+  .pop .item:hover { background:var(--umbra); }
+  .pop .item .meta { color:var(--muted); font-size:11px; }
   #pg-log { flex:1; overflow-y:auto; display:flex; flex-direction:column;
-            gap:10px; padding:16px 2px; }
+            gap:10px; padding:14px 2px; }
+  .hero { flex:1; display:flex; flex-direction:column; align-items:center;
+          justify-content:center; gap:22px; }
+  .hero h1 { font-size:26px; font-weight:700; }
+  .hero h1 .mark { color:var(--heart); }
+  .hero .sub2 { color:var(--muted); font-size:13px; }
+  .heroform { width:min(680px, 90%); display:flex; gap:8px;
+              background:var(--umbra); border:1px solid var(--line);
+              border-radius:999px; padding:8px 8px 8px 20px; }
+  .heroform input { flex:1; background:transparent; border:none; padding:8px 0; }
+  .heroform input:focus { outline:none; }
+  .heroform button { border-radius:999px; width:42px; height:42px; }
   .cmp { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
   .cmp .col { background:var(--umbra); border:1px solid var(--line);
               border-radius:10px; padding:10px 12px; font-size:13px;
@@ -135,7 +164,7 @@ HTML = r"""<!doctype html>
              border-top:1px solid var(--line); }
   #pg-form input { flex:1; }
   .switch { display:flex; gap:6px; align-items:center; color:var(--muted);
-            font-size:12px; }
+            font-size:12px; cursor:pointer; }
 </style>
 </head>
 <body>
@@ -562,50 +591,141 @@ window.playRun = (id, base) => {
 };
 
 // ====== PLAYGROUND ================================================================
-async function pagePlayground() {
-  S.jobs = (await api("/v1/finetunes")).jobs;
-  const done = S.jobs.filter(j => j.status === "succeeded");
-  const adOpts = done.map(j => `<option value="${j.job_id}"
-      data-model="${esc(j.base_model)}" ${S.pick.adapter===j.job_id?"selected":""}>
-      ${j.job_id.slice(0,8)} · ${esc((j.base_model||"").split("/").pop())} · ${j.method||""}</option>`).join("");
-  $("#page").innerHTML = `
-    <div id="pg">
-      <h2>Playground</h2>
-      <p class="lead">Talk to any model — or flip on <b>compare</b> and watch the
-         base model and your finetune answer the same prompt, side by side.</p>
-      <div id="pg-controls">
-        <input id="pg-model" placeholder="base model (HF id)" size="34"
-               value="${esc(S.pick.model || "mlx-community/Qwen2.5-0.5B-Instruct-4bit")}">
-        <select id="pg-adapter">
-          <option value="">no adapter (base model)</option>${adOpts}
-        </select>
-        <input id="pg-sys" placeholder="system prompt (optional)" size="24">
-        <input id="pg-temp" type="number" value="0.7" step="0.1" min="0" max="2"
-               style="width:74px" title="temperature">
-        <input id="pg-max" type="number" value="256" min="1" style="width:84px"
-               title="max new tokens">
-        <label class="switch"><input type="checkbox" id="pg-cmp"
-               ${S.pick.adapter?"checked":""} style="width:auto"> compare base ↔ finetuned</label>
-        <button class="ghost" onclick="S.pg.msgs=[];pagePlayground()">clear</button>
-      </div>
-      <div id="pg-log"></div>
-      <form id="pg-form">
-        <input id="pg-in" placeholder="say something…" autocomplete="off">
-        <button class="primary">›</button>
-      </form>
-    </div>`;
-  $("#pg-adapter").addEventListener("change", e => {
-    const opt = e.target.selectedOptions[0];
-    if (opt && opt.dataset.model) $("#pg-model").value = opt.dataset.model;
-    S.pick.adapter = e.target.value || null;
-  });
-  $("#pg-form").addEventListener("submit", pgSend);
-  pgRender();
+function pgState() {
+  if (!S.pgv2) S.pgv2 = { msgs:[], busy:false, model:null, adapter:null,
+    compare:false, sys:"", temp:0.7, max:256, pop:false, tab:"hub", q:"",
+    gear:false };
+  return S.pgv2;
 }
 
+async function pagePlayground() {
+  S.jobs = (await api("/v1/finetunes")).jobs;
+  if (!S.models.catalog.length) S.models = await api("/v1/models");
+  const p = pgState();
+  if (S.pick.model) { p.model = S.pick.model; S.pick.model = null; }
+  if (S.pick.adapter) {
+    p.adapter = S.pick.adapter; S.pick.adapter = null; p.compare = true;
+    const j = S.jobs.find(x => x.job_id === p.adapter);
+    if (j) p.model = j.base_model;
+  }
+  if (!p.model) p.model = "mlx-community/Qwen2.5-0.5B-Instruct-4bit";
+  pgShell();
+}
+
+function pgLabel() {
+  const p = pgState();
+  if (p.adapter) {
+    const j = S.jobs.find(x => x.job_id === p.adapter);
+    return `${p.adapter.slice(0,8)} <span class="pill red">fine-tuned</span>
+            <span class="meta">${esc((j?.base_model||p.model).split("/").pop())}</span>`;
+  }
+  return `${esc(p.model.split("/").pop())} <span class="pill">base</span>`;
+}
+
+function pgShell() {
+  const p = pgState();
+  $("#page").innerHTML = `
+    <div id="pg">
+      <div id="pg-top">
+        <button class="ghost selbtn" onclick="pgTogglePop()">${pgLabel()} ⌄</button>
+        ${p.adapter ? `<label class="switch">
+          <input type="checkbox" ${p.compare?"checked":""} style="width:auto"
+                 onchange="pgState().compare=this.checked"> compare base ↔ finetuned
+          </label>` : ""}
+        <span class="spacer" style="flex:1"></span>
+        <button class="ghost" onclick="pgState().gear=!pgState().gear; pgShell()">⚙</button>
+        <button class="ghost" onclick="S.pgv2.msgs=[]; pgShell()">clear</button>
+        <div class="pop" id="pg-pop" style="display:${p.pop?"block":"none"}"></div>
+      </div>
+      ${p.gear ? `
+      <div class="rowflex" style="padding-bottom:12px">
+        <input placeholder="system prompt" value="${esc(p.sys)}" size="40"
+               onchange="pgState().sys=this.value">
+        <input type="number" value="${p.temp}" step="0.1" min="0" max="2"
+               style="width:76px" title="temperature"
+               onchange="pgState().temp=parseFloat(this.value)||0.7">
+        <input type="number" value="${p.max}" min="1" style="width:86px"
+               title="max new tokens" onchange="pgState().max=+this.value||256">
+      </div>` : ""}
+      ${p.msgs.length ? `
+        <div id="pg-log"></div>
+        <form id="pg-form">
+          <input id="pg-in" placeholder="say something…" autocomplete="off">
+          <button class="primary">›</button>
+        </form>` : `
+        <div class="hero">
+          <h1>Talk to what you trained<span class="mark">.</span></h1>
+          <div class="sub2">${p.adapter
+            ? "compare is on — the base model and your finetune answer side by side"
+            : "or any open model — pick a fine-tuned run to unlock compare"}</div>
+          <form class="heroform" id="pg-form">
+            <input id="pg-in" placeholder="say something…" autocomplete="off">
+            <button class="primary">›</button>
+          </form>
+        </div>`}
+    </div>`;
+  if (p.pop) pgRenderPop();
+  $("#pg-form").addEventListener("submit", pgSend);
+  pgRender();
+  const inp = $("#pg-in"); if (inp) inp.focus();
+}
+
+window.pgTogglePop = () => { const p = pgState(); p.pop = !p.pop; pgShell(); };
+
+function pgRenderPop() {
+  const p = pgState();
+  const q = p.q.toLowerCase();
+  let items = "";
+  if (p.tab === "hub") {
+    const seen = new Set();
+    const rows = [];
+    for (const id of S.models.recent) if (!seen.has(id)) { seen.add(id);
+      rows.push({ id, meta: "recently trained here" }); }
+    for (const m of S.models.catalog) if (!seen.has(m.id)) { seen.add(m.id);
+      rows.push({ id: m.id, meta: (m.params||"") + (m.note ? " · " + m.note : ""),
+                  gated: m.gated, dev: m.dev }); }
+    const vis = rows.filter(r => r.id.toLowerCase().includes(q));
+    items = vis.map(r => `
+      <div class="item" onclick="pgPickHub('${r.id}')">
+        <span>${esc(r.id)}</span>
+        <span class="meta">${r.dev?'<span class="pill green">dev pick</span> ':""}
+          ${r.gated?'<span class="pill gold">HF token</span> ':""}${esc(r.meta||"")}</span>
+      </div>`).join("");
+    if (q && !rows.some(r => r.id.toLowerCase() === q))
+      items += `<div class="item" onclick="pgPickHub('${esc(p.q)}')">
+        <span>use “${esc(p.q)}”</span><span class="meta">any HF hub id</span></div>`;
+  } else {
+    const done = S.jobs.filter(j => j.status === "succeeded"
+      && (j.job_id.includes(q) || (j.base_model||"").toLowerCase().includes(q)));
+    items = done.map(j => `
+      <div class="item" onclick="pgPickTuned('${j.job_id}')">
+        <span>${j.job_id.slice(0,10)} <span class="pill red">${j.method||""}</span></span>
+        <span class="meta">${esc((j.base_model||"").split("/").pop())}
+          ${j.final_loss!=null ? "· loss " + j.final_loss.toFixed(3) : ""}</span>
+      </div>`).join("")
+      || '<div class="item"><span class="meta">no fine-tuned runs yet — train one first</span></div>';
+  }
+  $("#pg-pop").innerHTML = `
+    <div class="tabs">
+      <button class="${p.tab==="hub"?"on":""}" onclick="pgTab('hub')">Hub models</button>
+      <button class="${p.tab==="tuned"?"on":""}" onclick="pgTab('tuned')">Fine-tuned</button>
+    </div>
+    <input class="search" placeholder="search…" value="${esc(p.q)}"
+           oninput="pgState().q=this.value; pgRenderPop()">
+    <div class="list">${items}</div>`;
+}
+window.pgTab = t => { const p = pgState(); p.tab = t; pgRenderPop(); };
+window.pgPickHub = id => { const p = pgState();
+  p.model = id; p.adapter = null; p.compare = false; p.pop = false; pgShell(); };
+window.pgPickTuned = id => { const p = pgState();
+  const j = S.jobs.find(x => x.job_id === id);
+  p.adapter = id; if (j) p.model = j.base_model; p.compare = true;
+  p.pop = false; pgShell(); };
+
 function pgRender() {
+  const p = pgState();
   const log = $("#pg-log"); if (!log) return;
-  log.innerHTML = S.pg.msgs.map(m => {
+  log.innerHTML = p.msgs.map(m => {
     if (m.role === "user") return `<div class="msg you">${esc(m.content)}</div>`;
     if (m.compare) return `<div class="cmp">
         <div class="col base"><b>base</b>${esc(m.base ?? "…")}</div>
@@ -618,40 +738,36 @@ function pgRender() {
 
 async function pgSend(e) {
   e.preventDefault();
-  if (S.pg.busy) return;
+  const p = pgState();
+  if (p.busy) return;
   const text = $("#pg-in").value.trim(); if (!text) return;
-  $("#pg-in").value = "";
-  const model = $("#pg-model").value.trim();
-  const adapter = $("#pg-adapter").value || null;
-  const compare = $("#pg-cmp").checked && adapter;
-  const sys = $("#pg-sys").value.trim();
-  const temp = parseFloat($("#pg-temp").value) || 0.7;
-  const maxNew = parseInt($("#pg-max").value) || 256;
-
-  S.pg.msgs.push({role:"user", content:text});
+  const firstTurn = p.msgs.length === 0;
+  const compare = p.compare && p.adapter;
+  p.msgs.push({ role:"user", content:text });
   const history = [];
-  if (sys) history.push({role:"system", content:sys});
-  for (const m of S.pg.msgs) {
-    if (m.role === "user") history.push({role:"user", content:m.content});
-    else history.push({role:"assistant",
-                       content: m.compare ? (m.tuned ?? "") : (m.content ?? "")});
+  if (p.sys) history.push({ role:"system", content:p.sys });
+  for (const m of p.msgs) {
+    if (m.role === "user") history.push({ role:"user", content:m.content });
+    else history.push({ role:"assistant",
+                        content: m.compare ? (m.tuned ?? "") : (m.content ?? "") });
   }
-  const turn = compare ? {role:"assistant", compare:true} :
-                         {role:"assistant", content:null};
-  S.pg.msgs.push(turn); S.pg.busy = true; pgRender();
+  const turn = compare ? { role:"assistant", compare:true }
+                       : { role:"assistant", content:null };
+  p.msgs.push(turn); p.busy = true;
+  if (firstTurn) pgShell(); else pgRender();
 
-  const ask = ad => api("/v1/chat", {method:"POST", body:JSON.stringify({
-      model, adapter:ad, messages:history, max_new_tokens:maxNew,
-      temperature:temp, top_p:0.95 })}).then(o => o.text)
+  const ask = ad => api("/v1/chat", { method:"POST", body:JSON.stringify({
+      model:p.model, adapter:ad, messages:history, max_new_tokens:p.max,
+      temperature:p.temp, top_p:0.95 })}).then(o => o.text)
       .catch(err => "⚠ " + err.message);
   try {
     if (compare) {
-      turn.tuned = await ask(adapter); pgRender();   // serial: one GPU slot
+      turn.tuned = await ask(p.adapter); pgRender();  // serial: one GPU slot
       turn.base = await ask(null);
     } else {
-      turn.content = await ask(adapter);
+      turn.content = await ask(p.adapter);
     }
-  } finally { S.pg.busy = false; pgRender(); }
+  } finally { p.busy = false; pgRender(); }
 }
 </script>
 </body>
