@@ -9,6 +9,15 @@ PIP     := $(VENV)/bin/pip
 SHADOWLM:= $(VENV)/bin/shadowlm
 PORT    ?= 8329
 
+# Version: read the current one, compute the next. `make release` bumps the
+# patch; override with BUMP=minor / BUMP=major, or pin with V=1.2.3.
+CURRENT := $(shell sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml)
+BUMP    ?= patch
+V       ?= $(shell echo $(CURRENT) | awk -F. -v b=$(BUMP) '{ \
+	if (b=="major") printf "%d.0.0", $$1+1; \
+	else if (b=="minor") printf "%d.%d.0", $$1, $$2+1; \
+	else printf "%d.%d.%d", $$1, $$2, $$3+1 }')
+
 .DEFAULT_GOAL := help
 
 # ---- help -------------------------------------------------------------------
@@ -71,10 +80,7 @@ version:  ## print the version recorded in both source files
 	@grep '^__version__' shadowlm/__init__.py
 
 .PHONY: bump
-bump:  ## set the version in both source files (make bump V=0.2.1)
-ifndef V
-	$(error set V, e.g. `make bump V=0.2.1`)
-endif
+bump:  ## write version V into both source files (default: next patch)
 	$(PY) -c "import re,pathlib; \
 p=pathlib.Path('pyproject.toml'); \
 p.write_text(re.sub(r'(?m)^version = \".*\"', 'version = \"$(V)\"', p.read_text())); \
@@ -83,11 +89,9 @@ i.write_text(re.sub(r'__version__ = \".*\"', '__version__ = \"$(V)\"', i.read_te
 	@$(MAKE) --no-print-directory version
 
 .PHONY: release
-release:  ## bump, build, commit, tag, push — CI publishes to PyPI (make release V=0.2.1)
-ifndef V
-	$(error set V, e.g. `make release V=0.2.1`)
-endif
+release:  ## cut a release: auto-bump patch (or BUMP=minor/major, or V=x.y.z)
 	@git diff --quiet || { echo "working tree is dirty — commit or stash first"; exit 1; }
+	@echo "releasing $(CURRENT) → $(V)"
 	@$(MAKE) --no-print-directory bump V=$(V)
 	@$(MAKE) --no-print-directory build
 	git add pyproject.toml shadowlm/__init__.py shadowlm/_static
