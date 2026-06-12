@@ -49,14 +49,20 @@ class _Job:
 
 
 def _rebuild_config(d: dict) -> TrainConfig:
-    """TrainConfig from to_dict() output (lists arrive where tuples lived)."""
+    """TrainConfig from a client dict — full to_dict() or a partial config."""
+    from . import methods  # noqa: PLC0415
+
     d = dict(d)
     if isinstance(d.get("target_modules"), list):
         d["target_modules"] = tuple(d["target_modules"])
     if isinstance(d.get("report_to"), list):
         d["report_to"] = tuple(d["report_to"])
     known = {f.name for f in __import__("dataclasses").fields(TrainConfig)}
-    return TrainConfig(**{k: v for k, v in d.items() if k in known})
+    cfg = TrainConfig(**{k: v for k, v in d.items() if k in known})
+    if cfg.learning_rate is None:  # the Model layer does this for local runs;
+        # partial configs (e.g. from the dashboard) need it resolved here too
+        cfg.learning_rate = methods.get(cfg.method).default_learning_rate
+    return cfg
 
 
 def _rebuild_dataset(d: dict | None) -> Dataset | None:
@@ -205,12 +211,32 @@ def make_handler(server: Server, api_key: str | None):
 
         # ---- routes ---------------------------------------------------------
         def do_GET(self):  # noqa: N802
+            parts = self.path.split("?")[0].strip("/").split("/")
+            if parts == [""]:  # the dashboard — no auth for the shell page;
+                from .webui import HTML  # noqa: PLC0415 — the API stays authed
+                self._send(200, HTML.encode(), ctype="text/html; charset=utf-8")
+                return
             if not self._authed():
                 return
-            parts = self.path.split("?")[0].strip("/").split("/")
             if parts == ["v1", "health"]:
                 self._send(200, {"ok": True, "backend": server.backend_name,
                                  "version": __version__})
+            elif parts == ["v1", "finetunes"]:
+                with server._lock:
+                    jobs = [{
+                        "job_id": j.job_id, "base_model": j.base_model,
+                        "status": j.status, "error": j.error,
+                        "final_loss": j.final_loss,
+                        "steps": len(j.steps),
+                        "method": (j._payload.get("config", {}) or {}).get("method"),
+                    } for j in server.jobs.values()]
+                self._send(200, {"jobs": jobs[::-1]})  # newest first
+            elif parts == ["v1", "methods"]:
+                from . import methods as _methods  # noqa: PLC0415
+                self._send(200, {"methods": [{
+                    "name": m.name, "description": m.description,
+                    "default_lr": m.default_learning_rate, "trainer": m.trainer,
+                } for m in (_methods.get(n) for n in _methods.available())]})
             elif len(parts) == 3 and parts[:2] == ["v1", "finetunes"]:
                 if (job := self._job_or_404(parts[2])):
                     self._send(200, {

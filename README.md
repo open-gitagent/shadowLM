@@ -187,6 +187,10 @@ shadowlm serve --port 8329                      # or: python -m shadowlm.serve
 SHADOWLM_API_KEY=secret shadowlm serve          # require Bearer auth
 ```
 
+Open `http://127.0.0.1:8329` for the **built-in dashboard** — live loss charts,
+job submission, and chat with trained adapters, in one dependency-free page
+(vanilla HTML/JS served by the same process; view-source friendly).
+
 It speaks a small JSON protocol (submit / metrics / cancel / artifact /
 generate / chat — see `shadowlm/remote.py`) backed by the real local backend —
 no mock. ShadowLM Studio implements the same protocol at fleet scale. Client
@@ -408,6 +412,7 @@ shadowlm/
   capture.py           OpenAI-compatible capture proxy — record any harness
   remote.py            the remote protocol — stdlib HTTP client
   serve.py             reference server: the protocol over the local backend
+  webui.py             the built-in dashboard — single-file SPA served at /
   cli.py               the `shadowlm` command (Typer + Rich) — [cli] extra
   _cli_entry.py        stdlib entry shim — friendly message if [cli] is missing
   methods/             training techniques — one module per method
