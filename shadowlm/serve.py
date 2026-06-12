@@ -154,7 +154,8 @@ class Server:
         self.queue: "queue.Queue[str]" = queue.Queue()
         self._lock = threading.Lock()          # job-store mutations
         self._model_lock = threading.Lock()    # one model computation at a time
-        self._infer_cache: tuple | None = None  # (model, adapter, Model)
+        self._infer_cache: dict[tuple, object] = {}  # (model, adapter) → Model
+        self._infer_cache_cap = 3  # compare mode alternates base ↔ adapter
         threading.Thread(target=self._worker, daemon=True).start()
 
     # ---- training worker -----------------------------------------------------
@@ -225,11 +226,13 @@ class Server:
             else:
                 adapter_path = adapter  # a server-local path the caller knows
         key = (model, adapter_path)
-        if self._infer_cache and self._infer_cache[0] == key:
-            return self._infer_cache[1]
+        if key in self._infer_cache:
+            return self._infer_cache[key]
         m = load(model, backend=self.backend_name, accelerator=self.accelerator,
                  device=self.device, adapter=adapter_path, verbose=False)
-        self._infer_cache = (key, m)
+        if len(self._infer_cache) >= self._infer_cache_cap:
+            self._infer_cache.pop(next(iter(self._infer_cache)))  # oldest out
+        self._infer_cache[key] = m
         return m
 
     # ---- operations ------------------------------------------------------------

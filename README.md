@@ -191,8 +191,10 @@ Open `http://127.0.0.1:8329` for the **built-in studio dashboard** — four
 sections that read as the workflow: **Datasets** (upload once, auto-detected
 format, persisted server-side) → **Models** (curated open-model catalog +
 recently trained) → **Trainings** (configure & launch, optional held-out eval)
-→ **Runs** (live loss charts, eval overlay, cancel, chat with the result).
-One dependency-free page — vanilla HTML/JS served by the same stdlib process,
+→ **Runs** (live loss charts, eval overlay, cancel) → **Playground** (talk to
+any model or adapter — or flip on **compare** and watch the base model and
+your finetune answer the same prompt side by side). One dependency-free page —
+left-sidebar navigation, vanilla HTML/JS served by the same stdlib process,
 view-source friendly.
 
 It speaks a small JSON protocol (submit / metrics / cancel / artifact /

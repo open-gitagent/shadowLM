@@ -1,8 +1,9 @@
 """The built-in studio dashboard — a single-file SPA served at `/`.
 
-Four sections, the workflow in order: Datasets → Models → Trainings → Runs.
-Vanilla HTML/CSS/JS over the same JSON protocol the SDK speaks — no build
-step, no frameworks, view-source friendly, like the rest of the box.
+Left sidebar navigation, the workflow in order: Datasets → Models → Trainings
+→ Runs → Playground. Vanilla HTML/CSS/JS over the same JSON protocol the SDK
+speaks — no build step, no frameworks, view-source friendly, like the rest of
+the box.
 """
 
 HTML = r"""<!doctype html>
@@ -19,19 +20,22 @@ HTML = r"""<!doctype html>
   }
   * { box-sizing:border-box; margin:0; }
   body { background:var(--ink); color:var(--bone); height:100vh; display:flex;
-         flex-direction:column;
          font:14px/1.5 "JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace; }
-  header { display:flex; align-items:center; gap:18px; padding:12px 20px;
-           border-bottom:1px solid var(--line); }
-  .mark { color:var(--heart); font-weight:700; }
-  nav { display:flex; gap:4px; }
-  nav a { color:var(--muted); text-decoration:none; padding:6px 14px;
-          border-radius:8px; font-size:13px; }
-  nav a.on { color:var(--bone); background:var(--umbra);
-             box-shadow:inset 0 -2px 0 var(--heart); }
-  nav a:hover { color:var(--bone); }
-  .spacer { flex:1; }
-  .sub { color:var(--muted); font-size:12px; }
+  /* ---- left sidebar ---- */
+  #side { width:212px; min-width:212px; display:flex; flex-direction:column;
+          border-right:1px solid var(--line); padding:16px 10px; gap:2px; }
+  #side .brand { padding:4px 12px 16px; font-weight:700; }
+  #side .brand .mark { color:var(--heart); }
+  #side a { color:var(--muted); text-decoration:none; padding:9px 12px;
+            border-radius:9px; font-size:13.5px; display:flex; gap:9px;
+            align-items:center; }
+  #side a.on { color:var(--bone); background:var(--umbra);
+               box-shadow:inset 2px 0 0 var(--heart); }
+  #side a:hover { color:var(--bone); }
+  #side .n { width:16px; text-align:center; color:var(--heart); opacity:.85; }
+  #side .spacer { flex:1; }
+  #side .foot { padding:10px 12px; display:grid; gap:8px; }
+  #side .sub { color:var(--muted); font-size:11px; }
   input,select,textarea,button { background:var(--umbra); color:var(--bone);
     border:1px solid var(--line); border-radius:8px; padding:8px 11px; font:inherit; }
   input:focus,select:focus,textarea:focus { outline:1px solid var(--heart); }
@@ -40,7 +44,7 @@ HTML = r"""<!doctype html>
                    color:#fff; font-weight:700; }
   button.ghost { background:transparent; }
   button.danger { color:var(--heart); background:transparent; }
-  main { flex:1; overflow-y:auto; padding:22px 26px; }
+  main { flex:1; overflow-y:auto; padding:24px 30px; min-width:0; }
   h2 { font-size:15px; margin-bottom:4px; }
   .lead { color:var(--muted); font-size:12.5px; margin-bottom:18px; }
   .grid { display:grid; gap:12px; }
@@ -78,33 +82,55 @@ HTML = r"""<!doctype html>
   pre.preview { background:var(--ink); border:1px solid var(--line);
     border-radius:8px; padding:10px; font-size:11.5px; overflow-x:auto;
     color:var(--muted); max-height:180px; }
-  /* chat drawer on run detail */
-  #chatlog { display:flex; flex-direction:column; gap:8px; margin-top:10px; }
   .msg { padding:9px 11px; border-radius:10px; font-size:13px;
          white-space:pre-wrap; max-width:75%; }
   .msg.you { background:var(--panel); align-self:flex-end; }
   .msg.slm { background:var(--umbra); border:1px solid var(--line); }
   .msg.slm::before { content:"slm♥ "; color:var(--heart); font-weight:700; }
   .back { color:var(--heart); text-decoration:none; font-size:12.5px; }
+  /* ---- playground ---- */
+  #pg { display:flex; flex-direction:column; height:100%; min-height:0; }
+  #pg-controls { display:flex; gap:8px; flex-wrap:wrap; align-items:center;
+                 padding-bottom:14px; border-bottom:1px solid var(--line); }
+  #pg-log { flex:1; overflow-y:auto; display:flex; flex-direction:column;
+            gap:10px; padding:16px 2px; }
+  .cmp { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .cmp .col { background:var(--umbra); border:1px solid var(--line);
+              border-radius:10px; padding:10px 12px; font-size:13px;
+              white-space:pre-wrap; }
+  .cmp .col b { display:block; font-size:10.5px; letter-spacing:.1em;
+                text-transform:uppercase; margin-bottom:6px; }
+  .cmp .col.base b { color:var(--muted); }
+  .cmp .col.tuned { border-color:var(--heart); }
+  .cmp .col.tuned b { color:var(--heart); }
+  #pg-form { display:flex; gap:8px; padding-top:12px;
+             border-top:1px solid var(--line); }
+  #pg-form input { flex:1; }
+  .switch { display:flex; gap:6px; align-items:center; color:var(--muted);
+            font-size:12px; }
 </style>
 </head>
 <body>
-<header>
-  <span class="mark">slm♥</span><b>ShadowLM</b>
-  <nav id="nav">
-    <a href="#datasets">Datasets</a><a href="#models">Models</a>
-    <a href="#train">Trainings</a><a href="#runs">Runs</a>
-  </nav>
-  <span class="spacer"></span>
-  <span class="sub" id="health">connecting…</span>
-  <input id="apikey" type="password" placeholder="API key" size="14"
-         title="Sent as Bearer auth; stored in this browser only">
-</header>
+<aside id="side">
+  <div class="brand"><span class="mark">slm♥</span> ShadowLM</div>
+  <a href="#datasets"><span class="n">1</span>Datasets</a>
+  <a href="#models"><span class="n">2</span>Models</a>
+  <a href="#train"><span class="n">3</span>Trainings</a>
+  <a href="#runs"><span class="n">4</span>Runs</a>
+  <a href="#playground"><span class="n">♥</span>Playground</a>
+  <div class="spacer"></div>
+  <div class="foot">
+    <span class="sub" id="health">connecting…</span>
+    <input id="apikey" type="password" placeholder="API key"
+           title="Sent as Bearer auth; stored in this browser only">
+  </div>
+</aside>
 <main id="page"></main>
 <script>
 const $ = s => document.querySelector(s);
 const S = { datasets:[], models:{catalog:[],recent:[]}, methods:[], jobs:[],
-            pick:{dataset:null, model:null}, run:null, msgs:[], timer:null };
+            pick:{dataset:null, model:null}, run:null, msgs:[], timer:null,
+            pg:{msgs:[], busy:false} };
 
 const key = () => localStorage.getItem("slm_api_key") || "";
 $("#apikey").value = key();
@@ -121,11 +147,11 @@ const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":
 
 // ---- router ------------------------------------------------------------------
 const routes = { datasets: pageDatasets, models: pageModels, train: pageTrain,
-                 runs: pageRuns };
+                 runs: pageRuns, playground: pagePlayground };
 function route() {
   clearInterval(S.timer); S.timer = null;
   const [name, arg] = location.hash.replace("#","").split("/");
-  document.querySelectorAll("#nav a").forEach(a =>
+  document.querySelectorAll("#side a").forEach(a =>
     a.classList.toggle("on", a.hash === "#" + (name || "datasets")));
   if (name === "runs" && arg) return pageRunDetail(arg);
   (routes[name] || pageDatasets)();
@@ -210,6 +236,7 @@ async function pageModels() {
       <div class="meta">${m.params || ""} ${m.note ? "· " + esc(m.note) : extra}</div>
       <div class="rowflex" style="margin-top:10px">
         <button class="primary" onclick="useModel('${m.id}')">train this ›</button>
+        <button class="ghost" onclick="tryModel('${m.id}')">playground</button>
       </div>
     </div>`;
   $("#page").innerHTML = `
@@ -235,6 +262,7 @@ async function pageModels() {
   });
 }
 window.useModel = id => { S.pick.model = id; location.hash = "#train"; };
+window.tryModel = id => { S.pick.model = id; location.hash = "#playground"; };
 
 // ====== TRAININGS (configure & launch) ============================================
 async function pageTrain() {
@@ -328,7 +356,6 @@ async function pageRunDetail(id) {
       api("/v1/finetunes/"+id), api(`/v1/finetunes/${id}/metrics`), api("/v1/finetunes")]);
     const j = list.jobs.find(x => x.job_id === id) || {};
     const last = m.steps[m.steps.length-1];
-    const chatable = job.status === "succeeded";
     $("#page").innerHTML = `
       <a class="back" href="#runs">‹ all runs</a>
       <div class="rowflex" style="margin-top:8px">
@@ -336,6 +363,8 @@ async function pageRunDetail(id) {
         <span class="pill ${job.status==="succeeded"?"green":job.status==="failed"?"red":"gold"}">${job.status}</span>
         ${(job.status==="running"||job.status==="pending")
           ? `<button class="ghost" onclick="cancelRun('${id}')">cancel</button>` : ""}
+        ${job.status==="succeeded"
+          ? `<button class="primary" onclick="playRun('${id}','${esc(j.base_model||"")}')">open in playground ›</button>` : ""}
       </div>
       <p class="sub" style="margin-top:4px">
         ${esc(j.base_model||"")} · ${j.method||"?"}
@@ -344,33 +373,107 @@ async function pageRunDetail(id) {
         ${last && last.tokens_per_s ? `· ${Math.round(last.tokens_per_s)} tok/s` : ""}
       </p>
       ${chartSVG(m.steps, m.evals)}
-      ${job.error ? `<div class="err">${esc(job.error)}</div>` : ""}
-      ${chatable ? `
-        <h2 style="margin-top:8px">Chat with this run</h2>
-        <div id="chatlog">${S.msgs.map(x => `<div class="msg ${x.role==="user"?"you":"slm"}">${esc(x.content)}</div>`).join("")}</div>
-        <form class="rowflex" style="margin-top:10px" id="chatform">
-          <input id="chat-in" placeholder="message the finetuned model…" style="flex:1">
-          <button class="primary">›</button>
-        </form>` : ""}`;
-    if (chatable) $("#chatform").addEventListener("submit", ev => sendChat(ev, j));
+      ${job.error ? `<div class="err">${esc(job.error)}</div>` : ""}`;
   };
   await render();
   S.timer = setInterval(render, 1800);
 }
 window.cancelRun = async id => api(`/v1/finetunes/${id}/cancel`, {method:"POST"});
+window.playRun = (id, base) => {
+  S.pick.model = base; S.pick.adapter = id; location.hash = "#playground";
+};
 
-async function sendChat(e, j) {
+// ====== PLAYGROUND ================================================================
+async function pagePlayground() {
+  S.jobs = (await api("/v1/finetunes")).jobs;
+  const done = S.jobs.filter(j => j.status === "succeeded");
+  const adOpts = done.map(j => `<option value="${j.job_id}"
+      data-model="${esc(j.base_model)}" ${S.pick.adapter===j.job_id?"selected":""}>
+      ${j.job_id.slice(0,8)} · ${esc((j.base_model||"").split("/").pop())} · ${j.method||""}</option>`).join("");
+  $("#page").innerHTML = `
+    <div id="pg">
+      <h2>Playground</h2>
+      <p class="lead">Talk to any model — or flip on <b>compare</b> and watch the
+         base model and your finetune answer the same prompt, side by side.</p>
+      <div id="pg-controls">
+        <input id="pg-model" placeholder="base model (HF id)" size="34"
+               value="${esc(S.pick.model || "mlx-community/Qwen2.5-0.5B-Instruct-4bit")}">
+        <select id="pg-adapter">
+          <option value="">no adapter (base model)</option>${adOpts}
+        </select>
+        <input id="pg-sys" placeholder="system prompt (optional)" size="24">
+        <input id="pg-temp" type="number" value="0.7" step="0.1" min="0" max="2"
+               style="width:74px" title="temperature">
+        <input id="pg-max" type="number" value="256" min="1" style="width:84px"
+               title="max new tokens">
+        <label class="switch"><input type="checkbox" id="pg-cmp"
+               ${S.pick.adapter?"checked":""} style="width:auto"> compare base ↔ finetuned</label>
+        <button class="ghost" onclick="S.pg.msgs=[];pagePlayground()">clear</button>
+      </div>
+      <div id="pg-log"></div>
+      <form id="pg-form">
+        <input id="pg-in" placeholder="say something…" autocomplete="off">
+        <button class="primary">›</button>
+      </form>
+    </div>`;
+  $("#pg-adapter").addEventListener("change", e => {
+    const opt = e.target.selectedOptions[0];
+    if (opt && opt.dataset.model) $("#pg-model").value = opt.dataset.model;
+    S.pick.adapter = e.target.value || null;
+  });
+  $("#pg-form").addEventListener("submit", pgSend);
+  pgRender();
+}
+
+function pgRender() {
+  const log = $("#pg-log"); if (!log) return;
+  log.innerHTML = S.pg.msgs.map(m => {
+    if (m.role === "user") return `<div class="msg you">${esc(m.content)}</div>`;
+    if (m.compare) return `<div class="cmp">
+        <div class="col base"><b>base</b>${esc(m.base ?? "…")}</div>
+        <div class="col tuned"><b>finetuned ♥</b>${esc(m.tuned ?? "…")}</div>
+      </div>`;
+    return `<div class="msg slm">${esc(m.content ?? "…")}</div>`;
+  }).join("");
+  log.scrollTop = 1e9;
+}
+
+async function pgSend(e) {
   e.preventDefault();
-  const text = $("#chat-in").value.trim(); if (!text) return;
-  S.msgs.push({role:"user", content:text});
-  S.msgs.push({role:"assistant", content:"…"});
+  if (S.pg.busy) return;
+  const text = $("#pg-in").value.trim(); if (!text) return;
+  $("#pg-in").value = "";
+  const model = $("#pg-model").value.trim();
+  const adapter = $("#pg-adapter").value || null;
+  const compare = $("#pg-cmp").checked && adapter;
+  const sys = $("#pg-sys").value.trim();
+  const temp = parseFloat($("#pg-temp").value) || 0.7;
+  const maxNew = parseInt($("#pg-max").value) || 256;
+
+  S.pg.msgs.push({role:"user", content:text});
+  const history = [];
+  if (sys) history.push({role:"system", content:sys});
+  for (const m of S.pg.msgs) {
+    if (m.role === "user") history.push({role:"user", content:m.content});
+    else history.push({role:"assistant",
+                       content: m.compare ? (m.tuned ?? "") : (m.content ?? "")});
+  }
+  const turn = compare ? {role:"assistant", compare:true} :
+                         {role:"assistant", content:null};
+  S.pg.msgs.push(turn); S.pg.busy = true; pgRender();
+
+  const ask = ad => api("/v1/chat", {method:"POST", body:JSON.stringify({
+      model, adapter:ad, messages:history, max_new_tokens:maxNew,
+      temperature:temp, top_p:0.95 })}).then(o => o.text)
+      .catch(err => "⚠ " + err.message);
   try {
-    const out = await api("/v1/chat", {method:"POST", body:JSON.stringify({
-      model: j.base_model, adapter: j.job_id,
-      messages: S.msgs.slice(0,-1), max_new_tokens: 256,
-      temperature: 0.7, top_p: 0.95 })});
-    S.msgs[S.msgs.length-1].content = out.text;
-  } catch(err) { S.msgs[S.msgs.length-1].content = "⚠ " + err.message; }
+    if (compare) {
+      turn.tuned = await ask(adapter); pgRender();   // serial: one GPU slot
+      turn.base = await ask(null);
+    } else {
+      turn.content = await ask(adapter);
+    }
+  } finally { S.pg.busy = false; pgRender(); }
 }
 </script>
 </body>
