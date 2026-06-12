@@ -458,6 +458,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--accelerator", default="auto")
     parser.add_argument("--device", default="auto")
     parser.add_argument("--work-dir", default=str(Path.home() / ".shadowlm" / "serve"))
+    parser.add_argument("--dev", action="store_true",
+                        help="also launch the Vite UI dev server (hot reload)")
     args = parser.parse_args(argv)
 
     api_key = os.environ.get("SHADOWLM_API_KEY")
@@ -467,14 +469,45 @@ def main(argv: list[str] | None = None) -> int:
                     device=args.device, work_root=work_root)
     httpd = ThreadingHTTPServer((args.host, args.port),
                                 make_handler(server, api_key))
+
+    static = Path(__file__).parent / "_static" / "index.html"
+    ui = ("React studio" if static.exists() else "built-in dashboard (no-build)")
     auth = "Bearer auth ON" if api_key else "no auth (set SHADOWLM_API_KEY)"
-    print(f"slm♥ ShadowLM server · http://{args.host}:{args.port} · "
-          f"backend={args.backend} · {auth}", flush=True)
+    base = f"http://{args.host}:{args.port}"
+    print(f"slm♥ ShadowLM server · {base} · backend={args.backend} · {auth}",
+          flush=True)
+    print(f"     UI: {ui} + API on the same port — open {base}", flush=True)
+
+    vite = _maybe_start_vite(args.port) if args.dev else None
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
         print("\nstopped")
+    finally:
+        if vite:
+            vite.terminate()
     return 0
+
+
+def _maybe_start_vite(api_port: int):
+    """Launch `npm run dev` in frontend/ for hot-reload UI work, proxying its
+    /v1 calls to this backend. Dev convenience only — prod serves _static."""
+    import subprocess  # noqa: PLC0415
+
+    frontend = Path(__file__).resolve().parent.parent / "frontend"
+    if not (frontend / "package.json").exists():
+        print("     --dev: no frontend/ here (source checkout only) — skipping",
+              flush=True)
+        return None
+    env = {**os.environ, "SHADOWLM_DEV_API": f"http://127.0.0.1:{api_port}"}
+    try:
+        proc = subprocess.Popen(["npm", "run", "dev"], cwd=frontend, env=env)
+    except FileNotFoundError:
+        print("     --dev: npm not found — skipping the UI dev server", flush=True)
+        return None
+    print("     --dev: Vite hot-reload UI starting (see its URL above) — "
+          "edit frontend/src and refresh", flush=True)
+    return proc
 
 
 if __name__ == "__main__":

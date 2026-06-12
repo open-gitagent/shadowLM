@@ -441,9 +441,12 @@ def serve(
     accelerator: Annotated[str, typer.Option(help="auto | shadow | none")] = "auto",
     device: Annotated[str, typer.Option(help="auto | cuda | cpu (torch)")] = "auto",
     work_dir: Annotated[Optional[str], typer.Option("--work-dir")] = None,
+    dev: Annotated[bool, typer.Option("--dev",
+        help="also launch the Vite UI dev server (hot reload)")] = False,
 ):
-    """Run the ShadowLM reference server — clients connect with backend="remote".
+    """Run the ShadowLM server — UI + API on one port (clients use backend="remote").
 
+    Serves the studio at / and the protocol at /v1 from a single process.
     Set SHADOWLM_API_KEY in the environment to require Bearer auth.
     """
     from .serve import main as serve_main  # noqa: PLC0415
@@ -452,6 +455,8 @@ def serve(
             "--accelerator", accelerator, "--device", device]
     if work_dir:
         argv += ["--work-dir", work_dir]
+    if dev:
+        argv += ["--dev"]
     raise typer.Exit(serve_main(argv))
 
 

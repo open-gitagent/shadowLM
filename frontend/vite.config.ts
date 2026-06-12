@@ -14,8 +14,9 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      "/v1": "http://127.0.0.1:8329",
-      "/logo.png": "http://127.0.0.1:8329",
+      // `shadowlm serve --dev` sets SHADOWLM_DEV_API to its own port.
+      "/v1": process.env.SHADOWLM_DEV_API || "http://127.0.0.1:8329",
+      "/logo.png": process.env.SHADOWLM_DEV_API || "http://127.0.0.1:8329",
     },
   },
 });
