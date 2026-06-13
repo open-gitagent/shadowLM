@@ -1,7 +1,7 @@
 // Runs — master-detail: searchable run list left, live detail right.
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Download, MessagesSquare, Search, Square } from "lucide-react";
-import { apiKey, cancelJob, getJob, getJobs, getMetrics } from "../api";
+import { apiKey, cancelJob, getJob, getJobs, getLogs, getMetrics } from "../api";
 import type { JobDetail, JobSummary, StepMetric } from "../api";
 import { ChartLegend, LossChart, PageHeader, Sparkline, StatTile, StatusBadge, btnGhost } from "../ui";
 
@@ -108,14 +108,16 @@ function RunDetail({ run }: { run: JobSummary }) {
   const [job, setJob] = useState<JobDetail | null>(null);
   const [steps, setSteps] = useState<StepMetric[]>([]);
   const [evals, setEvals] = useState<StepMetric[]>([]);
+  const [logs, setLogs] = useState<string[]>([]);
 
   useEffect(() => {
     let live = true;
     const tick = async () => {
       try {
-        const [j, m] = await Promise.all([getJob(run.job_id), getMetrics(run.job_id)]);
+        const [j, m, l] = await Promise.all([
+          getJob(run.job_id), getMetrics(run.job_id), getLogs(run.job_id)]);
         if (!live) return;
-        setJob(j); setSteps(m.steps); setEvals(m.evals);
+        setJob(j); setSteps(m.steps); setEvals(m.evals); setLogs(l.logs);
       } catch { /* transient */ }
     };
     tick();
@@ -197,6 +199,8 @@ function RunDetail({ run }: { run: JobSummary }) {
           </div>
         </section>
 
+        {logs.length > 0 && <TerminalPanel logs={logs} live={job?.status === "running"} />}
+
         {job?.error && (
           <section className="rounded-lg border border-destructive/40 bg-destructive/5 p-5">
             <h3 className="text-sm font-semibold text-destructive mb-2">Error</h3>
@@ -219,5 +223,39 @@ function RunDetail({ run }: { run: JobSummary }) {
         )}
       </div>
     </div>
+  );
+}
+
+function TerminalPanel({ logs, live }: { logs: string[]; live: boolean }) {
+  const ref = useRef<HTMLPreElement>(null);
+  const [stick, setStick] = useState(true);
+  useEffect(() => { if (stick && ref.current) ref.current.scrollTop = ref.current.scrollHeight; },
+    [logs, stick]);
+  return (
+    <section className="rounded-lg border border-border bg-card overflow-hidden">
+      <header className="px-5 py-3 border-b border-border flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <span className="flex gap-1.5">
+            <span className="size-2.5 rounded-full bg-destructive/70" />
+            <span className="size-2.5 rounded-full bg-warning/70" />
+            <span className="size-2.5 rounded-full bg-success/70" />
+          </span>
+          <h3 className="text-sm font-semibold">Training console</h3>
+          {live && <span className="text-[10px] font-mono uppercase tracking-wider text-primary animate-pulse">● live</span>}
+        </div>
+        <label className="text-[10px] font-mono text-muted-foreground flex items-center gap-1.5">
+          <input type="checkbox" checked={stick} onChange={(e) => setStick(e.target.checked)}
+                 className="w-auto" /> follow
+        </label>
+      </header>
+      <pre ref={ref}
+           onScroll={(e) => {
+             const el = e.currentTarget;
+             setStick(el.scrollHeight - el.scrollTop - el.clientHeight < 24);
+           }}
+           className="m-0 max-h-[460px] overflow-auto bg-ink p-4 text-[11px] leading-[1.35] text-bone/90 font-mono whitespace-pre scrollbar-thin">
+        {logs.join("\n")}
+      </pre>
+    </section>
   );
 }

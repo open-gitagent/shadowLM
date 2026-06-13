@@ -112,6 +112,8 @@ export const getJobs = () => api<{ jobs: JobSummary[] }>("/v1/finetunes");
 export const getJob = (id: string) => api<JobDetail>(`/v1/finetunes/${id}`);
 export const getMetrics = (id: string) =>
   api<{ steps: StepMetric[]; evals: StepMetric[] }>(`/v1/finetunes/${id}/metrics`);
+export const getLogs = (id: string) =>
+  api<{ logs: string[] }>(`/v1/finetunes/${id}/logs`);
 export const cancelJob = (id: string) =>
   api<{ ok: boolean }>(`/v1/finetunes/${id}/cancel`, { method: "POST" });
 export const submitFinetune = (body: object) =>

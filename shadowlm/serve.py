@@ -62,7 +62,11 @@ class _Job:
     final_loss: float | None = None
     method: str | None = None
     created: float = 0.0
+    logs: list[str] = field(default_factory=list)  # captured console lines
+    live: str = ""  # the in-progress (post-\r) line, e.g. the progress bar
     cancel: threading.Event = field(default_factory=threading.Event)
+
+    _LOG_CAP = 600  # keep the tail; banner + progress + done fit comfortably
 
     def record(self) -> dict:
         """The serializable job record persisted to disk (survives restarts)."""
@@ -70,7 +74,8 @@ class _Job:
                 "status": self.status, "method": self.method,
                 "error": self.error, "checkpoint": self.checkpoint,
                 "final_loss": self.final_loss, "created": self.created,
-                "steps": self.steps, "evals": self.evals}
+                "steps": self.steps, "evals": self.evals,
+                "logs": self.logs[-self._LOG_CAP:]}
 
     @classmethod
     def from_record(cls, d: dict) -> "_Job":
@@ -80,10 +85,40 @@ class _Job:
                   final_loss=d.get("final_loss"), created=d.get("created", 0.0))
         job.steps = d.get("steps", [])
         job.evals = d.get("evals", [])
+        job.logs = d.get("logs", [])
         # a run that was mid-flight when the server died can't still be running
         if job.status in ("pending", "running"):
             job.status, job.error = "stopped", "interrupted by a server restart"
         return job
+
+
+class _LogTee:
+    """Capture a job's console output line by line while still echoing to the
+    real terminal. Carriage-return updates (progress bars) overwrite the live
+    line instead of flooding the log."""
+
+    def __init__(self, real, job: "_Job") -> None:
+        self._real = real
+        self._job = job
+
+    def write(self, s: str) -> int:
+        if self._real:
+            self._real.write(s); self._real.flush()
+        for ch in s:
+            if ch == "\n":
+                self._job.logs.append(self._job.live)
+                self._job.live = ""
+            elif ch == "\r":
+                self._job.live = ""  # overwrite the current line
+            else:
+                self._job.live += ch
+        if len(self._job.logs) > self._job._LOG_CAP * 2:
+            self._job.logs = self._job.logs[-self._job._LOG_CAP:]
+        return len(s)
+
+    def flush(self) -> None:
+        if self._real:
+            self._real.flush()
 
 
 def _rebuild_config(d: dict) -> TrainConfig:
@@ -244,6 +279,10 @@ class Server:
 
     # ---- training worker -----------------------------------------------------
     def _worker(self) -> None:
+        import contextlib  # noqa: PLC0415
+        import sys  # noqa: PLC0415
+
+        from .ascii import _HEART, _NAME  # noqa: PLC0415
         from .backends import Callbacks, select_backend  # noqa: PLC0415
 
         while True:
@@ -254,8 +293,13 @@ class Server:
                 self._persist(job)
                 continue
             job.status = "running"
+            job.logs = []  # fresh console for this run
             self._persist(job)
+            tee = _LogTee(sys.__stdout__ or sys.stdout, job)
             try:
+              with contextlib.redirect_stdout(tee), contextlib.redirect_stderr(tee):
+                print(_HEART); print(_NAME)
+                print("Starting training session...\n")
                 payload = job._payload  # attached at submit time
                 # dataset by reference (dashboard — local or HF) or inline rows (SDK)
                 if payload.get("dataset_id"):
@@ -302,7 +346,10 @@ class Server:
                 job.status = "failed"
                 job.error = f"{type(e).__name__}: {e}"
                 print(f"[{job_id[:8]}] FAILED: {job.error}", flush=True)
-            self._persist(job)  # terminal state + final metrics → disk
+            if job.live:  # keep the last progress line in the persisted log
+                job.logs.append(job.live)
+                job.live = ""
+            self._persist(job)  # terminal state + final metrics + logs → disk
 
     # ---- inference -------------------------------------------------------------
     def _infer_model(self, model: str, adapter: str | None):
@@ -465,6 +512,11 @@ def make_handler(server: Server, api_key: str | None):
                     and parts[3] == "metrics":
                 if (job := self._job_or_404(parts[2])):
                     self._send(200, {"steps": job.steps, "evals": job.evals})
+            elif len(parts) == 4 and parts[:2] == ["v1", "finetunes"] \
+                    and parts[3] == "logs":
+                if (job := self._job_or_404(parts[2])):
+                    lines = list(job.logs) + ([job.live] if job.live else [])
+                    self._send(200, {"logs": lines})
             elif len(parts) == 4 and parts[:2] == ["v1", "finetunes"] \
                     and parts[3] == "artifact":
                 if (job := self._job_or_404(parts[2])):
