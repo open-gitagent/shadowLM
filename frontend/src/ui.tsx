@@ -1,8 +1,40 @@
 // Shared pieces — page header, badges, sparkline, the loss chart, form helpers.
 // Visual language ported from the Shadow Studio Pro design (cream + heart red).
 import type { ReactNode } from "react";
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import type { JobSummary, StepMetric } from "./api";
+
+// ---- modal -------------------------------------------------------------------
+export function Modal({ onClose, children, width = "max-w-3xl" }: {
+  onClose: () => void; children: ReactNode; width?: string;
+}) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", onKey);
+    document.body.style.overflow = "hidden";
+    return () => { window.removeEventListener("keydown", onKey); document.body.style.overflow = ""; };
+  }, [onClose]);
+  return (
+    <div onClick={onClose}
+         className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-ink/60 backdrop-blur-sm p-6 py-[8vh]">
+      <div onClick={(e) => e.stopPropagation()}
+           className={`w-full ${width} rounded-xl border border-border bg-card shadow-[0_24px_64px_#000a]`}
+           style={{ animation: "rise 0.16s ease-out" }}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+export function ModalHeader({ title, onClose }: { title: string; onClose: () => void }) {
+  return (
+    <div className="flex items-center justify-between px-5 py-3.5 border-b border-border">
+      <h3 className="text-sm font-semibold">{title}</h3>
+      <button onClick={onClose}
+              className="text-muted-foreground hover:text-foreground text-lg leading-none">×</button>
+    </div>
+  );
+}
 
 // ---- layout ------------------------------------------------------------------
 export function PageHeader({ eyebrow, title, description, actions }: {

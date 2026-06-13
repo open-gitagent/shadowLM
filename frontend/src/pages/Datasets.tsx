@@ -6,7 +6,7 @@ import {
   addHFDataset, createDataset, deleteDataset, getDataset, getDatasets, previewHF,
 } from "../api";
 import type { DatasetMeta, HFPreview } from "../api";
-import { PageHeader, btnGhost, btnPrimary } from "../ui";
+import { Modal, ModalHeader, PageHeader, btnGhost, btnPrimary } from "../ui";
 
 const FORMAT_COLORS: Record<string, string> = {
   chat: "bg-primary/10 text-primary border-primary/30",
@@ -82,10 +82,20 @@ export default function Datasets() {
         }
       />
 
-      <div className="px-8 py-6 max-w-[1400px] space-y-4">
-        {tab === "upload" && <UploadForm onDone={() => { setTab("none"); refresh(); }} />}
-        {tab === "hf" && <HFForm onDone={() => { setTab("none"); refresh(); }} />}
+      {tab === "upload" && (
+        <Modal onClose={() => setTab("none")}>
+          <ModalHeader title="Upload dataset" onClose={() => setTab("none")} />
+          <UploadForm onDone={() => { setTab("none"); refresh(); }} />
+        </Modal>
+      )}
+      {tab === "hf" && (
+        <Modal onClose={() => setTab("none")}>
+          <ModalHeader title="Add a Hugging Face dataset" onClose={() => setTab("none")} />
+          <HFForm onDone={() => { setTab("none"); refresh(); }} />
+        </Modal>
+      )}
 
+      <div className="px-8 py-6 max-w-[1400px] space-y-4">
         <div className="flex flex-wrap items-center gap-2">
           <div className="relative flex-1 min-w-[220px] max-w-md">
             <Search className="size-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
@@ -115,7 +125,9 @@ export default function Datasets() {
                 <div className="min-w-0">
                   <div className="font-medium truncate">{d.name}</div>
                   <div className="text-[10px] font-mono text-muted-foreground truncate">
-                    {d.source === "hf" ? `${d.subset}/${d.split}` : d.dataset_id}
+                    {d.source === "hf"
+                      ? `${d.subset}/${d.split}${d.eval_split ? ` · eval: ${d.eval_split}` : ""}`
+                      : d.dataset_id}
                   </div>
                 </div>
               </div>
@@ -146,7 +158,10 @@ export default function Datasets() {
         </div>
 
         {rowPreview && (
-          <PreviewCard {...rowPreview} onClose={() => setRowPreview(null)} />
+          <Modal onClose={() => setRowPreview(null)}>
+            <ModalHeader title={rowPreview.title} onClose={() => setRowPreview(null)} />
+            <PreviewBody {...rowPreview} />
+          </Modal>
         )}
       </div>
     </>
@@ -174,8 +189,7 @@ function UploadForm({ onDone }: { onDone: () => void }) {
   }
 
   return (
-    <form onSubmit={submit} className="rise rounded-lg border border-border bg-card p-4 grid gap-2.5 max-w-2xl">
-      <div className="text-sm font-semibold">Upload dataset</div>
+    <form onSubmit={submit} className="p-5 grid gap-2.5">
       <input placeholder="name (e.g. support-tickets-v1)" value={name} onChange={(e) => setName(e.target.value)} />
       <textarea rows={5} value={rows} onChange={(e) => setRows(e.target.value)}
         placeholder={'one JSON row per line:\n{"messages":[{"role":"user","content":"…"},{"role":"assistant","content":"…"}]}'} />
@@ -192,6 +206,7 @@ function HFForm({ onDone }: { onDone: () => void }) {
   const [repo, setRepo] = useState("");
   const [subset, setSubset] = useState("default");
   const [split, setSplit] = useState("train");
+  const [evalSplit, setEvalSplit] = useState("");  // "" = None
   const [advanced, setAdvanced] = useState(false);
   const [preview, setPreview] = useState<HFPreview | null>(null);
   const [busy, setBusy] = useState(false);
@@ -208,27 +223,31 @@ function HFForm({ onDone }: { onDone: () => void }) {
   async function add() {
     if (!preview) return;
     try {
-      await addHFDataset(repo.trim(), subset, split, preview.format);
+      await addHFDataset(repo.trim(), subset, split, preview.format, evalSplit.trim());
       onDone();
     } catch (ex) { setErr((ex as Error).message); }
   }
 
   return (
-    <div className="rise rounded-lg border border-border bg-card p-4 grid gap-3 max-w-3xl">
-      <div className="text-sm font-semibold">Hugging Face dataset</div>
-      <div className="grid grid-cols-[1fr_140px_140px] gap-2">
-        <label className="block">
-          <div className="text-[11px] text-muted-foreground mb-1">Repo</div>
-          <input placeholder="org/dataset (e.g. roneneldan/TinyStories)" value={repo}
-                 onChange={(e) => setRepo(e.target.value)} className="w-full font-mono text-sm" />
-        </label>
+    <div className="p-5 grid gap-3">
+      <label className="block">
+        <div className="text-[11px] text-muted-foreground mb-1">Repo</div>
+        <input placeholder="org/dataset (e.g. openai/gsm8k)" value={repo}
+               onChange={(e) => setRepo(e.target.value)} className="w-full font-mono text-sm" />
+      </label>
+      <div className="grid grid-cols-3 gap-2">
         <label className="block">
           <div className="text-[11px] text-muted-foreground mb-1">Subset</div>
           <input value={subset} onChange={(e) => setSubset(e.target.value)} className="w-full font-mono text-sm" />
         </label>
         <label className="block">
-          <div className="text-[11px] text-muted-foreground mb-1">Split</div>
+          <div className="text-[11px] text-muted-foreground mb-1">Train split</div>
           <input value={split} onChange={(e) => setSplit(e.target.value)} className="w-full font-mono text-sm" />
+        </label>
+        <label className="block">
+          <div className="text-[11px] text-muted-foreground mb-1">Eval split</div>
+          <input value={evalSplit} placeholder="None" onChange={(e) => setEvalSplit(e.target.value)}
+                 className="w-full font-mono text-sm" />
         </label>
       </div>
 
@@ -265,27 +284,40 @@ function HFForm({ onDone }: { onDone: () => void }) {
   );
 }
 
-function PreviewCard({ title, source, format, columns, total, rows, onClose }: {
-  title: string; source?: string; format: string; columns: string[];
-  total: number | null | undefined; rows: Record<string, unknown>[]; onClose?: () => void;
+// The preview body (meta grid + rows) — no outer chrome, drops into a modal
+// or a bordered card.
+function PreviewBody({ source, format, columns, total, rows }: {
+  source?: string; format: string; columns: string[];
+  total: number | null | undefined; rows: Record<string, unknown>[];
 }) {
   return (
-    <div className="rise rounded-lg border border-border bg-card overflow-hidden">
-      <div className="px-4 py-2.5 border-b border-border flex items-center justify-between">
-        <div className="text-sm font-semibold">{title}</div>
-        {onClose && <button className="text-xs text-primary" onClick={onClose}>close</button>}
-      </div>
-      <div className="px-4 py-3 grid sm:grid-cols-2 gap-x-8 gap-y-1.5 text-xs border-b border-border">
+    <>
+      <div className="px-5 py-3 grid sm:grid-cols-2 gap-x-8 gap-y-1.5 text-xs border-b border-border">
         {source && <Meta label="Source" value={source} />}
         <Meta label="Format" value={<Badge format={format} />} />
         <Meta label="Total rows" value={total != null ? total.toLocaleString() : "—"} />
         <Meta label="Columns" value={columns.join(", ") || "—"} />
       </div>
-      <pre className="p-4 text-[11px] font-mono text-foreground/80 overflow-auto max-h-72 scrollbar-thin space-y-1">
+      <pre className="p-5 text-[11px] font-mono text-foreground/80 overflow-auto max-h-[55vh] scrollbar-thin space-y-1">
         {rows.map((r, i) => (
-          <div key={i} className="truncate hover:whitespace-normal">{JSON.stringify(r)}</div>
+          <div key={i} className="whitespace-pre-wrap break-words border-b border-border/40 pb-1">
+            {JSON.stringify(r)}
+          </div>
         ))}
       </pre>
+    </>
+  );
+}
+
+// Bordered card with a title — used inline inside the HF add-flow.
+function PreviewCard(props: {
+  title: string; source?: string; format: string; columns: string[];
+  total: number | null | undefined; rows: Record<string, unknown>[];
+}) {
+  return (
+    <div className="rise rounded-lg border border-border overflow-hidden">
+      <div className="px-5 py-2.5 border-b border-border text-sm font-semibold">{props.title}</div>
+      <PreviewBody {...props} />
     </div>
   );
 }

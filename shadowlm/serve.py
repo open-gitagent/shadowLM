@@ -152,11 +152,12 @@ class DatasetStore:
         return meta
 
     def save_hf(self, repo: str, *, subset: str | None, split: str,
-                fmt: str, rows: int | None) -> dict:
+                fmt: str, rows: int | None, eval_split: str | None = None) -> dict:
         """Register a HuggingFace dataset by reference (resolved at train time)."""
         ds_id = uuid.uuid4().hex[:10]
         meta = {"dataset_id": ds_id, "name": repo, "source": "hf",
                 "repo": repo, "subset": subset or "default", "split": split,
+                "eval_split": eval_split or None,
                 "format": fmt, "rows": rows, "created": int(time.time())}
         (self.root / f"{ds_id}.json").write_text(json.dumps(meta))
         return meta
@@ -190,6 +191,14 @@ class DatasetStore:
             return Dataset.from_hf(meta["repo"], subset=sub, split=meta["split"])
         rows = self.rows(ds_id) or []
         return Dataset.from_list(rows)
+
+    def resolve_eval(self, ds_id: str) -> Dataset | None:
+        """The dataset's own eval split, if it declared one (HF only)."""
+        meta = self.meta(ds_id)
+        if not meta or meta.get("source") != "hf" or not meta.get("eval_split"):
+            return None
+        sub = meta["subset"] if meta["subset"] != "default" else None
+        return Dataset.from_hf(meta["repo"], subset=sub, split=meta["eval_split"])
 
     def delete(self, ds_id: str) -> bool:
         found = False
@@ -236,6 +245,12 @@ class Server:
                 if payload.get("dataset_id"):
                     ds = self.datasets.resolve(payload["dataset_id"])
                     payload["dataset"] = {"rows": ds.rows, "format": ds.format}
+                    # the dataset's own eval split wins unless the user asked
+                    # for an automatic hold-out
+                    if payload.get("eval_dataset") != "auto":
+                        ev = self.datasets.resolve_eval(payload["dataset_id"])
+                        if ev is not None:
+                            payload["eval_dataset"] = {"rows": ev.rows, "format": ev.format}
                 if payload.get("eval_dataset") == "auto":
                     full = _rebuild_dataset(payload["dataset"])
                     train, ev = full.split(test_size=0.1)
@@ -470,6 +485,7 @@ def make_handler(server: Server, api_key: str | None):
                         self._send(201, server.datasets.save_hf(
                             body["repo"], subset=body.get("subset"),
                             split=body.get("split", "train"),
+                            eval_split=body.get("eval_split"),
                             fmt=body.get("format", "?"), rows=body.get("rows")))
                     else:
                         rows = body.get("rows")

@@ -10,6 +10,7 @@ export interface DatasetMeta {
   repo?: string;
   subset?: string;
   split?: string;
+  eval_split?: string | null;
   preview?: Record<string, unknown>[];
 }
 
@@ -86,10 +87,13 @@ export interface HFPreview {
 export const previewHF = (repo: string, subset: string, split: string) =>
   api<HFPreview>("/v1/datasets/preview", {
     method: "POST", body: JSON.stringify({ repo, subset, split, limit: 8 }) });
-export const addHFDataset = (repo: string, subset: string, split: string, format: string) =>
+export const addHFDataset = (
+  repo: string, subset: string, split: string, format: string, evalSplit = "",
+) =>
   api<DatasetMeta>("/v1/datasets", {
     method: "POST",
-    body: JSON.stringify({ source: "hf", repo, subset, split, format }) });
+    body: JSON.stringify({ source: "hf", repo, subset, split, format,
+                           eval_split: evalSplit || null }) });
 export const deleteDataset = (id: string) =>
   api<{ ok: boolean }>(`/v1/datasets/${id}`, { method: "DELETE" });
 export const getModels = () =>
