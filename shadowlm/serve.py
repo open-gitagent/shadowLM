@@ -108,6 +108,31 @@ _MODEL_CATALOG = [
 ]
 
 
+def hf_info(repo: str, *, subset: str | None = None) -> dict:
+    """A dataset's configs (subsets) and the splits of one — for the pickers.
+
+    Returns {configs, subset, splits}. `subset` is the resolved config the
+    splits belong to (the requested one, or the first available).
+    """
+    try:
+        from datasets import (  # noqa: PLC0415
+            get_dataset_config_names, get_dataset_split_names)
+    except ImportError as e:
+        raise RuntimeError(
+            "HuggingFace datasets need the 'datasets' library — "
+            "pip install 'shadowlm[torch]'") from e
+    token = os.environ.get("HF_TOKEN") or None
+    configs = get_dataset_config_names(repo, token=token)
+    chosen = subset if subset in configs else (configs[0] if configs else None)
+    splits: list[str] = []
+    if chosen is not None:
+        try:
+            splits = list(get_dataset_split_names(repo, chosen, token=token))
+        except Exception:  # noqa: BLE001 — some datasets need a load; leave blank
+            splits = []
+    return {"configs": configs, "subset": chosen, "splits": splits}
+
+
 def hf_preview(repo: str, *, subset: str | None, split: str, limit: int = 10) -> dict:
     """Stream a handful of rows from a HuggingFace dataset — no full download.
 
@@ -470,6 +495,11 @@ def make_handler(server: Server, api_key: str | None):
                     if not body.get("dataset") and not body.get("dataset_id"):
                         return self._error(422, "provide 'dataset' rows or a 'dataset_id'")
                     self._send(202, {"job_id": server.submit(body)})
+                elif parts == ["v1", "datasets", "hf-info"]:
+                    b = self._body()
+                    if not b.get("repo"):
+                        return self._error(422, "provide a HuggingFace 'repo'")
+                    self._send(200, hf_info(b["repo"], subset=b.get("subset")))
                 elif parts == ["v1", "datasets", "preview"]:
                     b = self._body()
                     if not b.get("repo"):

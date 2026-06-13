@@ -78,6 +78,15 @@ export const getDataset = (id: string) => api<DatasetMeta>(`/v1/datasets/${id}`)
 export const createDataset = (name: string, rows: unknown[]) =>
   api<DatasetMeta>("/v1/datasets", { method: "POST", body: JSON.stringify({ name, rows }) });
 
+export interface HFInfo {
+  configs: string[];
+  subset: string | null;
+  splits: string[];
+}
+export const hfInfo = (repo: string, subset?: string) =>
+  api<HFInfo>("/v1/datasets/hf-info", {
+    method: "POST", body: JSON.stringify({ repo, subset }) });
+
 export interface HFPreview {
   format: string;
   columns: string[];

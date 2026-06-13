@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Database, Search, Upload } from "lucide-react";
 import {
-  addHFDataset, createDataset, deleteDataset, getDataset, getDatasets, previewHF,
+  addHFDataset, createDataset, deleteDataset, getDataset, getDatasets, hfInfo, previewHF,
 } from "../api";
 import type { DatasetMeta, HFPreview } from "../api";
 import { Modal, ModalHeader, PageHeader, btnGhost, btnPrimary } from "../ui";
@@ -204,16 +204,49 @@ function UploadForm({ onDone }: { onDone: () => void }) {
 
 function HFForm({ onDone }: { onDone: () => void }) {
   const [repo, setRepo] = useState("");
-  const [subset, setSubset] = useState("default");
-  const [split, setSplit] = useState("train");
+  const [configs, setConfigs] = useState<string[]>([]);
+  const [splits, setSplits] = useState<string[]>([]);
+  const [subset, setSubset] = useState("");
+  const [split, setSplit] = useState("");
   const [evalSplit, setEvalSplit] = useState("");  // "" = None
   const [advanced, setAdvanced] = useState(false);
   const [preview, setPreview] = useState<HFPreview | null>(null);
+  const [loadingInfo, setLoadingInfo] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
+  // debounce repo → fetch configs + splits, populate the dropdowns
+  useEffect(() => {
+    const r = repo.trim();
+    if (!r || !r.includes("/")) { setConfigs([]); setSplits([]); return; }
+    const t = setTimeout(async () => {
+      setLoadingInfo(true); setErr(""); setPreview(null);
+      try {
+        const info = await hfInfo(r);
+        setConfigs(info.configs);
+        setSubset(info.subset ?? "");
+        setSplits(info.splits);
+        setSplit(info.splits.includes("train") ? "train" : (info.splits[0] ?? ""));
+        setEvalSplit("");
+      } catch (ex) { setConfigs([]); setSplits([]); setErr((ex as Error).message); }
+      finally { setLoadingInfo(false); }
+    }, 500);
+    return () => clearTimeout(t);
+  }, [repo]);
+
+  // subset change → refetch its splits
+  async function pickSubset(s: string) {
+    setSubset(s); setPreview(null);
+    try {
+      const info = await hfInfo(repo.trim(), s);
+      setSplits(info.splits);
+      setSplit(info.splits.includes("train") ? "train" : (info.splits[0] ?? ""));
+      setEvalSplit("");
+    } catch (ex) { setErr((ex as Error).message); }
+  }
+
   async function doPreview() {
-    if (!repo.trim()) return;
+    if (!repo.trim() || !split) return;
     setBusy(true); setErr(""); setPreview(null);
     try {
       setPreview(await previewHF(repo.trim(), subset, split));
@@ -228,26 +261,45 @@ function HFForm({ onDone }: { onDone: () => void }) {
     } catch (ex) { setErr((ex as Error).message); }
   }
 
+  const ready = configs.length > 0 || splits.length > 0;
+
   return (
     <div className="p-5 grid gap-3">
       <label className="block">
         <div className="text-[11px] text-muted-foreground mb-1">Repo</div>
-        <input placeholder="org/dataset (e.g. openai/gsm8k)" value={repo}
-               onChange={(e) => setRepo(e.target.value)} className="w-full font-mono text-sm" />
+        <div className="relative">
+          <input placeholder="org/dataset (e.g. openai/gsm8k)" value={repo}
+                 onChange={(e) => setRepo(e.target.value)} className="w-full font-mono text-sm" />
+          {loadingInfo && (
+            <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[11px] text-muted-foreground">
+              loading…</span>
+          )}
+        </div>
       </label>
-      <div className="grid grid-cols-3 gap-2">
+      <div className={`grid grid-cols-3 gap-2 ${ready ? "" : "opacity-40 pointer-events-none"}`}>
         <label className="block">
           <div className="text-[11px] text-muted-foreground mb-1">Subset</div>
-          <input value={subset} onChange={(e) => setSubset(e.target.value)} className="w-full font-mono text-sm" />
+          <select value={subset} onChange={(e) => pickSubset(e.target.value)}
+                  className="w-full font-mono text-sm">
+            {configs.length === 0 && <option value="">—</option>}
+            {configs.map((c) => <option key={c} value={c}>{c}</option>)}
+          </select>
         </label>
         <label className="block">
           <div className="text-[11px] text-muted-foreground mb-1">Train split</div>
-          <input value={split} onChange={(e) => setSplit(e.target.value)} className="w-full font-mono text-sm" />
+          <select value={split} onChange={(e) => setSplit(e.target.value)}
+                  className="w-full font-mono text-sm">
+            {splits.length === 0 && <option value="">—</option>}
+            {splits.map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
         </label>
         <label className="block">
           <div className="text-[11px] text-muted-foreground mb-1">Eval split</div>
-          <input value={evalSplit} placeholder="None" onChange={(e) => setEvalSplit(e.target.value)}
-                 className="w-full font-mono text-sm" />
+          <select value={evalSplit} onChange={(e) => setEvalSplit(e.target.value)}
+                  className="w-full font-mono text-sm">
+            <option value="">None</option>
+            {splits.filter((s) => s !== split).map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
         </label>
       </div>
 
@@ -264,7 +316,7 @@ function HFForm({ onDone }: { onDone: () => void }) {
       )}
 
       <div className="flex items-center gap-2.5">
-        <button onClick={doPreview} disabled={busy || !repo.trim()} className={btnGhost}>
+        <button onClick={doPreview} disabled={busy || !split} className={btnGhost}>
           {busy ? "loading…" : "Preview"}
         </button>
         {preview && <button onClick={add} className={btnPrimary}>Add to library ›</button>}
