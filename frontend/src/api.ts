@@ -4,8 +4,12 @@ export interface DatasetMeta {
   dataset_id: string;
   name: string;
   format: string;
-  rows: number;
+  rows: number | null;
   created: number;
+  source?: "upload" | "hf";
+  repo?: string;
+  subset?: string;
+  split?: string;
   preview?: Record<string, unknown>[];
 }
 
@@ -72,6 +76,20 @@ export const getDatasets = () =>
 export const getDataset = (id: string) => api<DatasetMeta>(`/v1/datasets/${id}`);
 export const createDataset = (name: string, rows: unknown[]) =>
   api<DatasetMeta>("/v1/datasets", { method: "POST", body: JSON.stringify({ name, rows }) });
+
+export interface HFPreview {
+  format: string;
+  columns: string[];
+  total: number | null;
+  preview: Record<string, unknown>[];
+}
+export const previewHF = (repo: string, subset: string, split: string) =>
+  api<HFPreview>("/v1/datasets/preview", {
+    method: "POST", body: JSON.stringify({ repo, subset, split, limit: 8 }) });
+export const addHFDataset = (repo: string, subset: string, split: string, format: string) =>
+  api<DatasetMeta>("/v1/datasets", {
+    method: "POST",
+    body: JSON.stringify({ source: "hf", repo, subset, split, format }) });
 export const deleteDataset = (id: string) =>
   api<{ ok: boolean }>(`/v1/datasets/${id}`, { method: "DELETE" });
 export const getModels = () =>

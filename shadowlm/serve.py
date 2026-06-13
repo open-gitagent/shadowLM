@@ -108,8 +108,33 @@ _MODEL_CATALOG = [
 ]
 
 
+def hf_preview(repo: str, *, subset: str | None, split: str, limit: int = 10) -> dict:
+    """Stream a handful of rows from a HuggingFace dataset — no full download.
+
+    Returns {format, columns, total, preview}. `total` is None when streaming
+    can't count cheaply (the common case).
+    """
+    try:
+        from datasets import load_dataset  # noqa: PLC0415
+    except ImportError as e:
+        raise RuntimeError(
+            "HuggingFace datasets need the 'datasets' library — "
+            "pip install 'shadowlm[torch]'") from e
+    from itertools import islice  # noqa: PLC0415
+
+    token = os.environ.get("HF_TOKEN") or None
+    stream = load_dataset(repo, subset or None, split=split, streaming=True, token=token)
+    rows = [dict(r) for r in islice(stream, limit)]
+    if not rows:
+        raise RuntimeError(f"{repo} ({subset or 'default'}/{split}) returned no rows")
+    columns = list(rows[0].keys())
+    fmt = Dataset.from_list(rows).format
+    return {"format": fmt, "columns": columns, "total": None, "preview": rows}
+
+
 class DatasetStore:
-    """Datasets uploaded through the dashboard — JSONL on disk, survives restarts."""
+    """Datasets in the dashboard — uploaded JSONL, or a HuggingFace reference.
+    Both persist as a small JSON meta; survives restarts."""
 
     def __init__(self, root: Path) -> None:
         self.root = root
@@ -121,8 +146,18 @@ class DatasetStore:
         (self.root / f"{ds_id}.jsonl").write_text(
             "\n".join(json.dumps(r) for r in rows))
         meta = {"dataset_id": ds_id, "name": name or f"dataset-{ds_id[:4]}",
-                "format": ds.format, "rows": len(rows),
+                "source": "upload", "format": ds.format, "rows": len(rows),
                 "created": int(time.time())}
+        (self.root / f"{ds_id}.json").write_text(json.dumps(meta))
+        return meta
+
+    def save_hf(self, repo: str, *, subset: str | None, split: str,
+                fmt: str, rows: int | None) -> dict:
+        """Register a HuggingFace dataset by reference (resolved at train time)."""
+        ds_id = uuid.uuid4().hex[:10]
+        meta = {"dataset_id": ds_id, "name": repo, "source": "hf",
+                "repo": repo, "subset": subset or "default", "split": split,
+                "format": fmt, "rows": rows, "created": int(time.time())}
         (self.root / f"{ds_id}.json").write_text(json.dumps(meta))
         return meta
 
@@ -144,6 +179,17 @@ class DatasetStore:
     def meta(self, ds_id: str) -> dict | None:
         p = self.root / f"{ds_id}.json"
         return json.loads(p.read_text()) if p.exists() else None
+
+    def resolve(self, ds_id: str) -> Dataset:
+        """A trainable Dataset — local rows, or pulled from HF on demand."""
+        meta = self.meta(ds_id)
+        if meta is None:
+            raise ValueError(f"unknown dataset {ds_id!r}")
+        if meta.get("source") == "hf":
+            sub = meta["subset"] if meta["subset"] != "default" else None
+            return Dataset.from_hf(meta["repo"], subset=sub, split=meta["split"])
+        rows = self.rows(ds_id) or []
+        return Dataset.from_list(rows)
 
     def delete(self, ds_id: str) -> bool:
         found = False
@@ -186,12 +232,10 @@ class Server:
             job.status = "running"
             try:
                 payload = job._payload  # attached at submit time
-                # dataset by reference (dashboard) or inline rows (SDK)
+                # dataset by reference (dashboard — local or HF) or inline rows (SDK)
                 if payload.get("dataset_id"):
-                    rows = self.datasets.rows(payload["dataset_id"])
-                    if rows is None:
-                        raise ValueError(f"unknown dataset {payload['dataset_id']!r}")
-                    payload["dataset"] = {"rows": rows, "format": None}
+                    ds = self.datasets.resolve(payload["dataset_id"])
+                    payload["dataset"] = {"rows": ds.rows, "format": ds.format}
                 if payload.get("eval_dataset") == "auto":
                     full = _rebuild_dataset(payload["dataset"])
                     train, ev = full.split(test_size=0.1)
@@ -411,12 +455,27 @@ def make_handler(server: Server, api_key: str | None):
                     if not body.get("dataset") and not body.get("dataset_id"):
                         return self._error(422, "provide 'dataset' rows or a 'dataset_id'")
                     self._send(202, {"job_id": server.submit(body)})
+                elif parts == ["v1", "datasets", "preview"]:
+                    b = self._body()
+                    if not b.get("repo"):
+                        return self._error(422, "provide a HuggingFace 'repo'")
+                    self._send(200, hf_preview(
+                        b["repo"], subset=b.get("subset"),
+                        split=b.get("split", "train"), limit=b.get("limit", 8)))
                 elif parts == ["v1", "datasets"]:
                     body = self._body()
-                    rows = body.get("rows")
-                    if not rows or not isinstance(rows, list):
-                        return self._error(422, "provide 'rows': a list of JSON objects")
-                    self._send(201, server.datasets.save(body.get("name", ""), rows))
+                    if body.get("source") == "hf":
+                        if not body.get("repo"):
+                            return self._error(422, "provide a HuggingFace 'repo'")
+                        self._send(201, server.datasets.save_hf(
+                            body["repo"], subset=body.get("subset"),
+                            split=body.get("split", "train"),
+                            fmt=body.get("format", "?"), rows=body.get("rows")))
+                    else:
+                        rows = body.get("rows")
+                        if not rows or not isinstance(rows, list):
+                            return self._error(422, "provide 'rows': a list of JSON objects")
+                        self._send(201, server.datasets.save(body.get("name", ""), rows))
                 elif len(parts) == 4 and parts[:2] == ["v1", "finetunes"] \
                         and parts[3] == "cancel":
                     if (job := self._job_or_404(parts[2])):

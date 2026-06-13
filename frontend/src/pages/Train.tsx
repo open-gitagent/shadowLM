@@ -145,7 +145,7 @@ export default function Train({ methods }: { methods: MethodInfo[] }) {
                       <div className="flex-1 min-w-0">
                         <div className="text-sm font-medium truncate">{d.name}</div>
                         <div className="text-xs text-muted-foreground font-mono">
-                          {d.format} · {d.rows.toLocaleString()} rows</div>
+                          {d.format}{d.rows != null ? ` · ${d.rows.toLocaleString()} rows` : ""}</div>
                       </div>
                       {ds === d.dataset_id &&
                         <div className="text-[10px] font-mono uppercase tracking-wider text-primary">Selected</div>}
@@ -288,7 +288,7 @@ export default function Train({ methods }: { methods: MethodInfo[] }) {
                   {ready ? "Ready to launch" : "Working through the steps…"}</div>
               </div>
               <div className="px-4 py-3 space-y-2 text-xs">
-                <SummaryRow label="Dataset" value={meta ? `${meta.name} (${meta.rows})` : "—"} />
+                <SummaryRow label="Dataset" value={meta ? (meta.rows != null ? `${meta.name} (${meta.rows})` : meta.name) : "—"} />
                 <SummaryRow label="Model" value={model ? model.split("/").pop()! : "—"} />
                 <SummaryRow label="Method" value={method ?? "—"} />
                 <SummaryRow label="Steps" value={String(p.steps)} />
