@@ -33,13 +33,9 @@ const LORA: Param[] = [
   { key: "lora_dropout", label: "LoRA dropout", kind: "float", def: "0" },
 ];
 
-// Method-specific knobs, keyed by method name. Methods absent here add nothing
-// beyond COMMON (bitfit / full / cpt).
-const BY_METHOD: Record<string, Param[]> = {
-  lora: LORA, qlora: LORA, dora: LORA,
-  adapter: [{ key: "lora_r", label: "Adapter width (r)", kind: "int", def: "16" }],
+// Extra knobs by method name (on top of whatever the adapter kind contributes).
+const EXTRA: Record<string, Param[]> = {
   more: [
-    ...LORA,
     { key: "retrieval_k", label: "Retrieval k", kind: "int", def: "2", hint: "memories per token" },
     { key: "retrieval_layers", label: "Retrieval layers", kind: "int", def: "8" },
   ],
@@ -53,8 +49,22 @@ const BY_METHOD: Record<string, Param[]> = {
   ptuning: [{ key: "num_virtual_tokens", label: "Virtual tokens", kind: "int", def: "16" }],
 };
 
-const paramsFor = (method: string | null): Param[] =>
-  [...COMMON, ...(method ? BY_METHOD[method] ?? [] : [])];
+// The adapter kind decides the adapter knobs — so cpt/dpo/grpo/qlora (all
+// default-LoRA) get rank/alpha/dropout, bottleneck gets a width, bitfit/full/
+// soft-prompts get none.
+function adapterParams(adapter: string | undefined): Param[] {
+  if (adapter === "lora" || adapter === "dora" || adapter === "more") return LORA;
+  if (adapter === "bottleneck") return [{ key: "lora_r", label: "Adapter width (r)", kind: "int", def: "16" }];
+  return [];
+}
+
+// Everything a method exposes beyond COMMON: its adapter knobs + its extras.
+function methodParams(info?: MethodInfo): Param[] {
+  if (!info) return [];
+  return [...adapterParams(info.adapter), ...(EXTRA[info.name] ?? [])];
+}
+
+const paramsFor = (info?: MethodInfo): Param[] => [...COMMON, ...methodParams(info)];
 
 export default function Train({ methods }: { methods: MethodInfo[] }) {
   const [step, setStep] = useState(0);
@@ -100,7 +110,8 @@ export default function Train({ methods }: { methods: MethodInfo[] }) {
   const filteredModels = allModels.filter((m) =>
     m.id.toLowerCase().includes(search.toLowerCase()));
 
-  const tuneParams = paramsFor(method);
+  const tuneParams = paramsFor(methodInfo);
+  const extraParams = methodParams(methodInfo);
   const ready = Boolean(ds && model && method);
   const canNext = [Boolean(ds), Boolean(model), Boolean(method), true][step];
 
@@ -109,7 +120,7 @@ export default function Train({ methods }: { methods: MethodInfo[] }) {
     const info = methods.find((x) => x.name === name);
     setVals((v) => {
       const next = { ...v };
-      for (const p of BY_METHOD[name] ?? []) if (next[p.key] === undefined) next[p.key] = p.def;
+      for (const p of methodParams(info)) if (next[p.key] === undefined) next[p.key] = p.def;
       return next;
     });
     if (info && !lrTouched) setVals((v) => ({ ...v, learning_rate: String(info.default_lr) }));
@@ -299,7 +310,7 @@ export default function Train({ methods }: { methods: MethodInfo[] }) {
                 <div className="text-sm font-semibold mb-1">Hyperparameters</div>
                 <p className="text-xs text-muted-foreground">
                   {method ?? "this method"}'s knobs — defaults are sensible.
-                  {(BY_METHOD[method ?? ""]?.length ?? 0) > 0 &&
+                  {extraParams.length > 0 &&
                     ` The ${method}-specific settings are split out below.`}
                 </p>
               </div>
@@ -316,13 +327,13 @@ export default function Train({ methods }: { methods: MethodInfo[] }) {
                 ))}
               </div>
 
-              {(BY_METHOD[method ?? ""]?.length ?? 0) > 0 && (
+              {extraParams.length > 0 && (
                 <div className="pt-4 border-t border-border">
                   <div className="text-xs font-semibold text-primary mb-3 uppercase tracking-wider font-mono">
                     {method} settings
                   </div>
                   <div className="grid grid-cols-2 gap-3">
-                    {BY_METHOD[method!].map((p) => (
+                    {extraParams.map((p) => (
                       <Field key={p.key} label={p.label} hint={p.hint}>
                         <input value={vals[p.key] ?? ""} placeholder={p.def}
                                inputMode={p.kind === "int" ? "numeric" : "decimal"}
@@ -373,11 +384,10 @@ export default function Train({ methods }: { methods: MethodInfo[] }) {
                 <SummaryRow label="Steps" value={summaryVal("max_steps") || "60"} />
                 <SummaryRow label="LR" value={summaryVal("learning_rate") || "method default"} />
                 <SummaryRow label="Batch" value={summaryVal("per_device_train_batch_size") || "2"} />
-                {method && (BY_METHOD[method]?.length ?? 0) > 0 &&
-                  BY_METHOD[method].map((p) => (
-                    <SummaryRow key={p.key} label={p.label}
-                      value={summaryVal(p.key) || p.def} />
-                  ))}
+                {extraParams.map((p) => (
+                  <SummaryRow key={p.key} label={p.label}
+                    value={summaryVal(p.key) || p.def} />
+                ))}
                 <SummaryRow label="Eval" value={evalSplit ? "10% held out" : "off"} />
               </div>
               <div className="px-4 pb-4 pt-2 space-y-2">

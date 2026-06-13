@@ -27,6 +27,7 @@ export interface MethodInfo {
   description: string;
   default_lr: number;
   trainer: string;
+  adapter: string;  // lora | dora | more | bottleneck | bitfit | prompt | ptuning | none
 }
 
 export interface JobSummary {

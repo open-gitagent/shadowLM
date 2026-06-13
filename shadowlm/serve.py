@@ -500,6 +500,7 @@ def make_handler(server: Server, api_key: str | None):
                 self._send(200, {"methods": [{
                     "name": m.name, "description": m.description,
                     "default_lr": m.default_learning_rate, "trainer": m.trainer,
+                    "adapter": m.adapter,
                 } for m in (_methods.get(n) for n in _methods.available())]})
             elif len(parts) == 3 and parts[:2] == ["v1", "finetunes"]:
                 if (job := self._job_or_404(parts[2])):
