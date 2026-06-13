@@ -1,6 +1,6 @@
 // Train — the guided flow, data first: Data → Model → Method → Tune.
-// The right rail is the always-live run summary + the generated CLI, and the
-// launch button sits under the summary: this exact config runs, nothing hidden.
+// The data ranks the methods; the method shapes the form — each method exposes
+// exactly its own hyperparameters (LoRA rank for adapters, beta for DPO, …).
 import { useEffect, useMemo, useState } from "react";
 import { Check, ChevronLeft, ChevronRight, Play, Search } from "lucide-react";
 import { getDatasets, getModels, submitFinetune } from "../api";
@@ -8,12 +8,53 @@ import type { CatalogModel, DatasetMeta, MethodInfo } from "../api";
 import { Field, PageHeader, btnGhost, btnPrimary } from "../ui";
 
 const STEPS = ["Data", "Model", "Method", "Tune"] as const;
-const LORA_FAMILY = ["lora", "qlora", "dora", "adapter", "more"];
 const recommend = (format?: string): string[] =>
   format === "preference" ? ["dpo"]
   : format === "text" ? ["cpt"]
   : format === "prompt" ? ["grpo"]
   : ["lora", "qlora", "dora"];
+
+// A tunable hyperparameter (key = the TrainConfig field it sets).
+interface Param { key: string; label: string; kind: "int" | "float"; def: string; hint?: string }
+
+// Common to every method.
+const COMMON: Param[] = [
+  { key: "max_steps", label: "Max steps", kind: "int", def: "60", hint: "total optimizer steps" },
+  { key: "learning_rate", label: "Learning rate", kind: "float", def: "", hint: "blank = method default" },
+  { key: "per_device_train_batch_size", label: "Batch size", kind: "int", def: "2" },
+  { key: "gradient_accumulation_steps", label: "Grad accumulation", kind: "int", def: "4" },
+  { key: "max_seq_length", label: "Context length", kind: "int", def: "2048" },
+  { key: "weight_decay", label: "Weight decay", kind: "float", def: "0.01" },
+];
+
+const LORA: Param[] = [
+  { key: "lora_r", label: "LoRA rank", kind: "int", def: "16" },
+  { key: "lora_alpha", label: "LoRA alpha", kind: "int", def: "16" },
+  { key: "lora_dropout", label: "LoRA dropout", kind: "float", def: "0" },
+];
+
+// Method-specific knobs, keyed by method name. Methods absent here add nothing
+// beyond COMMON (bitfit / full / cpt).
+const BY_METHOD: Record<string, Param[]> = {
+  lora: LORA, qlora: LORA, dora: LORA,
+  adapter: [{ key: "lora_r", label: "Adapter width (r)", kind: "int", def: "16" }],
+  more: [
+    ...LORA,
+    { key: "retrieval_k", label: "Retrieval k", kind: "int", def: "2", hint: "memories per token" },
+    { key: "retrieval_layers", label: "Retrieval layers", kind: "int", def: "8" },
+  ],
+  dpo: [{ key: "beta", label: "Beta (KL)", kind: "float", def: "0.1", hint: "higher = stay closer to reference" }],
+  grpo: [
+    { key: "beta", label: "Beta (KL)", kind: "float", def: "0.1" },
+    { key: "grpo_group_size", label: "Group size", kind: "int", def: "4", hint: "completions per prompt" },
+    { key: "grpo_max_completion_length", label: "Max completion", kind: "int", def: "256" },
+  ],
+  prompt: [{ key: "num_virtual_tokens", label: "Virtual tokens", kind: "int", def: "16" }],
+  ptuning: [{ key: "num_virtual_tokens", label: "Virtual tokens", kind: "int", def: "16" }],
+};
+
+const paramsFor = (method: string | null): Param[] =>
+  [...COMMON, ...(method ? BY_METHOD[method] ?? [] : [])];
 
 export default function Train({ methods }: { methods: MethodInfo[] }) {
   const [step, setStep] = useState(0);
@@ -27,8 +68,10 @@ export default function Train({ methods }: { methods: MethodInfo[] }) {
   const [free, setFree] = useState("");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
-  const [p, setP] = useState({ steps: 60, lorar: 16, lr: "", lrTouched: false,
-                               batch: 2, ctx: 2048, evalSplit: false });
+  const [vals, setVals] = useState<Record<string, string>>(
+    () => Object.fromEntries(COMMON.map((p) => [p.key, p.def])));
+  const [lrTouched, setLrTouched] = useState(false);
+  const [evalSplit, setEvalSplit] = useState(false);
 
   useEffect(() => {
     getDatasets().then((d) => setDatasets(d.datasets));
@@ -42,9 +85,9 @@ export default function Train({ methods }: { methods: MethodInfo[] }) {
     const pst = sessionStorage.getItem("pick.steps");
     if (pd) { setDs(pd); setStep(1); sessionStorage.removeItem("pick.dataset"); }
     if (pm) { setModel(pm); setStep((s) => Math.max(s, pd ? 2 : 0)); sessionStorage.removeItem("pick.model"); }
-    if (pme) { setMethod(pme); sessionStorage.removeItem("pick.method"); }
-    if (pst) { setP((q) => ({ ...q, steps: +pst || 60 })); sessionStorage.removeItem("pick.steps"); }
-  }, []);
+    if (pme) { pickMethod(pme); sessionStorage.removeItem("pick.method"); }
+    if (pst) { setVals((v) => ({ ...v, max_steps: pst })); sessionStorage.removeItem("pick.steps"); }
+  }, []);  // eslint-disable-line react-hooks/exhaustive-deps
 
   const meta = datasets.find((d) => d.dataset_id === ds);
   const rec = recommend(meta?.format);
@@ -57,44 +100,70 @@ export default function Train({ methods }: { methods: MethodInfo[] }) {
   const filteredModels = allModels.filter((m) =>
     m.id.toLowerCase().includes(search.toLowerCase()));
 
+  const tuneParams = paramsFor(method);
   const ready = Boolean(ds && model && method);
   const canNext = [Boolean(ds), Boolean(model), Boolean(method), true][step];
 
   function pickMethod(name: string) {
     setMethod(name);
-    const m = methods.find((x) => x.name === name);
-    if (m && !p.lrTouched) setP((q) => ({ ...q, lr: String(m.default_lr) }));
+    const info = methods.find((x) => x.name === name);
+    setVals((v) => {
+      const next = { ...v };
+      for (const p of BY_METHOD[name] ?? []) if (next[p.key] === undefined) next[p.key] = p.def;
+      return next;
+    });
+    if (info && !lrTouched) setVals((v) => ({ ...v, learning_rate: String(info.default_lr) }));
+  }
+  const setVal = (k: string, val: string) => {
+    if (k === "learning_rate") setLrTouched(true);
+    setVals((v) => ({ ...v, [k]: val }));
+  };
+
+  function buildConfig(): Record<string, unknown> {
+    const config: Record<string, unknown> = { method };
+    for (const p of tuneParams) {
+      const raw = (vals[p.key] ?? "").trim();
+      if (raw === "") continue;
+      config[p.key] = p.kind === "int" ? parseInt(raw) : parseFloat(raw);
+    }
+    return config;
   }
 
   async function start() {
     if (!ready || busy) return;
     setErr(""); setBusy(true);
-    const config: Record<string, unknown> = {
-      method, max_steps: p.steps, per_device_train_batch_size: p.batch };
-    if (LORA_FAMILY.includes(method!)) config.lora_r = p.lorar;
-    if (p.lr) config.learning_rate = parseFloat(p.lr);
     try {
       const out = await submitFinetune({
-        base_model: model, config, dataset_id: ds,
-        eval_dataset: p.evalSplit ? "auto" : null,
-        load_in_4bit: false, max_seq_length: p.ctx });
+        base_model: model, config: buildConfig(), dataset_id: ds,
+        eval_dataset: evalSplit ? "auto" : null,
+        load_in_4bit: false, max_seq_length: parseInt(vals.max_seq_length || "2048") });
       window.location.hash = `#runs/${out.job_id}`;
     } catch (ex) { setErr((ex as Error).message); setBusy(false); }
   }
 
-  const cli = [
-    "shadowlm finetune <data.jsonl> \\",
-    `  --model ${model ?? "<model>"} \\`,
-    `  --method ${method ?? "<method>"} \\`,
-    `  --max-steps ${p.steps}${p.lr ? ` \\\n  --lr ${p.lr}` : ""}` +
-    (method && LORA_FAMILY.includes(method) ? ` \\\n  --lora-r ${p.lorar}` : "") +
-    (p.evalSplit ? ` \\\n  --eval auto` : ""),
-  ].join("\n");
+  // CLI preview: headline flags inline, the rest via --set field=value
+  const cli = useMemo(() => {
+    const headline: Record<string, string> = {
+      max_steps: "--max-steps", learning_rate: "--lr",
+      per_device_train_batch_size: "--batch-size", lora_r: "--lora-r" };
+    const lines = [`shadowlm finetune <data.jsonl> \\`,
+                   `  --model ${model ?? "<model>"} \\`,
+                   `  --method ${method ?? "<method>"}`];
+    for (const p of tuneParams) {
+      const raw = (vals[p.key] ?? "").trim();
+      if (raw === "" || raw === p.def && p.key !== "max_steps") continue;
+      lines[lines.length - 1] += " \\";
+      lines.push(headline[p.key] ? `  ${headline[p.key]} ${raw}` : `  --set ${p.key}=${raw}`);
+    }
+    if (evalSplit) { lines[lines.length - 1] += " \\"; lines.push("  --eval auto"); }
+    return lines.join("\n");
+  }, [model, method, vals, tuneParams, evalSplit]);
+
+  const summaryVal = (k: string) => (vals[k] ?? "").trim();
 
   return (
     <>
       <PageHeader
-        eyebrow="Fine-tuning Studio"
         title="Configure and start training"
         description="Four decisions, in the order they depend on each other — the data ranks the methods, the method shapes the form."
       />
@@ -223,41 +292,51 @@ export default function Train({ methods }: { methods: MethodInfo[] }) {
             </section>
           )}
 
-          {/* step 4 — Tune */}
+          {/* step 4 — Tune (spec-driven: common + this method's own params) */}
           {step === 3 && (
             <section className="rounded-lg border border-border bg-card p-5 space-y-4">
               <div>
                 <div className="text-sm font-semibold mb-1">Hyperparameters</div>
                 <p className="text-xs text-muted-foreground">
-                  Only the knobs {method ?? "this method"} actually has. Defaults are sensible.</p>
+                  {method ?? "this method"}'s knobs — defaults are sensible.
+                  {(BY_METHOD[method ?? ""]?.length ?? 0) > 0 &&
+                    ` The ${method}-specific settings are split out below.`}
+                </p>
               </div>
               <div className="grid grid-cols-2 gap-3">
-                <Field label="Max steps" hint="Total optimizer steps">
-                  <input type="number" min={1} value={p.steps} className="w-full font-mono text-sm"
-                         onChange={(e) => setP({ ...p, steps: +e.target.value || 60 })} />
-                </Field>
-                <Field label="Context length" hint="Max sequence length">
-                  <input type="number" min={64} value={p.ctx} className="w-full font-mono text-sm"
-                         onChange={(e) => setP({ ...p, ctx: +e.target.value || 2048 })} />
-                </Field>
-                <Field label="Learning rate" hint={methodInfo ? `Default for ${method}: ${methodInfo.default_lr}` : undefined}>
-                  <input value={p.lr} placeholder="method default" className="w-full font-mono text-sm"
-                         onChange={(e) => setP({ ...p, lr: e.target.value, lrTouched: true })} />
-                </Field>
-                <Field label="Batch size">
-                  <input type="number" min={1} value={p.batch} className="w-full font-mono text-sm"
-                         onChange={(e) => setP({ ...p, batch: +e.target.value || 2 })} />
-                </Field>
-                {method && LORA_FAMILY.includes(method) && (
-                  <Field label={method === "adapter" ? "Adapter width (r)" : "LoRA rank"}>
-                    <input type="number" min={1} value={p.lorar} className="w-full font-mono text-sm"
-                           onChange={(e) => setP({ ...p, lorar: +e.target.value || 16 })} />
+                {COMMON.map((p) => (
+                  <Field key={p.key} label={p.label}
+                    hint={p.key === "learning_rate" && methodInfo
+                      ? `default for ${method}: ${methodInfo.default_lr}` : p.hint}>
+                    <input value={vals[p.key] ?? ""} placeholder={p.def || "method default"}
+                           inputMode={p.kind === "int" ? "numeric" : "decimal"}
+                           className="w-full font-mono text-sm"
+                           onChange={(e) => setVal(p.key, e.target.value)} />
                   </Field>
-                )}
+                ))}
               </div>
-              <label className="flex items-center gap-2 text-sm text-muted-foreground">
-                <input type="checkbox" checked={p.evalSplit} className="w-auto"
-                       onChange={(e) => setP({ ...p, evalSplit: e.target.checked })} />
+
+              {(BY_METHOD[method ?? ""]?.length ?? 0) > 0 && (
+                <div className="pt-4 border-t border-border">
+                  <div className="text-xs font-semibold text-primary mb-3 uppercase tracking-wider font-mono">
+                    {method} settings
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    {BY_METHOD[method!].map((p) => (
+                      <Field key={p.key} label={p.label} hint={p.hint}>
+                        <input value={vals[p.key] ?? ""} placeholder={p.def}
+                               inputMode={p.kind === "int" ? "numeric" : "decimal"}
+                               className="w-full font-mono text-sm"
+                               onChange={(e) => setVal(p.key, e.target.value)} />
+                      </Field>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <label className="flex items-center gap-2 text-sm text-muted-foreground pt-2 border-t border-border">
+                <input type="checkbox" checked={evalSplit} className="w-auto"
+                       onChange={(e) => setEvalSplit(e.target.checked)} />
                 hold out 10% for eval — see overfitting, not just training loss
               </label>
             </section>
@@ -291,13 +370,15 @@ export default function Train({ methods }: { methods: MethodInfo[] }) {
                 <SummaryRow label="Dataset" value={meta ? (meta.rows != null ? `${meta.name} (${meta.rows})` : meta.name) : "—"} />
                 <SummaryRow label="Model" value={model ? model.split("/").pop()! : "—"} />
                 <SummaryRow label="Method" value={method ?? "—"} />
-                <SummaryRow label="Steps" value={String(p.steps)} />
-                <SummaryRow label="LR" value={p.lr || "method default"} />
-                <SummaryRow label="Batch" value={String(p.batch)} />
-                <SummaryRow label="Context" value={`${p.ctx} tok`} />
-                {method && LORA_FAMILY.includes(method) &&
-                  <SummaryRow label="Rank" value={`r=${p.lorar}`} />}
-                <SummaryRow label="Eval" value={p.evalSplit ? "10% held out" : "off"} />
+                <SummaryRow label="Steps" value={summaryVal("max_steps") || "60"} />
+                <SummaryRow label="LR" value={summaryVal("learning_rate") || "method default"} />
+                <SummaryRow label="Batch" value={summaryVal("per_device_train_batch_size") || "2"} />
+                {method && (BY_METHOD[method]?.length ?? 0) > 0 &&
+                  BY_METHOD[method].map((p) => (
+                    <SummaryRow key={p.key} label={p.label}
+                      value={summaryVal(p.key) || p.def} />
+                  ))}
+                <SummaryRow label="Eval" value={evalSplit ? "10% held out" : "off"} />
               </div>
               <div className="px-4 pb-4 pt-2 space-y-2">
                 <button onClick={start} disabled={!ready || busy}
