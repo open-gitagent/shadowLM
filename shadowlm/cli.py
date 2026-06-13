@@ -41,7 +41,7 @@ err_console = Console(stderr=True, theme=_THEME)
 app = typer.Typer(
     name="shadowlm",
     help="ShadowLM Trainer — a fine-tuning SDK. "
-         "Any open model. Any harness. Any method.",
+         "Any open model — with any method, on any hardware, for any harness.",
     no_args_is_help=True,
     add_completion=False,
     rich_markup_mode="rich",

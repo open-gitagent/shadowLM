@@ -1,6 +1,6 @@
 """ShadowLM Trainer — a fine-tuning SDK.
 
-Any open model. Any harness. Any method.
+Any open model — with any method, on any hardware, for any harness.
 
     import shadowlm as slm
 

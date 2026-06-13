@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/open-gitagent/shadowLM/main/assets/banner.png" alt="ShadowLM Trainer — any open model, any harness, any method">
+  <img src="https://raw.githubusercontent.com/open-gitagent/shadowLM/main/assets/banner.png" alt="ShadowLM Trainer — any open model, with any method, on any hardware, for any harness">
 </p>
 
 <p align="center">
@@ -27,7 +27,7 @@
 
 # ShadowLM Trainer
 
-**A fine-tuning SDK. Any open model. Any harness. Any method.**
+**A fine-tuning SDK. Any open model — with any method, on any hardware, for any harness.**
 
 Open source · built by [Lyzr Research Labs](https://lyzr.ai) · maintained by [Khush Patel](mailto:khush@lyzr.ai) · `slm♥`
 

@@ -36,7 +36,8 @@ _NAME = r"""
 ███████║ ██║  ██║ ╚██████║ ╚██████║ ╚█████╔╝ ╚███╔███╔╝ ███████╗ ██║ ╚═╝ ██║
 ╚══════╝ ╚═╝  ╚═╝  ╚═════╝  ╚═════╝  ╚════╝   ╚══╝╚══╝  ╚══════╝ ╚═╝     ╚═╝
                             T  R  A  I  N  E  R
-               any open model  ·  any harness  ·  any method
+                   any open model — with any method,
+                   on any hardware, for any harness
                     from  Lyzr  Research  Labs  ·  slm♥
 """
 
