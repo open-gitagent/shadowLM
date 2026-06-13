@@ -31,10 +31,24 @@ def _has(mod: str) -> bool:
 class TorchBackend(Backend):
     name = "torch"
 
+    # Whatever HuggingFace accelerate targets: cuda, cpu, xla (Google TPU and
+    # AWS Trainium via torch-neuronx), xpu (Intel), mps. accelerate places the
+    # model; we just avoid hard-coding CUDA-only paths for the others.
+    _DEVICES = {"auto", "cuda", "cpu", "xla", "xpu", "mps"}
+
     def __init__(self, *, device: str = "auto", accelerator: str = "auto") -> None:
         super().__init__(device=device, accelerator=accelerator)
+        if device not in self._DEVICES:
+            raise ValueError(
+                f"unknown device {device!r} (expected one of {sorted(self._DEVICES)}; "
+                "cuda and cpu are tested, xla/xpu run through accelerate)")
         if device == "auto":
             self.device = "cuda" if self.has_cuda() else "cpu"
+
+    @property
+    def _is_extra_accelerator(self) -> bool:
+        """A non-CUDA accelerator (TPU/Trainium/Intel) — accelerate places it."""
+        return self.device not in ("cuda", "cpu")
 
     @classmethod
     def is_available(cls) -> bool:
@@ -84,6 +98,11 @@ class TorchBackend(Backend):
             )
         if self.device == "cpu":
             self.model = self.model.to("cpu")
+        elif self._is_extra_accelerator:
+            # accelerate / Trainer places the model on the TPU/Trainium/XPU device.
+            import sys  # noqa: PLC0415
+            print(f"[shadowlm] device={self.device!r} · placed by accelerate",
+                  file=sys.__stdout__ or sys.stdout, flush=True)
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
         if adapter:

@@ -102,6 +102,23 @@ tested code, not blind code.
 The pipeline is the standard HuggingFace flow — `datasets` formats and chat
 templates, LoRA/QLoRA adapters, chat-template inference.
 
+### Any hardware
+
+The `torch` backend trains through HuggingFace `Trainer` + `accelerate` — so
+every accelerator HuggingFace supports, ShadowLM supports. Pick it with `device=`:
+
+| ecosystem | device |
+|-----------|--------|
+| **NVIDIA CUDA** | `device="cuda"` (+ 4-bit, flash-attn, fused optim) |
+| **AWS Trainium** | `device="xla"` (AWS Neuron / `torch-neuronx`) |
+| **Google TPU** | `device="xla"` (`torch-xla`) |
+| **Intel GPU** | `device="xpu"` |
+| **Apple Silicon** | `backend="mlx"` — native Metal |
+| **CPU** | `device="cpu"` — the portable fallback |
+
+On **Microsoft Azure** and any other cloud, you run on NVIDIA GPUs — the `cuda`
+path, nothing special to configure. One device knob, the same code everywhere.
+
 ## Training methods
 
 Each technique lives in its own module under `shadowlm/methods/` as a declarative
