@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { Download, MessagesSquare, Search, Square } from "lucide-react";
 import { apiKey, cancelJob, getJob, getJobs, getLogs, getMetrics } from "../api";
 import type { JobDetail, JobSummary, StepMetric } from "../api";
-import { LossChart, PageHeader, Sparkline, StatTile, StatusBadge, btnGhost } from "../ui";
+import { ChartLegend, LossChart, PageHeader, Sparkline, StatTile, StatusBadge, btnGhost } from "../ui";
 
 export default function Runs({ initialId }: { initialId?: string }) {
   const [jobs, setJobs] = useState<JobSummary[]>([]);
@@ -202,30 +202,44 @@ function RunDetail({ run }: { run: JobSummary }) {
         </div>
 
         {tab === "loss" && (
-          <div className="grid lg:grid-cols-2 gap-4">
+          <div className="space-y-4">
+            {/* combined: train curve with eval overlaid */}
             <section className="rounded-lg border border-border bg-card overflow-hidden">
-              <header className="px-5 py-3 border-b border-border">
-                <h3 className="text-sm font-semibold">Training loss</h3>
-                <p className="text-xs text-muted-foreground">raw + EMA overlay</p>
+              <header className="px-5 py-3 border-b border-border flex items-center justify-between">
+                <div>
+                  <h3 className="text-sm font-semibold">Loss</h3>
+                  <p className="text-xs text-muted-foreground">train (raw + EMA) with eval overlaid</p>
+                </div>
+                <ChartLegend />
               </header>
-              <div className="p-5"><LossChart steps={steps} evals={[]} /></div>
+              <div className="p-5"><LossChart steps={steps} evals={evals} /></div>
             </section>
-            <section className="rounded-lg border border-border bg-card overflow-hidden">
-              <header className="px-5 py-3 border-b border-border">
-                <h3 className="text-sm font-semibold">Eval loss</h3>
-                <p className="text-xs text-muted-foreground">held-out validation</p>
-              </header>
-              <div className="p-5">
-                {evals.length
-                  ? <LossChart steps={evals} evals={[]} />
-                  : <div className="flex h-[240px] items-center justify-center text-center text-sm text-muted-foreground">
-                      <div>
-                        <div className="font-mono text-xs uppercase tracking-wider opacity-60">No eval data</div>
-                        <div className="mt-1 text-xs opacity-50">Train with a held-out eval split to see this</div>
-                      </div>
-                    </div>}
-              </div>
-            </section>
+            {/* separate: train and eval on their own axes */}
+            <div className="grid lg:grid-cols-2 gap-4">
+              <section className="rounded-lg border border-border bg-card overflow-hidden">
+                <header className="px-5 py-3 border-b border-border">
+                  <h3 className="text-sm font-semibold">Training loss</h3>
+                  <p className="text-xs text-muted-foreground">raw + EMA overlay</p>
+                </header>
+                <div className="p-5"><LossChart steps={steps} evals={[]} /></div>
+              </section>
+              <section className="rounded-lg border border-border bg-card overflow-hidden">
+                <header className="px-5 py-3 border-b border-border">
+                  <h3 className="text-sm font-semibold">Eval loss</h3>
+                  <p className="text-xs text-muted-foreground">held-out validation</p>
+                </header>
+                <div className="p-5">
+                  {evals.length
+                    ? <LossChart steps={evals} evals={[]} />
+                    : <div className="flex h-[240px] items-center justify-center text-center text-sm text-muted-foreground">
+                        <div>
+                          <div className="font-mono text-xs uppercase tracking-wider opacity-60">No eval data</div>
+                          <div className="mt-1 text-xs opacity-50">Train with a held-out eval split to see this</div>
+                        </div>
+                      </div>}
+                </div>
+              </section>
+            </div>
           </div>
         )}
 
