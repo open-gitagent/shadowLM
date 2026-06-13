@@ -60,7 +60,30 @@ class _Job:
     error: str | None = None
     checkpoint: str | None = None
     final_loss: float | None = None
+    method: str | None = None
+    created: float = 0.0
     cancel: threading.Event = field(default_factory=threading.Event)
+
+    def record(self) -> dict:
+        """The serializable job record persisted to disk (survives restarts)."""
+        return {"job_id": self.job_id, "base_model": self.base_model,
+                "status": self.status, "method": self.method,
+                "error": self.error, "checkpoint": self.checkpoint,
+                "final_loss": self.final_loss, "created": self.created,
+                "steps": self.steps, "evals": self.evals}
+
+    @classmethod
+    def from_record(cls, d: dict) -> "_Job":
+        job = cls(job_id=d["job_id"], base_model=d.get("base_model", "?"),
+                  status=d.get("status", "succeeded"), method=d.get("method"),
+                  error=d.get("error"), checkpoint=d.get("checkpoint"),
+                  final_loss=d.get("final_loss"), created=d.get("created", 0.0))
+        job.steps = d.get("steps", [])
+        job.evals = d.get("evals", [])
+        # a run that was mid-flight when the server died can't still be running
+        if job.status in ("pending", "running"):
+            job.status, job.error = "stopped", "interrupted by a server restart"
+        return job
 
 
 def _rebuild_config(d: dict) -> TrainConfig:
@@ -202,7 +225,22 @@ class Server:
         self._model_lock = threading.Lock()    # one model computation at a time
         self._infer_cache: dict[tuple, object] = {}  # (model, adapter) → Model
         self._infer_cache_cap = 3  # compare mode alternates base ↔ adapter
+        self._load_jobs()
         threading.Thread(target=self._worker, daemon=True).start()
+
+    # ---- persistence: jobs survive restarts ----------------------------------
+    def _persist(self, job: _Job) -> None:
+        out = self.work_root / job.job_id
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "job.json").write_text(json.dumps(job.record()))
+
+    def _load_jobs(self) -> None:
+        for rec in sorted(self.work_root.glob("*/job.json")):
+            try:
+                job = _Job.from_record(json.loads(rec.read_text()))
+                self.jobs[job.job_id] = job
+            except (json.JSONDecodeError, OSError, KeyError):
+                continue
 
     # ---- training worker -----------------------------------------------------
     def _worker(self) -> None:
@@ -213,8 +251,10 @@ class Server:
             job = self.jobs[job_id]
             if job.cancel.is_set():
                 job.status = "stopped"
+                self._persist(job)
                 continue
             job.status = "running"
+            self._persist(job)
             try:
                 payload = job._payload  # attached at submit time
                 # dataset by reference (dashboard — local or HF) or inline rows (SDK)
@@ -262,6 +302,7 @@ class Server:
                 job.status = "failed"
                 job.error = f"{type(e).__name__}: {e}"
                 print(f"[{job_id[:8]}] FAILED: {job.error}", flush=True)
+            self._persist(job)  # terminal state + final metrics → disk
 
     # ---- inference -------------------------------------------------------------
     def _infer_model(self, model: str, adapter: str | None):
@@ -288,10 +329,13 @@ class Server:
     # ---- operations ------------------------------------------------------------
     def submit(self, payload: dict) -> str:
         job_id = uuid.uuid4().hex[:12]
-        job = _Job(job_id=job_id, base_model=payload["base_model"])
+        job = _Job(job_id=job_id, base_model=payload["base_model"],
+                   method=(payload.get("config") or {}).get("method"),
+                   created=int(time.time()))
         job._payload = payload
         with self._lock:
             self.jobs[job_id] = job
+        self._persist(job)  # visible (as pending) the instant it's queued
         self.queue.put(job_id)
         return job_id
 
@@ -380,14 +424,13 @@ def make_handler(server: Server, api_key: str | None):
                                  "version": __version__})
             elif parts == ["v1", "finetunes"]:
                 with server._lock:
-                    jobs = [{
-                        "job_id": j.job_id, "base_model": j.base_model,
-                        "status": j.status, "error": j.error,
-                        "final_loss": j.final_loss,
-                        "steps": len(j.steps),
-                        "method": (j._payload.get("config", {}) or {}).get("method"),
-                    } for j in server.jobs.values()]
-                self._send(200, {"jobs": jobs[::-1]})  # newest first
+                    jobs = sorted(server.jobs.values(), key=lambda j: j.created)
+                self._send(200, {"jobs": [{
+                    "job_id": j.job_id, "base_model": j.base_model,
+                    "status": j.status, "error": j.error,
+                    "final_loss": j.final_loss, "steps": len(j.steps),
+                    "method": j.method,
+                } for j in reversed(jobs)]})  # newest first
             elif parts == ["v1", "datasets"]:
                 self._send(200, {"datasets": server.datasets.list()})
             elif len(parts) == 3 and parts[:2] == ["v1", "datasets"]:
