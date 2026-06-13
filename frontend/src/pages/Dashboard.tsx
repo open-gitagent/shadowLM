@@ -1,100 +1,173 @@
+// The workspace at a glance — all real data from the server.
 import { useEffect, useState } from "react";
-import { Cpu, Database, GitBranch, Zap } from "lucide-react";
-import { getDatasets, getJobs, getMethods, getModels } from "../api";
-import type { JobSummary } from "../api";
-import { Button, PageHeader, Stat, StatusBadge } from "../components";
+import { ArrowUpRight, Box, Cpu, Database, Zap } from "lucide-react";
+import { getDatasets, getJobs, getMetrics, getModels } from "../api";
+import type { DatasetMeta, JobSummary, MethodInfo } from "../api";
+import { PageHeader, Sparkline, StatusBadge, btnPrimary } from "../ui";
 
-export default function Dashboard() {
+function Stat({ label, value, sub, icon: Icon }: {
+  label: string; value: string; sub: string;
+  icon: React.ComponentType<{ className?: string }>;
+}) {
+  return (
+    <div className="rounded-lg border border-border bg-card p-5">
+      <div className="flex items-center justify-between text-muted-foreground">
+        <span className="text-[10px] font-mono uppercase tracking-[0.18em]">{label}</span>
+        <Icon className="size-4" />
+      </div>
+      <div className="mt-3 text-2xl font-semibold font-mono tracking-tight">{value}</div>
+      <div className="mt-1 text-xs text-muted-foreground">{sub}</div>
+    </div>
+  );
+}
+
+export default function Dashboard({ methods }: { methods: MethodInfo[] }) {
   const [jobs, setJobs] = useState<JobSummary[]>([]);
-  const [models, setModels] = useState(0);
-  const [methods, setMethods] = useState(0);
-  const [datasets, setDatasets] = useState(0);
+  const [datasets, setDatasets] = useState<DatasetMeta[]>([]);
+  const [recentModels, setRecentModels] = useState(0);
+  const [curves, setCurves] = useState<Record<string, number[]>>({});
 
   useEffect(() => {
-    const tick = () => getJobs().then((j) => setJobs(j.jobs)).catch(() => {});
+    const tick = () => {
+      getJobs().then(async ({ jobs }) => {
+        setJobs(jobs);
+        // sparkline data for the most recent few runs
+        const want = jobs.slice(0, 6);
+        const entries = await Promise.all(want.map(async (j) => {
+          try {
+            const m = await getMetrics(j.job_id);
+            return [j.job_id, m.steps.map((s) => s.loss)] as const;
+          } catch { return [j.job_id, []] as const; }
+        }));
+        setCurves(Object.fromEntries(entries));
+      }).catch(() => {});
+    };
     tick();
-    const t = setInterval(tick, 2500);
-    getModels().then((m) => setModels(m.catalog.length + m.recent.length)).catch(() => {});
-    getMethods().then((m) => setMethods(m.methods.length)).catch(() => {});
-    getDatasets().then((d) => setDatasets(d.datasets.length)).catch(() => {});
+    const t = setInterval(tick, 3000);
+    getDatasets().then((d) => setDatasets(d.datasets)).catch(() => {});
+    getModels().then((m) => setRecentModels(m.catalog.length + m.recent.length)).catch(() => {});
     return () => clearInterval(t);
   }, []);
 
-  const running = jobs.filter((r) => r.status === "running");
-  const recent = jobs.slice(0, 6);
+  const running = jobs.filter((j) => j.status === "running" || j.status === "pending");
+  const recent = jobs.slice(0, 5);
 
   return (
-    <div className="max-w-[1400px]">
+    <>
       <PageHeader
-        eyebrow="Workspace · lyzr-research"
+        eyebrow="Workspace"
         title="ShadowLM Studio"
-        description="Train any open model with any method — then run it in the shadow of the frontier model behind your agent, until you own the weights."
+        description="Train any open model with any method. Then run it in the shadow of the frontier model behind your agent — until you own the weights."
         actions={
-          <Button onClick={() => (window.location.hash = "#train")}>
+          <a href="#train" className={`${btnPrimary} no-underline`}>
             <Zap className="size-3.5" /> New training run
-          </Button>
+          </a>
         }
       />
 
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <Stat label="Datasets" value={String(datasets)} sub="uploaded here" icon={Database} />
-        <Stat label="Models" value={String(models)} sub="catalog + cached" icon={Cpu} />
-        <Stat label="Methods" value={String(methods)} sub="LoRA → DPO → MoRE" icon={GitBranch} />
-        <Stat label="Runs" value={String(jobs.length)} sub={running.length ? `${running.length} training now` : "all idle"} icon={Zap} />
-      </div>
+      <div className="px-8 py-6 space-y-6 max-w-[1400px]">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+          <Stat label="Models" value={String(recentModels)} sub="catalog + trained here" icon={Cpu} />
+          <Stat label="Training methods" value={String(methods.length)} sub="LoRA → DPO → MoRE" icon={Box} />
+          <Stat label="Active runs" value={String(running.length)} sub={running.length ? "currently training" : "idle"} icon={Zap} />
+          <Stat label="Datasets" value={String(datasets.length)} sub="uploaded to this server" icon={Database} />
+        </div>
 
-      {running.length > 0 && (
-        <section className="mt-6 overflow-hidden rounded-xl border border-border">
-          <div className="border-b border-border px-5 py-3">
-            <div className="text-[10px] uppercase tracking-[0.18em] text-heart">Live</div>
-            <h2 className="mt-0.5 text-sm font-semibold">Active training</h2>
+        {running.length > 0 && (
+          <section className="rounded-lg border border-border bg-card overflow-hidden">
+            <div className="px-5 py-3 border-b border-border">
+              <div className="text-[10px] font-mono uppercase tracking-[0.18em] text-primary">Live</div>
+              <h2 className="text-sm font-semibold mt-0.5">Active training</h2>
+            </div>
+            <div className="divide-y divide-border">
+              {running.map((r) => (
+                <a key={r.job_id} href={`#runs/${r.job_id}`}
+                   className="px-5 py-4 flex items-center gap-4 no-underline text-foreground hover:bg-accent/30">
+                  <StatusBadge status={r.status} />
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-medium truncate">{r.base_model}</div>
+                    <div className="text-xs text-muted-foreground font-mono">
+                      {r.method ?? "?"} · {r.steps} steps so far
+                    </div>
+                  </div>
+                  <span className="text-primary">
+                    <Sparkline data={curves[r.job_id] ?? []} width={120} height={32} />
+                  </span>
+                </a>
+              ))}
+            </div>
+          </section>
+        )}
+
+        <section className="rounded-lg border border-border bg-card overflow-hidden">
+          <div className="flex items-center justify-between px-5 py-3 border-b border-border">
+            <h2 className="text-sm font-semibold">Recent runs</h2>
+            <a href="#runs" className="text-xs text-primary hover:underline inline-flex items-center gap-1 no-underline">
+              All runs <ArrowUpRight className="size-3" />
+            </a>
           </div>
-          <div className="divide-y divide-border">
-            {running.map((r) => (
-              <div key={r.job_id}
-                   className="flex cursor-pointer items-center justify-between px-5 py-3 hover:bg-umbra"
-                   onClick={() => (window.location.hash = `#runs/${r.job_id}`)}>
-                <div>
-                  <div className="text-[13px]">{r.job_id.slice(0, 10)} · {r.method}</div>
-                  <div className="text-[11px] text-faded">{(r.base_model || "").split("/").pop()} · {r.steps} steps</div>
+          {recent.length === 0 ? (
+            <div className="px-5 py-8 text-sm text-muted-foreground text-center">
+              No runs yet — start one from <a href="#train" className="text-primary">Train</a>,
+              or pick a <a href="#recipes" className="text-primary">recipe</a>.
+            </div>
+          ) : (
+            <table className="w-full text-sm">
+              <thead className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">
+                <tr className="border-b border-border">
+                  <th className="text-left px-5 py-2.5 font-normal">Run</th>
+                  <th className="text-left px-3 py-2.5 font-normal">Model</th>
+                  <th className="text-left px-3 py-2.5 font-normal">Method</th>
+                  <th className="text-left px-3 py-2.5 font-normal">Status</th>
+                  <th className="text-right px-3 py-2.5 font-normal">Loss</th>
+                  <th className="text-right px-5 py-2.5 font-normal">Curve</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {recent.map((r) => (
+                  <tr key={r.job_id} className="hover:bg-accent/30 cursor-pointer"
+                      onClick={() => (window.location.hash = `#runs/${r.job_id}`)}>
+                    <td className="px-5 py-3 font-mono text-xs text-muted-foreground">{r.job_id.slice(0, 10)}</td>
+                    <td className="px-3 py-3 truncate max-w-[260px]">{(r.base_model || "").split("/").pop()}</td>
+                    <td className="px-3 py-3 font-mono text-xs uppercase">{r.method ?? "?"}</td>
+                    <td className="px-3 py-3"><StatusBadge status={r.status} /></td>
+                    <td className="px-3 py-3 text-right font-mono">
+                      {r.final_loss != null ? r.final_loss.toFixed(4) : "—"}
+                    </td>
+                    <td className="px-5 py-3">
+                      <div className="flex justify-end text-primary">
+                        <Sparkline data={curves[r.job_id] ?? []} width={100} height={28} />
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </section>
+
+        <section>
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-sm font-semibold">Training methods</h2>
+            <span className="text-xs text-muted-foreground font-mono">{methods.length} registered</span>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
+            {methods.map((m) => (
+              <div key={m.name}
+                   className="rounded-md border border-border bg-card p-3 hover:border-primary/40 transition-colors">
+                <div className="flex items-center justify-between">
+                  <div className="text-sm font-semibold">{m.name}</div>
+                  <span className="text-[9px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded border border-border text-muted-foreground">
+                    {m.trainer}
+                  </span>
                 </div>
-                <StatusBadge status={r.status} />
+                <div className="text-xs text-muted-foreground mt-1 line-clamp-2">{m.description}</div>
+                <div className="mt-2 font-mono text-[10px] text-muted-foreground">lr {m.default_lr}</div>
               </div>
             ))}
           </div>
         </section>
-      )}
-
-      <section className="mt-6 overflow-hidden rounded-xl border border-border">
-        <div className="flex items-center justify-between border-b border-border px-5 py-3">
-          <h2 className="text-sm font-semibold">Recent runs</h2>
-          <a href="#runs" className="text-[12px] text-heart no-underline">all runs ›</a>
-        </div>
-        {recent.length === 0 ? (
-          <div className="px-5 py-8 text-center text-[13px] text-faded">
-            no runs yet — <a href="#train" className="text-heart">start a training run ›</a>
-          </div>
-        ) : (
-          <div className="divide-y divide-border">
-            {recent.map((r) => (
-              <div key={r.job_id}
-                   className="flex cursor-pointer items-center justify-between px-5 py-3 hover:bg-umbra"
-                   onClick={() => (window.location.hash = `#runs/${r.job_id}`)}>
-                <div className="min-w-0">
-                  <div className="text-[13px]">{r.job_id.slice(0, 10)} · {r.method ?? "?"}</div>
-                  <div className="truncate text-[11px] text-faded">{(r.base_model || "").split("/").pop()}</div>
-                </div>
-                <div className="flex items-center gap-4">
-                  <span className="text-[12px] text-faded">
-                    {r.final_loss != null ? `loss ${r.final_loss.toFixed(4)}` : `${r.steps} steps`}
-                  </span>
-                  <StatusBadge status={r.status} />
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </section>
-    </div>
+      </div>
+    </>
   );
 }

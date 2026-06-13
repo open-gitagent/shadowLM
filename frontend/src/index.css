@@ -1,68 +1,70 @@
 @import "tailwindcss";
 
+/* ShadowLM Studio — the banner palette: cream paper + heart red.
+   Same scheme as the README banner and the Lyzr deck. */
+
 @theme {
-  /* Shadow & Heart — light cream + red (the banner aesthetic).
-     Raw tokens carry semantic roles so existing classes flip with the theme:
-     ink = page, umbra = raised/hover/input, bone = text, seam = border. */
-  --color-ink: #f4ebdd;
-  --color-umbra: #ece2d2;
-  --color-panel: #e2d6c4;
-  --color-bone: #2c2118;
-  --color-faded: #8a7c6b;
-  --color-heart: #e5484d;
-  --color-okay: #2e9e4a;
-  --color-gold: #b07d10;
-  --color-seam: #dccdb9;
-  /* semantic aliases (shadcn-style) — components read these */
-  --color-background: #f4ebdd;
-  --color-foreground: #2c2118;
-  --color-card: #fcf8f1;
-  --color-muted: #8a7c6b;
-  --color-muted-foreground: #8a7c6b;
-  --color-primary: #e5484d;
-  --color-primary-foreground: #ffffff;
-  --color-border: #dccdb9;
-  --color-success: #2e9e4a;
-  --color-warning: #b07d10;
-  --color-destructive: #e5484d;
+  --radius-sm: 0.25rem;
+  --radius-md: 0.375rem;
+  --radius-lg: 0.5rem;
+  --radius-xl: 0.75rem;
+
+  --color-background: oklch(0.96 0.015 60);
+  --color-foreground: oklch(0.25 0.03 30);
+  --color-surface: oklch(0.92 0.02 55);
+  --color-card: oklch(0.98 0.01 58);
+  --color-card-foreground: oklch(0.25 0.03 30);
+  --color-primary: oklch(0.55 0.2 25);
+  --color-primary-foreground: oklch(0.97 0.01 60);
+  --color-secondary: oklch(0.87 0.02 50);
+  --color-muted: oklch(0.83 0.02 50);
+  --color-muted-foreground: oklch(0.55 0.04 45);
+  --color-accent: oklch(0.9 0.03 45);
+  --color-destructive: oklch(0.5 0.18 25);
+  --color-success: oklch(0.65 0.15 140);
+  --color-warning: oklch(0.75 0.14 70);
+  --color-border: oklch(0.78 0.02 50);
+  --color-input: oklch(0.85 0.02 50);
+  --color-sidebar: oklch(0.92 0.02 55);
+  --color-sidebar-border: oklch(0.8 0.02 50);
+  --color-sidebar-accent: oklch(0.88 0.025 45);
+
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 html, body, #root { height: 100%; }
 
 body {
-  color: var(--color-bone);
+  background-color: var(--color-background);
+  color: var(--color-foreground);
   font-family: var(--font-mono);
   font-size: 14px;
-  background:
-    radial-gradient(1100px 520px at 80% -10%, #f6d9cf 0%, transparent 58%),
-    radial-gradient(820px 520px at -8% 108%, #efe2cf 0%, transparent 55%),
-    var(--color-ink);
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
 }
 
-::-webkit-scrollbar { width: 10px; height: 10px; }
-::-webkit-scrollbar-thumb { background: var(--color-seam); border-radius: 8px; }
-::-webkit-scrollbar-track { background: transparent; }
+::selection { background-color: oklch(0.55 0.2 25 / 0.25); }
+
+* { border-color: var(--color-border); }
 
 input, select, textarea {
-  background: var(--color-umbra);
-  border: 1px solid var(--color-seam);
-  border-radius: 8px;
-  padding: 8px 11px;
+  background: var(--color-input);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: 8px 12px;
   font: inherit;
-  color: var(--color-bone);
+  color: var(--color-foreground);
 }
 input:focus, select:focus, textarea:focus {
-  outline: 1px solid var(--color-heart);
+  outline: none;
+  border-color: var(--color-primary);
+}
+
+.scrollbar-thin::-webkit-scrollbar { width: 8px; height: 8px; }
+.scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: oklch(0.78 0.02 50);
+  border-radius: 4px;
 }
 
 @keyframes rise { from { opacity: 0; transform: translateY(5px); } }
-@keyframes drop { from { opacity: 0; transform: translateY(-6px); } }
-@keyframes breathe {
-  50% { box-shadow: 0 0 96px #e5484d40, 0 0 26px #e5484d33, 0 22px 50px #b8987033; }
-}
-@keyframes blink { 40% { opacity: 0.25; } }
-@keyframes pulsedot { 50% { opacity: 0.35; } }
-
 .rise { animation: rise 0.18s ease-out; }
-.drop { animation: drop 0.14s ease-out; }

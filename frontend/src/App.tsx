@@ -1,6 +1,8 @@
-// The studio shell: brain-brand sidebar + hash router.
+// The studio shell — cream sidebar, lucide icons, hash router.
 import { useEffect, useState } from "react";
-import { LayoutGrid, Database, Cpu, FlaskConical, GitBranch, MessageSquare } from "lucide-react";
+import {
+  Box, Cpu, Database, ExternalLink, History, LayoutDashboard, MessagesSquare, BookOpen,
+} from "lucide-react";
 import { apiKey, getHealth, getMethods } from "./api";
 import type { MethodInfo } from "./api";
 import Dashboard from "./pages/Dashboard";
@@ -8,8 +10,8 @@ import Datasets from "./pages/Datasets";
 import Models from "./pages/Models";
 import Train from "./pages/Train";
 import Runs from "./pages/Runs";
-import RunDetail from "./pages/RunDetail";
 import Playground from "./pages/Playground";
+import Recipes from "./pages/Recipes";
 
 function useHash(): string {
   const [h, setH] = useState(window.location.hash);
@@ -22,16 +24,17 @@ function useHash(): string {
 }
 
 const NAV = [
-  { hash: "dashboard", label: "Dashboard", Icon: LayoutGrid },
-  { hash: "datasets", label: "Datasets", Icon: Database },
-  { hash: "models", label: "Models", Icon: Cpu },
-  { hash: "train", label: "Trainings", Icon: FlaskConical },
-  { hash: "runs", label: "Runs", Icon: GitBranch },
-  { hash: "playground", label: "Playground", Icon: MessageSquare },
-];
+  { hash: "", label: "Dashboard", icon: LayoutDashboard },
+  { hash: "models", label: "Models", icon: Box },
+  { hash: "datasets", label: "Datasets", icon: Database },
+  { hash: "train", label: "Train", icon: Cpu },
+  { hash: "playground", label: "Playground", icon: MessagesSquare },
+  { hash: "runs", label: "Runs", icon: History },
+  { hash: "recipes", label: "Recipes", icon: BookOpen },
+] as const;
 
 export default function App() {
-  const hash = useHash() || "dashboard";
+  const hash = useHash();
   const [section, arg] = hash.split("/");
   const [health, setHealth] = useState("connecting…");
   const [methods, setMethods] = useState<MethodInfo[]>([]);
@@ -45,45 +48,58 @@ export default function App() {
   }, []);
 
   const page =
-    section === "datasets" ? <Datasets /> :
     section === "models" ? <Models /> :
+    section === "datasets" ? <Datasets /> :
     section === "train" ? <Train methods={methods} /> :
-    section === "runs" && arg ? <RunDetail id={arg} /> :
-    section === "runs" ? <Runs /> :
     section === "playground" ? <Playground /> :
-    <Dashboard />;
+    section === "runs" ? <Runs initialId={arg} /> :
+    section === "recipes" ? <Recipes methods={methods} /> :
+    <Dashboard methods={methods} />;
 
   return (
-    <div className="flex h-full">
-      <aside className="flex w-[212px] min-w-[212px] flex-col gap-0.5 border-r border-seam p-4 pt-4">
-        <div className="mb-3 flex items-center gap-2.5 px-3 font-bold">
-          <img src="/logo.png" alt="" className="size-9 rounded-lg border border-seam" />
-          <div>
-            ShadowLM
-            <div className="text-[11px] font-normal text-faded">
-              <span className="text-heart">slm♥</span> trainer
+    <div className="flex min-h-screen w-full">
+      <aside className="w-60 shrink-0 border-r border-sidebar-border bg-sidebar flex flex-col sticky top-0 h-screen">
+        <div className="px-5 py-5 border-b border-sidebar-border">
+          <a href="#" className="flex items-center gap-2.5">
+            <img src="/logo.png" alt="" className="size-8 rounded-md border border-primary/30" />
+            <div className="leading-tight">
+              <div className="text-sm font-semibold tracking-tight">ShadowLM</div>
+              <div className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">Studio</div>
             </div>
-          </div>
-        </div>
-        {NAV.map(({ hash: h, label, Icon }) => (
-          <a key={h} href={`#${h}`}
-             className={`flex items-center gap-2.5 rounded-lg px-3 py-2 text-[13.5px] no-underline
-               ${section === h
-                 ? "bg-umbra text-bone shadow-[inset_2px_0_0_#e5484d]"
-                 : "text-faded hover:text-bone"}`}>
-            <Icon className={`size-4 ${section === h ? "text-heart" : ""}`} />
-            {label}
           </a>
-        ))}
-        <div className="flex-1" />
-        <div className="grid gap-2 px-3 pb-1">
-          <span className="text-[11px] text-faded">{health}</span>
+        </div>
+        <nav className="flex-1 px-3 py-4 space-y-0.5">
+          {NAV.map(({ hash: to, label, icon: Icon }) => {
+            const active = to === "" ? section === "" : section === to;
+            return (
+              <a key={to} href={`#${to}`}
+                 className={`flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors no-underline ${
+                   active
+                     ? "bg-sidebar-accent text-foreground"
+                     : "text-foreground/60 hover:bg-sidebar-accent/40 hover:text-foreground"
+                 }`}>
+                <Icon className="size-4" />
+                <span>{label}</span>
+                {active && <span className="ml-auto size-1.5 rounded-full bg-primary" />}
+              </a>
+            );
+          })}
+        </nav>
+        <div className="px-3 py-3 border-t border-sidebar-border space-y-2">
+          <div className="px-3 text-[10px] font-mono text-muted-foreground">{health}</div>
           <input type="password" placeholder="API key" value={key}
                  title="Sent as Bearer auth; stored in this browser only"
+                 className="w-full text-xs"
                  onChange={(e) => { setKey(e.target.value); apiKey.set(e.target.value); }} />
+          <a href="https://github.com/open-gitagent/shadowLM" target="_blank" rel="noreferrer"
+             className="w-full flex items-center gap-3 px-3 py-2 rounded-md text-xs text-muted-foreground hover:bg-sidebar-accent/40 transition-colors no-underline">
+            <ExternalLink className="size-3.5" />
+            <span>GitHub</span>
+            <span className="ml-auto font-mono text-[10px] text-primary">slm♥</span>
+          </a>
         </div>
       </aside>
-      <main className="min-w-0 flex-1 overflow-y-auto p-6 px-8">{page}</main>
+      <main className="flex-1 min-w-0 flex flex-col">{page}</main>
     </div>
   );
 }

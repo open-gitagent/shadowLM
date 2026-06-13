@@ -1,259 +1,223 @@
-// The pairing stage. Not "select a model" — assemble a pair: base ↔ shadow.
-// With both set, every prompt plays to the pair: the shadow answers first,
-// the base follows, side by side.
+// Playground — two panes, one prompt. Left: the base model. Right: your
+// finetune ("the shadow"). Compare mode sends the same prompt to both, live.
 import { useEffect, useRef, useState } from "react";
+import { Columns2, RotateCcw, Send } from "lucide-react";
 import { chat, getJobs, getModels } from "../api";
 import type { CatalogModel, JobSummary } from "../api";
-import { Dots, Pill } from "../ui";
+import { Dots, PageHeader, btnGhost } from "../ui";
 
-interface Turn {
-  role: "user" | "assistant";
-  content?: string | null;
-  compare?: boolean;
-  tuned?: string | null;
-  base?: string | null;
-}
-
-const DEFAULT_MODEL = "mlx-community/Qwen2.5-0.5B-Instruct-4bit";
-const primary = "rounded-lg bg-gradient-to-br from-[#f05a5f] to-[#c73a3f] px-3.5 py-2 font-bold text-white";
+type Msg = { role: "user" | "assistant"; content: string };
 
 export default function Playground() {
+  const [compare, setCompare] = useState(true);
+  const [models, setModels] = useState<CatalogModel[]>([]);
   const [jobs, setJobs] = useState<JobSummary[]>([]);
-  const [catalog, setCatalog] = useState<CatalogModel[]>([]);
-  const [recent, setRecent] = useState<string[]>([]);
-  const [model, setModel] = useState(DEFAULT_MODEL);
-  const [adapter, setAdapter] = useState<string | null>(null);
-  const [duet, setDuet] = useState(true);
-  const [panel, setPanel] = useState<"base" | "shadow" | null>(null);
-  const [gear, setGear] = useState(false);
-  const [q, setQ] = useState("");
-  const [sys, setSys] = useState("");
-  const [temp, setTemp] = useState(0.7);
-  const [maxNew, setMaxNew] = useState(256);
-  const [msgs, setMsgs] = useState<Turn[]>([]);
-  const [busy, setBusy] = useState(false);
+  const [baseModel, setBaseModel] = useState("mlx-community/Qwen2.5-0.5B-Instruct-4bit");
+  const [adapter, setAdapter] = useState<string>("");
+  const [leftMsgs, setLeftMsgs] = useState<Msg[]>([]);
+  const [rightMsgs, setRightMsgs] = useState<Msg[]>([]);
+  const [leftTyping, setLeftTyping] = useState(false);
+  const [rightTyping, setRightTyping] = useState(false);
   const [input, setInput] = useState("");
-  const logRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  const done = jobs.filter((j) => j.status === "succeeded");
+  const adapterJob = done.find((j) => j.job_id === adapter);
 
   useEffect(() => {
-    getJobs().then((j) => setJobs(j.jobs));
     getModels().then((m) => {
-      setCatalog(m.catalog);
-      setRecent(m.recent.filter((r) => !m.catalog.some((c) => c.id === r)));
-    });
-    const pm = sessionStorage.getItem("pick.model");
-    const pa = sessionStorage.getItem("pick.adapter");
-    if (pm) { setModel(pm); sessionStorage.removeItem("pick.model"); }
-    if (pa) { setAdapter(pa); setDuet(true); sessionStorage.removeItem("pick.adapter"); }
+      const ids = [...m.recent, ...m.catalog.map((c) => c.id)];
+      setModels([...new Set(ids)].map((id) =>
+        m.catalog.find((c) => c.id === id) ?? { id }));
+    }).catch(() => {});
+    getJobs().then(({ jobs }) => {
+      setJobs(jobs);
+      const pa = sessionStorage.getItem("pick.adapter");
+      const pm = sessionStorage.getItem("pick.model");
+      if (pm) { setBaseModel(pm); sessionStorage.removeItem("pick.model"); }
+      if (pa) { setAdapter(pa); sessionStorage.removeItem("pick.adapter"); }
+      else {
+        const first = jobs.find((j) => j.status === "succeeded");
+        if (first) setAdapter(first.job_id);
+      }
+    }).catch(() => {});
+    inputRef.current?.focus();
   }, []);
 
+  // picking a finetune locks the base pane to its base model in compare mode
   useEffect(() => {
-    if (logRef.current) logRef.current.scrollTop = 1e9;
-  }, [msgs]);
+    if (compare && adapterJob) setBaseModel(adapterJob.base_model);
+  }, [adapter, compare]);  // eslint-disable-line react-hooks/exhaustive-deps
 
-  const shadowJob = jobs.find((j) => j.job_id === adapter);
+  const ask = (msgs: Msg[], ad: string | null) =>
+    chat({ model: adapterJob && ad ? adapterJob.base_model : baseModel,
+           adapter: ad, messages: msgs, max_new_tokens: 256,
+           temperature: 0.7, top_p: 0.95 })
+      .then((o) => o.text)
+      .catch((e: Error) => `⚠ ${e.message}`);
 
-  async function send(e: React.FormEvent) {
-    e.preventDefault();
-    if (busy || !input.trim()) return;
+  const send = async () => {
     const text = input.trim();
+    if (!text || leftTyping || rightTyping) return;
     setInput("");
-    const compare = Boolean(duet && adapter);
-    const history: { role: string; content: string }[] = [];
-    if (sys) history.push({ role: "system", content: sys });
-    for (const m of [...msgs, { role: "user", content: text } as Turn]) {
-      if (m.role === "user") history.push({ role: "user", content: m.content! });
-      else history.push({ role: "assistant",
-        content: m.compare ? (m.tuned ?? "") : (m.content ?? "") });
+    inputRef.current?.focus();
+    const userMsg: Msg = { role: "user", content: text };
+    const newLeft = [...leftMsgs, userMsg];
+    setLeftMsgs(newLeft); setLeftTyping(true);
+    let newRight: Msg[] = [];
+    if (compare && adapter) {
+      newRight = [...rightMsgs, userMsg];
+      setRightMsgs(newRight); setRightTyping(true);
     }
-    const turn: Turn = compare
-      ? { role: "assistant", compare: true, tuned: null, base: null }
-      : { role: "assistant", content: null };
-    setMsgs((cur) => [...cur, { role: "user", content: text }, turn]);
-    setBusy(true);
-    const ask = (ad: string | null) =>
-      chat({ model, adapter: ad, messages: history, max_new_tokens: maxNew,
-             temperature: temp, top_p: 0.95 })
-        .then((o) => o.text).catch((err: Error) => `⚠ ${err.message}`);
-    try {
-      if (compare) {
-        const tuned = await ask(adapter);   // the shadow answers first
-        setMsgs((cur) => cur.map((m) => (m === turn ? { ...turn, tuned } : m)));
-        const base = await ask(null);
-        setMsgs((cur) => cur.map((m) =>
-          (m.compare && m.tuned === tuned && m.base == null) ? { ...m, base } : m));
-      } else {
-        const content = await ask(adapter);
-        setMsgs((cur) => cur.map((m) => (m === turn ? { ...turn, content } : m)));
-      }
-    } finally { setBusy(false); }
-  }
+    // shadow first (it's the one being judged), then the base — one GPU slot
+    if (compare && adapter) {
+      const tuned = await ask(newRight, adapter);
+      setRightMsgs((p) => [...p, { role: "assistant", content: tuned }]);
+      setRightTyping(false);
+    }
+    const base = await ask(newLeft, null);
+    setLeftMsgs((p) => [...p, { role: "assistant", content: base }]);
+    setLeftTyping(false);
+  };
 
-  const panelRows = panel === "base"
-    ? [...recent.map((id) => ({ id, meta: "recently trained here", dev: false, gated: false })),
-       ...catalog.map((m) => ({ id: m.id, meta: `${m.params ?? ""}${m.note ? ` · ${m.note}` : ""}`,
-                                dev: !!m.dev, gated: !!m.gated }))]
-        .filter((r) => r.id.toLowerCase().includes(q.toLowerCase()))
-    : [];
-  const panelRuns = panel === "shadow"
-    ? jobs.filter((j) => j.status === "succeeded" &&
-        (j.job_id.includes(q) || (j.base_model || "").toLowerCase().includes(q.toLowerCase())))
-    : [];
+  const clear = () => { setLeftMsgs([]); setRightMsgs([]); };
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      {/* the pairing bar */}
-      <div className="flex flex-wrap items-center gap-2.5 pb-3.5">
-        <button onClick={() => { setPanel(panel === "base" ? null : "base"); setQ(""); }}
-          className="flex items-center gap-2 rounded-xl border border-seam bg-card px-4 py-2.5 hover:border-faded">
-          <span className="text-[10.5px] uppercase tracking-[.14em] text-faded">base</span>
-          {model.split("/").pop()} ⌄
-        </button>
-        <span className="text-faded">↔</span>
-        <button onClick={() => { setPanel(panel === "shadow" ? null : "shadow"); setQ(""); }}
-          className={`flex items-center gap-2 rounded-xl px-4 py-2.5
-            ${adapter
-              ? "border border-heart bg-card shadow-[0_0_0_1px_#e5484d55,0_6px_26px_#e5484d22]"
-              : "border border-dashed border-seam text-faded hover:border-faded"}`}>
-          <span className="text-[10.5px] uppercase tracking-[.14em] text-faded">shadow</span>
-          {adapter ? `${adapter.slice(0, 8)} · ${shadowJob?.method ?? ""}` : "none"} ⌄
-        </button>
-        {adapter && (
-          <span className="flex overflow-hidden rounded-full border border-seam text-[12px]">
-            <button onClick={() => setDuet(true)}
-              className={duet ? "bg-gradient-to-br from-[#f05a5f] to-[#c73a3f] px-3 py-1.5 text-white" : "px-3 py-1.5 text-faded"}>
-              side by side</button>
-            <button onClick={() => setDuet(false)}
-              className={!duet ? "bg-gradient-to-br from-[#f05a5f] to-[#c73a3f] px-3 py-1.5 text-white" : "px-3 py-1.5 text-faded"}>
-              finetune only</button>
-          </span>
-        )}
-        <span className="flex-1" />
-        <button className="rounded-lg border border-seam px-3 py-1.5" onClick={() => setGear(!gear)}>⚙</button>
-        <button className="rounded-lg border border-seam px-3 py-1.5" onClick={() => setMsgs([])}>clear</button>
-      </div>
+    <>
+      <PageHeader
+        eyebrow="Playground"
+        title="Does it cast the same shadow?"
+        description="Compare mode sends one prompt to the base model and your finetune, side by side. The shadow answers first."
+        actions={
+          <>
+            <button onClick={clear} className={btnGhost}>
+              <RotateCcw className="size-3.5" /> Clear
+            </button>
+            <button onClick={() => setCompare((v) => !v)}
+              className={`inline-flex items-center gap-1.5 rounded-md px-3 py-2 text-xs transition-colors ${
+                compare ? "bg-primary text-primary-foreground" : "border border-border bg-card hover:bg-accent"}`}>
+              <Columns2 className="size-3.5" /> Compare
+            </button>
+          </>
+        }
+      />
 
-      {gear && (
-        <div className="flex flex-wrap gap-2.5 pb-3">
-          <input className="w-80" placeholder="system prompt" value={sys}
-                 onChange={(e) => setSys(e.target.value)} />
-          <input type="number" step={0.1} min={0} max={2} value={temp} title="temperature"
-                 className="w-20" onChange={(e) => setTemp(parseFloat(e.target.value) || 0.7)} />
-          <input type="number" min={1} value={maxNew} title="max new tokens"
-                 className="w-24" onChange={(e) => setMaxNew(+e.target.value || 256)} />
+      <div className="flex-1 flex flex-col min-h-0 px-8 py-6 gap-4 max-w-[1600px] w-full">
+        <div className={`grid gap-4 flex-1 min-h-0 ${compare ? "grid-cols-1 lg:grid-cols-2" : "grid-cols-1"}`}>
+          <ChatPane
+            title="Base model" subtitle="untrained reference" tone="muted"
+            picker={
+              <select value={baseModel} onChange={(e) => { setBaseModel(e.target.value); }}
+                      disabled={compare && Boolean(adapterJob)}
+                      title={compare && adapterJob ? "locked to the finetune's base in compare mode" : undefined}
+                      className="text-xs font-mono px-2 py-1.5 max-w-[60%] truncate">
+                {[...new Set([baseModel, ...models.map((m) => m.id)])].map((id) => (
+                  <option key={id} value={id}>{id}</option>
+                ))}
+              </select>
+            }
+            messages={leftMsgs} typing={leftTyping} />
+          {compare && (
+            <ChatPane
+              title="Finetuned" subtitle="your trained adapter — the shadow" tone="primary"
+              picker={
+                <select value={adapter} onChange={(e) => setAdapter(e.target.value)}
+                        className="text-xs font-mono px-2 py-1.5 max-w-[60%] truncate">
+                  {done.length === 0 && <option value="">no finetuned runs yet</option>}
+                  {done.map((j) => (
+                    <option key={j.job_id} value={j.job_id}>
+                      {(j.base_model || "").split("/").pop()} · {j.method} · {j.job_id.slice(0, 8)}
+                    </option>
+                  ))}
+                </select>
+              }
+              messages={rightMsgs} typing={rightTyping} />
+          )}
         </div>
-      )}
 
-      {panel && (
-        <div className="drop mb-3.5 rounded-2xl border border-seam bg-card p-3 shadow-[0_18px_44px_#b8987033]">
-          <input className="search mb-2 w-full bg-ink" autoFocus value={q}
-            placeholder={panel === "base" ? "search models, or type any HF id…" : "search your runs…"}
-            onChange={(e) => setQ(e.target.value)} />
-          <div className="max-h-72 overflow-y-auto">
-            {panel === "base" && panelRows.map((r) => (
-              <div key={r.id} onClick={() => { setModel(r.id); setAdapter(null); setPanel(null); }}
-                   className="flex cursor-pointer items-center justify-between gap-2 rounded-lg px-2.5 py-2 text-[13px] hover:bg-umbra">
-                <span>{r.id}</span>
-                <span className="flex items-center gap-1.5 text-right text-[11px] text-faded">
-                  {r.dev && <Pill tone="green">dev pick</Pill>}
-                  {r.gated && <Pill tone="gold">HF token</Pill>}
-                  {r.meta}
-                </span>
-              </div>
-            ))}
-            {panel === "base" && q && !panelRows.some((r) => r.id.toLowerCase() === q.toLowerCase()) && (
-              <div onClick={() => { setModel(q); setAdapter(null); setPanel(null); }}
-                   className="flex cursor-pointer items-center justify-between rounded-lg px-2.5 py-2 text-[13px] hover:bg-umbra">
-                <span>use “{q}”</span><span className="text-[11px] text-faded">any HF hub id</span>
-              </div>
-            )}
-            {panel === "shadow" && (
-              <div onClick={() => { setAdapter(null); setPanel(null); }}
-                   className="flex cursor-pointer items-center justify-between rounded-lg px-2.5 py-2 text-[13px] hover:bg-umbra">
-                <span>none</span><span className="text-[11px] text-faded">base model only</span>
-              </div>
-            )}
-            {panel === "shadow" && panelRuns.map((j) => (
-              <div key={j.job_id}
-                   onClick={() => { setAdapter(j.job_id); setModel(j.base_model); setDuet(true); setPanel(null); }}
-                   className="flex cursor-pointer items-center justify-between gap-2 rounded-lg px-2.5 py-2 text-[13px] hover:bg-umbra">
-                <span>{j.job_id.slice(0, 10)} <Pill tone="red">{j.method ?? ""}</Pill></span>
-                <span className="text-right text-[11px] text-faded">
-                  {(j.base_model || "").split("/").pop()}
-                  {j.final_loss != null ? ` · loss ${j.final_loss.toFixed(3)}` : ""}
-                </span>
-              </div>
-            ))}
-            {panel === "shadow" && panelRuns.length === 0 && (
-              <div className="px-2.5 py-2 text-[11px] text-faded">
-                no finetuned runs yet — train one, then come back</div>
-            )}
+        <div className="rounded-lg border border-border bg-card p-3">
+          <div className="flex gap-2 items-end">
+            <textarea
+              ref={inputRef} value={input} rows={2}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
+              placeholder={compare && adapter
+                ? "Ask anything — both models answer the same prompt…"
+                : "Say something to the base model…"}
+              className="flex-1 resize-none bg-transparent text-sm focus:outline-none border-0 py-2 px-2" />
+            <button onClick={send} disabled={!input.trim() || leftTyping || rightTyping}
+              className="inline-flex items-center justify-center size-9 rounded-md bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors shrink-0">
+              <Send className="size-4" />
+            </button>
+          </div>
+          <div className="px-2 mt-1 text-[10px] font-mono text-muted-foreground/70">
+            Enter to send · Shift+Enter for newline · runs on this server, nothing leaves it
           </div>
         </div>
-      )}
+      </div>
+    </>
+  );
+}
 
-      {/* transcript / empty stage */}
-      <div ref={logRef} className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto py-3">
-        {msgs.length === 0 ? (
-          <div className="flex flex-1 flex-col items-center justify-center gap-4 text-center">
-            <div className="size-[104px] overflow-hidden rounded-[30px] border border-seam
-                            shadow-[0_0_70px_#e5484d33,0_0_18px_#e5484d22,0_22px_50px_#b8987033]
-                            animate-[breathe_4.5s_ease-in-out_infinite]">
-              <img src="/logo.png" alt="" className="size-full" />
-            </div>
-            <h1 className="text-2xl font-bold tracking-tight">
-              Talk to what you trained<span className="text-heart">.</span>
-            </h1>
-            <div className="flex flex-wrap justify-center gap-2">
-              <span className="rounded-full border border-seam bg-umbra px-3.5 py-1 text-[12px] text-faded">
-                base · {model.split("/").pop()}</span>
-              {adapter ? (
-                <span className="rounded-full border border-heart/40 px-3.5 py-1 text-[12px] text-heart">
-                  shadow · {adapter.slice(0, 8)} — side by side</span>
-              ) : (
-                <span onClick={() => setPanel("shadow")}
-                      className="cursor-pointer rounded-full border border-heart/40 px-3.5 py-1 text-[12px] text-heart hover:border-heart">
-                  pick a finetuned run — does it cast the same shadow? ›</span>
-              )}
-              <span className="rounded-full border border-seam bg-umbra px-3.5 py-1 text-[12px] text-faded">
-                runs on this server · nothing leaves it</span>
+function ChatPane({ title, subtitle, tone, picker, messages, typing }: {
+  title: string; subtitle: string; tone: "muted" | "primary";
+  picker: React.ReactNode; messages: Msg[]; typing: boolean;
+}) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+  }, [messages, typing]);
+
+  return (
+    <div className={`rounded-lg border bg-card flex flex-col min-h-0 overflow-hidden ${
+      tone === "primary" ? "border-primary/40" : "border-border"}`}>
+      <header className="px-4 py-3 border-b border-border flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <div className={`size-2 rounded-full ${tone === "primary" ? "bg-primary" : "bg-muted-foreground"}`} />
+          <div className="min-w-0">
+            <div className="text-sm font-semibold">{title}</div>
+            <div className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">{subtitle}</div>
+          </div>
+        </div>
+        {picker}
+      </header>
+      <div ref={scrollRef} className="flex-1 overflow-auto scrollbar-thin p-4 space-y-4 min-h-[320px]">
+        {messages.length === 0 && !typing && (
+          <div className="h-full flex items-center justify-center text-center text-xs text-muted-foreground/70 py-8">
+            <div>
+              <div className="font-mono uppercase tracking-wider mb-1">No messages</div>
+              <div>Send a prompt below to see {title.toLowerCase()} respond.</div>
             </div>
           </div>
-        ) : (
-          msgs.map((m, i) => {
-            if (m.role === "user")
-              return <div key={i} className="rise max-w-[75%] self-end whitespace-pre-wrap rounded-xl bg-panel px-3 py-2 text-[13px]">{m.content}</div>;
-            if (m.compare)
-              return (
-                <div key={i} className="rise grid grid-cols-2 gap-2.5">
-                  <div className="rounded-xl border border-heart/55 bg-card px-3.5 py-2.5 text-[13px] shadow-[0_0_0_1px_#e5484d22,0_6px_24px_#e5484d14]">
-                    <b className="mb-1.5 block text-[10.5px] uppercase tracking-[.12em] text-heart">shadow ♥</b>
-                    <span className="whitespace-pre-wrap">{m.tuned == null ? <Dots /> : m.tuned}</span>
-                  </div>
-                  <div className="rounded-xl border border-seam bg-card px-3.5 py-2.5 text-[13px]">
-                    <b className="mb-1.5 block text-[10.5px] uppercase tracking-[.12em] text-faded">base</b>
-                    <span className="whitespace-pre-wrap">{m.base == null ? <Dots /> : m.base}</span>
-                  </div>
-                </div>
-              );
-            return (
-              <div key={i} className="rise max-w-[75%] whitespace-pre-wrap rounded-xl border border-seam bg-umbra px-3 py-2 text-[13px]">
-                <span className="font-bold text-heart">slm♥ </span>
-                {m.content == null ? <Dots /> : m.content}
-              </div>
-            );
-          })
         )}
+        {messages.map((m, i) => <Message key={i} msg={m} tone={tone} />)}
+        {typing && <Dots />}
       </div>
+    </div>
+  );
+}
 
-      <form onSubmit={send}
-            className="mt-3 flex items-center gap-2.5 rounded-2xl border border-seam bg-card py-1.5 pl-4 pr-1.5 transition-shadow focus-within:border-heart/55 focus-within:shadow-[0_0_0_1px_#e5484d33,0_8px_30px_#e5484d14]">
-        <span className="font-bold text-heart">you ›</span>
-        <input className="flex-1 border-none bg-transparent px-0 py-2 focus:outline-none"
-               placeholder={adapter && duet ? "one prompt, two answers…" : "say something…"}
-               value={input} onChange={(e) => setInput(e.target.value)} autoFocus />
-        <button className={primary}>›</button>
-      </form>
+function Message({ msg, tone }: { msg: Msg; tone: "muted" | "primary" }) {
+  if (msg.role === "user") {
+    return (
+      <div className="flex justify-end">
+        <div className="rise max-w-[85%] rounded-lg bg-primary text-primary-foreground px-3.5 py-2 text-sm whitespace-pre-wrap">
+          {msg.content}
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="rise flex gap-3">
+      <div className={`size-7 shrink-0 rounded-md grid place-items-center text-xs font-mono font-bold ${
+        tone === "primary"
+          ? "bg-primary/15 text-primary border border-primary/30"
+          : "bg-muted text-muted-foreground border border-border"}`}>
+        {tone === "primary" ? "♥" : "○"}
+      </div>
+      <div className="text-sm leading-relaxed whitespace-pre-wrap text-foreground/90 pt-0.5">
+        {msg.content}
+      </div>
     </div>
   );
 }

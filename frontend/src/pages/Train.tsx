@@ -1,20 +1,19 @@
-// The training wizard: Data → Model → Method → Tune → Launch.
-// One decision per step; the data ranks the methods; the method shapes the form.
-import { useEffect, useState } from "react";
+// Train — the guided flow, data first: Data → Model → Method → Tune.
+// The right rail is the always-live run summary + the generated CLI, and the
+// launch button sits under the summary: this exact config runs, nothing hidden.
+import { useEffect, useMemo, useState } from "react";
+import { Check, ChevronLeft, ChevronRight, Play, Search } from "lucide-react";
 import { getDatasets, getModels, submitFinetune } from "../api";
 import type { CatalogModel, DatasetMeta, MethodInfo } from "../api";
-import { Card, H2, Lead, Pill } from "../ui";
+import { Field, PageHeader, btnGhost, btnPrimary } from "../ui";
 
-const STEPS = ["Data", "Model", "Method", "Tune", "Launch"];
+const STEPS = ["Data", "Model", "Method", "Tune"] as const;
 const LORA_FAMILY = ["lora", "qlora", "dora", "adapter", "more"];
 const recommend = (format?: string): string[] =>
   format === "preference" ? ["dpo"]
   : format === "text" ? ["cpt"]
   : format === "prompt" ? ["grpo"]
   : ["lora", "qlora", "dora"];
-
-interface Params { steps: number; lorar: number; lr: string; lrTouched: boolean;
-                   batch: number; evalSplit: boolean; }
 
 export default function Train({ methods }: { methods: MethodInfo[] }) {
   const [step, setStep] = useState(0);
@@ -24,10 +23,12 @@ export default function Train({ methods }: { methods: MethodInfo[] }) {
   const [ds, setDs] = useState<string | null>(null);
   const [model, setModel] = useState<string | null>(null);
   const [method, setMethod] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
   const [free, setFree] = useState("");
   const [err, setErr] = useState("");
-  const [p, setP] = useState<Params>({ steps: 60, lorar: 16, lr: "", lrTouched: false,
-                                       batch: 2, evalSplit: false });
+  const [busy, setBusy] = useState(false);
+  const [p, setP] = useState({ steps: 60, lorar: 16, lr: "", lrTouched: false,
+                               batch: 2, ctx: 2048, evalSplit: false });
 
   useEffect(() => {
     getDatasets().then((d) => setDatasets(d.datasets));
@@ -37,15 +38,27 @@ export default function Train({ methods }: { methods: MethodInfo[] }) {
     });
     const pd = sessionStorage.getItem("pick.dataset");
     const pm = sessionStorage.getItem("pick.model");
-    if (pd) { setDs(pd); sessionStorage.removeItem("pick.dataset"); setStep(1); }
-    if (pm) { setModel(pm); sessionStorage.removeItem("pick.model"); setStep(2); }
+    const pme = sessionStorage.getItem("pick.method");
+    const pst = sessionStorage.getItem("pick.steps");
+    if (pd) { setDs(pd); setStep(1); sessionStorage.removeItem("pick.dataset"); }
+    if (pm) { setModel(pm); setStep((s) => Math.max(s, pd ? 2 : 0)); sessionStorage.removeItem("pick.model"); }
+    if (pme) { setMethod(pme); sessionStorage.removeItem("pick.method"); }
+    if (pst) { setP((q) => ({ ...q, steps: +pst || 60 })); sessionStorage.removeItem("pick.steps"); }
   }, []);
 
   const meta = datasets.find((d) => d.dataset_id === ds);
   const rec = recommend(meta?.format);
-  const ordered = [...methods].sort((a, b) =>
-    Number(rec.includes(b.name)) - Number(rec.includes(a.name)));
-  const canNext = [Boolean(ds), Boolean(model), Boolean(method), true, true][step];
+  const ordered = useMemo(() => [...methods].sort((a, b) =>
+    Number(rec.includes(b.name)) - Number(rec.includes(a.name))), [methods, rec]);
+  const methodInfo = methods.find((m) => m.name === method);
+  const allModels: CatalogModel[] = useMemo(
+    () => [...recent.map((id) => ({ id, note: "recently trained here" })), ...catalog],
+    [recent, catalog]);
+  const filteredModels = allModels.filter((m) =>
+    m.id.toLowerCase().includes(search.toLowerCase()));
+
+  const ready = Boolean(ds && model && method);
+  const canNext = [Boolean(ds), Boolean(model), Boolean(method), true][step];
 
   function pickMethod(name: string) {
     setMethod(name);
@@ -54,7 +67,8 @@ export default function Train({ methods }: { methods: MethodInfo[] }) {
   }
 
   async function start() {
-    setErr("");
+    if (!ready || busy) return;
+    setErr(""); setBusy(true);
     const config: Record<string, unknown> = {
       method, max_steps: p.steps, per_device_train_batch_size: p.batch };
     if (LORA_FAMILY.includes(method!)) config.lora_r = p.lorar;
@@ -63,187 +77,257 @@ export default function Train({ methods }: { methods: MethodInfo[] }) {
       const out = await submitFinetune({
         base_model: model, config, dataset_id: ds,
         eval_dataset: p.evalSplit ? "auto" : null,
-        load_in_4bit: false, max_seq_length: 2048 });
+        load_in_4bit: false, max_seq_length: p.ctx });
       window.location.hash = `#runs/${out.job_id}`;
-    } catch (ex) { setErr((ex as Error).message); }
+    } catch (ex) { setErr((ex as Error).message); setBusy(false); }
   }
 
-  const primary = "rounded-lg bg-gradient-to-br from-[#f05a5f] to-[#c73a3f] px-4 py-2 font-bold text-white disabled:opacity-40";
+  const cli = [
+    "shadowlm finetune <data.jsonl> \\",
+    `  --model ${model ?? "<model>"} \\`,
+    `  --method ${method ?? "<method>"} \\`,
+    `  --max-steps ${p.steps}${p.lr ? ` \\\n  --lr ${p.lr}` : ""}` +
+    (method && LORA_FAMILY.includes(method) ? ` \\\n  --lora-r ${p.lorar}` : "") +
+    (p.evalSplit ? ` \\\n  --eval auto` : ""),
+  ].join("\n");
 
   return (
-    <div>
-      <H2>New training</H2>
-      <Lead>five decisions, in the order they depend on each other — everything
-        else has defaults.</Lead>
+    <>
+      <PageHeader
+        eyebrow="Fine-tuning Studio"
+        title="Configure and start training"
+        description="Four decisions, in the order they depend on each other — the data ranks the methods, the method shapes the form."
+      />
 
-      {/* stepper rail */}
-      <div className="my-5 flex max-w-[860px]">
-        {STEPS.map((s, i) => (
-          <div key={s} onClick={() => i < step && setStep(i)}
-               className={`relative flex-1 pt-[30px] text-center text-[12px]
-                 ${i < step ? "cursor-pointer text-bone" : i === step ? "text-bone" : "text-faded"}`}>
-            <span className={`absolute left-1/2 top-0 size-6 -translate-x-1/2 rounded-full border text-[11px] leading-[22px]
-              ${i < step ? "border-okay text-okay bg-umbra"
-                : i === step ? "border-heart bg-heart font-bold text-white"
-                : "border-seam bg-umbra"}`}>
-              {i < step ? "✓" : i + 1}
-            </span>
-            {i < STEPS.length - 1 &&
-              <span className="absolute left-[calc(50%+14px)] top-3 h-px w-[calc(100%-28px)] bg-seam" />}
-            {s}
-          </div>
-        ))}
-      </div>
-
-      <div className="max-w-[860px]">
-        {step === 0 && (
-          <div className="grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-3">
-            {datasets.map((d) => (
-              <Card key={d.dataset_id} selected={ds === d.dataset_id}
-                    onClick={() => setDs(d.dataset_id)}>
-                <div className="flex items-baseline justify-between gap-2">
-                  <h4 className="text-[13.5px] font-bold">{d.name}</h4>
-                  <Pill>{d.format}</Pill>
-                </div>
-                <div className="text-[11.5px] text-faded">{d.rows} rows</div>
-              </Card>
-            ))}
-            <Card>
-              <h4 className="text-[13.5px] font-bold">New dataset</h4>
-              <div className="text-[11.5px] text-faded">paste or upload on the Datasets page</div>
-              <button className="mt-2.5 rounded-lg border border-seam px-3 py-1.5 text-[13px]"
-                      onClick={() => (window.location.hash = "#datasets")}>go to Datasets ›</button>
-            </Card>
-          </div>
-        )}
-
-        {step === 1 && (
-          <div className="grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-3">
-            {recent.map((id) => (
-              <Card key={id} selected={model === id} onClick={() => setModel(id)}>
-                <h4 className="text-[13.5px] font-bold">{id.split("/").pop()}</h4>
-                <div className="text-[11.5px] text-faded">{id}</div>
-                <div className="text-[11.5px] text-faded">recently trained here</div>
-              </Card>
-            ))}
-            {catalog.map((m) => (
-              <Card key={m.id} selected={model === m.id} onClick={() => setModel(m.id)}>
-                <div className="flex items-baseline justify-between gap-2">
-                  <h4 className="text-[13.5px] font-bold">{m.id.split("/").pop()}</h4>
-                  <span className="flex gap-1.5">
-                    {m.dev && <Pill tone="green">dev pick</Pill>}
-                    {m.gated && <Pill tone="gold">HF token</Pill>}
-                  </span>
-                </div>
-                <div className="text-[11.5px] text-faded">{m.id}</div>
-                <div className="text-[11.5px] text-faded">{m.params}{m.note ? ` · ${m.note}` : ""}</div>
-              </Card>
-            ))}
-            <Card>
-              <h4 className="text-[13.5px] font-bold">Custom</h4>
-              <form className="mt-2 flex gap-2"
-                    onSubmit={(e) => { e.preventDefault(); if (free.trim()) setModel(free.trim()); }}>
-                <input className="min-w-0 flex-1" placeholder="org/model-name" value={free}
-                       onChange={(e) => setFree(e.target.value)} />
-                <button className={primary}>use</button>
-              </form>
-              {model && !catalog.some((c) => c.id === model) && !recent.includes(model) &&
-                <div className="mt-2 text-[11.5px] text-okay">✓ {model}</div>}
-            </Card>
-          </div>
-        )}
-
-        {step === 2 && (
-          <>
-            <p className="mb-3 text-[12px] text-faded">
-              your dataset is <b className="text-bone">{meta?.format ?? "?"}</b> — recommended methods first.
-            </p>
-            <div className="grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-3">
-              {ordered.map((m) => (
-                <Card key={m.name} selected={method === m.name} onClick={() => pickMethod(m.name)}>
-                  <div className="flex items-baseline justify-between gap-2">
-                    <h4 className="text-[13.5px] font-bold">{m.name}</h4>
-                    <span className="flex gap-1.5">
-                      {rec.includes(m.name) && <Pill tone="red">recommended</Pill>}
-                      <Pill>{m.trainer}</Pill>
+      <div className="px-8 py-6 grid grid-cols-1 xl:grid-cols-[1fr_360px] gap-6 max-w-[1400px]">
+        <div className="space-y-6 min-w-0">
+          {/* stepper */}
+          <ol className="flex items-center gap-2 rounded-lg border border-border bg-card p-2">
+            {STEPS.map((s, i) => {
+              const isActive = i === step, isDone = i < step;
+              return (
+                <li key={s} className="flex items-center gap-2 flex-1">
+                  <button onClick={() => (isDone || isActive) && setStep(i)}
+                    className={`flex items-center gap-2.5 px-3 py-2 rounded-md text-sm flex-1 transition-colors ${
+                      isActive ? "bg-primary/10 text-foreground border border-primary/30"
+                               : "text-muted-foreground hover:bg-accent/40"}`}>
+                    <span className={`size-6 grid place-items-center rounded-full text-[11px] font-mono ${
+                      isActive ? "bg-primary text-primary-foreground"
+                      : isDone ? "bg-success/20 text-success" : "bg-muted text-muted-foreground"}`}>
+                      {isDone ? <Check className="size-3" /> : i + 1}
                     </span>
-                  </div>
-                  <div className="text-[11.5px] text-faded">{m.description}</div>
-                  <div className="text-[11.5px] text-faded">default lr {m.default_lr}</div>
-                </Card>
-              ))}
-            </div>
-          </>
-        )}
+                    <span className="font-medium">{s}</span>
+                  </button>
+                  {i < STEPS.length - 1 && <ChevronRight className="size-4 text-muted-foreground/50 shrink-0" />}
+                </li>
+              );
+            })}
+          </ol>
 
-        {step === 3 && (
-          <div className="grid max-w-[560px] gap-2.5">
-            {[
-              { label: "max steps", el: <input type="number" min={1} value={p.steps}
-                  onChange={(e) => setP({ ...p, steps: +e.target.value || 60 })} /> },
-              ...(LORA_FAMILY.includes(method!) ? [{
-                label: method === "adapter" ? "adapter width (r)" : "lora r",
-                el: <input type="number" min={1} value={p.lorar}
-                    onChange={(e) => setP({ ...p, lorar: +e.target.value || 16 })} /> }] : []),
-              { label: "learning rate", el: <input value={p.lr} placeholder="method default"
-                  onChange={(e) => setP({ ...p, lr: e.target.value, lrTouched: true })} /> },
-              { label: "batch size", el: <input type="number" min={1} value={p.batch}
-                  onChange={(e) => setP({ ...p, batch: +e.target.value || 2 })} /> },
-              { label: "held-out eval", el: (
-                  <label className="flex items-center gap-2 text-[13px] text-faded">
-                    <input type="checkbox" checked={p.evalSplit} className="w-auto"
-                           onChange={(e) => setP({ ...p, evalSplit: e.target.checked })} />
-                    hold out 10% — see overfitting, not just training loss
-                  </label>) },
-            ].map((row) => (
-              <div key={row.label} className="grid grid-cols-[160px_1fr] items-center gap-2.5">
-                <label className="text-[12px] text-faded">{row.label}</label>
-                {row.el}
+          {/* step 1 — Data */}
+          {step === 0 && (
+            <section className="rounded-lg border border-border bg-card p-5">
+              <div className="text-sm font-semibold mb-1">Dataset</div>
+              <p className="text-xs text-muted-foreground mb-4">
+                The data decides what training even means — formats are auto-detected
+                and steer the method choice.</p>
+              {datasets.length === 0 ? (
+                <div className="text-sm text-muted-foreground py-6 text-center">
+                  no datasets on this server yet —{" "}
+                  <a href="#datasets" className="text-primary">upload one</a> first
+                </div>
+              ) : (
+                <div className="border border-border rounded-md max-h-72 overflow-auto scrollbar-thin divide-y divide-border">
+                  {datasets.map((d) => (
+                    <button key={d.dataset_id} onClick={() => setDs(d.dataset_id)}
+                      className={`w-full text-left px-3 py-2.5 flex items-center gap-3 hover:bg-accent/40 transition-colors ${
+                        ds === d.dataset_id ? "bg-accent/60" : ""}`}>
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm font-medium truncate">{d.name}</div>
+                        <div className="text-xs text-muted-foreground font-mono">
+                          {d.format} · {d.rows.toLocaleString()} rows</div>
+                      </div>
+                      {ds === d.dataset_id &&
+                        <div className="text-[10px] font-mono uppercase tracking-wider text-primary">Selected</div>}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </section>
+          )}
+
+          {/* step 2 — Model */}
+          {step === 1 && (
+            <section className="rounded-lg border border-border bg-card p-5">
+              <div className="text-sm font-semibold mb-1">Base model</div>
+              <p className="text-xs text-muted-foreground mb-4">
+                The catalog, models trained here before, or any HF hub id.</p>
+              <div className="relative mb-2">
+                <Search className="size-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                <input value={search} onChange={(e) => setSearch(e.target.value)}
+                       placeholder="Search models…" className="w-full pl-9 pr-3 py-2 text-sm" />
               </div>
-            ))}
-          </div>
-        )}
-
-        {step === 4 && (
-          <>
-            <table className="w-full max-w-[640px] border-collapse text-[13px]">
-              <tbody>
-                {[
-                  ["dataset", `${meta?.name ?? ds} · ${meta?.rows} rows · ${meta?.format}`],
-                  ["model", model],
-                  ["method", method],
-                  ["max steps", String(p.steps)],
-                  ...(LORA_FAMILY.includes(method!) ? [["lora r", String(p.lorar)]] : []),
-                  ["learning rate", p.lr || "(method default)"],
-                  ["batch size", String(p.batch)],
-                  ["held-out eval", p.evalSplit ? "10% held out" : "off"],
-                ].map(([k, v]) => (
-                  <tr key={k} className="border-b border-seam">
-                    <td className="w-[180px] py-2 text-faded">{k}</td>
-                    <td className="py-2">{v}</td>
-                  </tr>
+              <div className="border border-border rounded-md max-h-64 overflow-auto scrollbar-thin divide-y divide-border">
+                {filteredModels.map((m) => (
+                  <button key={m.id} onClick={() => setModel(m.id)}
+                    className={`w-full text-left px-3 py-2.5 flex items-center gap-3 hover:bg-accent/40 transition-colors ${
+                      model === m.id ? "bg-accent/60" : ""}`}>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium truncate">{m.id}</div>
+                      <div className="text-xs text-muted-foreground font-mono">
+                        {m.params ?? ""}{m.note ? ` · ${m.note}` : ""}
+                        {m.gated ? " · needs HF token" : ""}</div>
+                    </div>
+                    {model === m.id &&
+                      <div className="text-[10px] font-mono uppercase tracking-wider text-primary">Selected</div>}
+                  </button>
                 ))}
-              </tbody>
-            </table>
-            <div className="mt-4 flex items-center gap-3">
-              <button className={primary} onClick={start}>start training ›</button>
-              <span className="text-[12px] text-faded">this exact config runs — nothing hidden</span>
-            </div>
-            {err && <div className="mt-2.5 text-heart">{err}</div>}
-          </>
-        )}
-      </div>
+              </div>
+              <form className="mt-3 flex gap-2"
+                    onSubmit={(e) => { e.preventDefault(); if (free.trim()) setModel(free.trim()); }}>
+                <input value={free} onChange={(e) => setFree(e.target.value)}
+                       placeholder="org/model-name — any HF hub id" className="flex-1 text-sm font-mono" />
+                <button className={btnGhost}>use custom</button>
+              </form>
+            </section>
+          )}
 
-      <div className="mt-5 flex max-w-[860px] gap-2.5">
-        {step > 0 && (
-          <button className="rounded-lg border border-seam px-4 py-2"
-                  onClick={() => setStep(step - 1)}>‹ back</button>
-        )}
-        {step < 4 && (
-          <button className={primary} disabled={!canNext}
-                  onClick={() => setStep(step + 1)}>continue ›</button>
-        )}
+          {/* step 3 — Method */}
+          {step === 2 && (
+            <section className="rounded-lg border border-border bg-card p-5">
+              <div className="text-sm font-semibold mb-1">Method</div>
+              <p className="text-xs text-muted-foreground mb-4">
+                your dataset is <b className="text-foreground">{meta?.format ?? "?"}</b> — recommended methods first.
+              </p>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
+                {ordered.map((m) => (
+                  <button key={m.name} onClick={() => pickMethod(m.name)}
+                    title={m.description}
+                    className={`text-left px-3 py-2 rounded-md border text-sm transition-colors ${
+                      method === m.name
+                        ? "border-primary bg-primary/10 text-foreground"
+                        : "border-border bg-card hover:border-primary/40"}`}>
+                    <div className="flex items-center justify-between">
+                      <span className="font-medium">{m.name}</span>
+                      {rec.includes(m.name) &&
+                        <span className="text-[9px] font-mono uppercase text-primary">rec</span>}
+                    </div>
+                    <div className="text-[10px] text-muted-foreground font-mono mt-0.5">
+                      lr {m.default_lr} · {m.trainer}</div>
+                  </button>
+                ))}
+              </div>
+              {methodInfo && (
+                <p className="mt-3 text-xs text-muted-foreground">{methodInfo.description}</p>
+              )}
+            </section>
+          )}
+
+          {/* step 4 — Tune */}
+          {step === 3 && (
+            <section className="rounded-lg border border-border bg-card p-5 space-y-4">
+              <div>
+                <div className="text-sm font-semibold mb-1">Hyperparameters</div>
+                <p className="text-xs text-muted-foreground">
+                  Only the knobs {method ?? "this method"} actually has. Defaults are sensible.</p>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="Max steps" hint="Total optimizer steps">
+                  <input type="number" min={1} value={p.steps} className="w-full font-mono text-sm"
+                         onChange={(e) => setP({ ...p, steps: +e.target.value || 60 })} />
+                </Field>
+                <Field label="Context length" hint="Max sequence length">
+                  <input type="number" min={64} value={p.ctx} className="w-full font-mono text-sm"
+                         onChange={(e) => setP({ ...p, ctx: +e.target.value || 2048 })} />
+                </Field>
+                <Field label="Learning rate" hint={methodInfo ? `Default for ${method}: ${methodInfo.default_lr}` : undefined}>
+                  <input value={p.lr} placeholder="method default" className="w-full font-mono text-sm"
+                         onChange={(e) => setP({ ...p, lr: e.target.value, lrTouched: true })} />
+                </Field>
+                <Field label="Batch size">
+                  <input type="number" min={1} value={p.batch} className="w-full font-mono text-sm"
+                         onChange={(e) => setP({ ...p, batch: +e.target.value || 2 })} />
+                </Field>
+                {method && LORA_FAMILY.includes(method) && (
+                  <Field label={method === "adapter" ? "Adapter width (r)" : "LoRA rank"}>
+                    <input type="number" min={1} value={p.lorar} className="w-full font-mono text-sm"
+                           onChange={(e) => setP({ ...p, lorar: +e.target.value || 16 })} />
+                  </Field>
+                )}
+              </div>
+              <label className="flex items-center gap-2 text-sm text-muted-foreground">
+                <input type="checkbox" checked={p.evalSplit} className="w-auto"
+                       onChange={(e) => setP({ ...p, evalSplit: e.target.checked })} />
+                hold out 10% for eval — see overfitting, not just training loss
+              </label>
+            </section>
+          )}
+
+          {/* step nav */}
+          <div className="flex items-center justify-between gap-3">
+            <button onClick={() => setStep(Math.max(0, step - 1))} disabled={step === 0}
+                    className={btnGhost}>
+              <ChevronLeft className="size-3.5" /> Back
+            </button>
+            {step < STEPS.length - 1 && (
+              <button onClick={() => canNext && setStep(step + 1)} disabled={!canNext}
+                      className={btnPrimary}>
+                Next: {STEPS[step + 1]} <ChevronRight className="size-3.5" />
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* right rail — live summary + generated CLI */}
+        <aside className="space-y-4">
+          <div className="sticky top-4 space-y-4">
+            <div className="rounded-lg border border-border bg-card overflow-hidden">
+              <div className="px-4 py-3 border-b border-border">
+                <div className="text-[10px] font-mono uppercase tracking-[0.18em] text-muted-foreground">Run summary</div>
+                <div className="text-sm font-semibold mt-1">
+                  {ready ? "Ready to launch" : "Working through the steps…"}</div>
+              </div>
+              <div className="px-4 py-3 space-y-2 text-xs">
+                <SummaryRow label="Dataset" value={meta ? `${meta.name} (${meta.rows})` : "—"} />
+                <SummaryRow label="Model" value={model ? model.split("/").pop()! : "—"} />
+                <SummaryRow label="Method" value={method ?? "—"} />
+                <SummaryRow label="Steps" value={String(p.steps)} />
+                <SummaryRow label="LR" value={p.lr || "method default"} />
+                <SummaryRow label="Batch" value={String(p.batch)} />
+                <SummaryRow label="Context" value={`${p.ctx} tok`} />
+                {method && LORA_FAMILY.includes(method) &&
+                  <SummaryRow label="Rank" value={`r=${p.lorar}`} />}
+                <SummaryRow label="Eval" value={p.evalSplit ? "10% held out" : "off"} />
+              </div>
+              <div className="px-4 pb-4 pt-2 space-y-2">
+                <button onClick={start} disabled={!ready || busy}
+                  className={`${btnPrimary} w-full justify-center py-2.5 text-sm`}>
+                  <Play className="size-4" /> {busy ? "starting…" : "Start training"}
+                </button>
+                <div className="text-[10px] font-mono text-muted-foreground text-center">
+                  this exact config runs — nothing hidden
+                </div>
+                {err && <div className="text-xs text-destructive">{err}</div>}
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-border bg-card p-4">
+              <div className="text-[10px] font-mono uppercase tracking-[0.18em] text-muted-foreground mb-2">
+                The same run, from your shell</div>
+              <pre className="text-[11px] font-mono text-foreground/80 leading-relaxed whitespace-pre-wrap break-all">{cli}</pre>
+            </div>
+          </div>
+        </aside>
       </div>
+    </>
+  );
+}
+
+function SummaryRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <span className="text-muted-foreground">{label}</span>
+      <span className="font-mono truncate text-right">{value}</span>
     </div>
   );
 }
