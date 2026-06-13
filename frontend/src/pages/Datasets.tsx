@@ -108,9 +108,9 @@ export default function Datasets() {
         </div>
 
         <div className="rounded-lg border border-border bg-card overflow-hidden">
-          <div className="grid grid-cols-[1fr_90px_110px_80px_300px] px-4 py-2.5 border-b border-border text-[10px] font-mono uppercase tracking-wider text-muted-foreground">
+          <div className="grid grid-cols-[1fr_90px_110px_300px] px-4 py-2.5 border-b border-border text-[10px] font-mono uppercase tracking-wider text-muted-foreground">
             <div>Name</div><div>Source</div><div>Format</div>
-            <div className="text-right">Rows</div><div className="text-right">Actions</div>
+            <div className="text-right">Actions</div>
           </div>
           {filtered.length === 0 && (
             <div className="px-4 py-8 text-center text-sm text-muted-foreground">
@@ -119,7 +119,7 @@ export default function Datasets() {
           )}
           {filtered.map((d) => (
             <div key={d.dataset_id}
-                 className="grid grid-cols-[1fr_90px_110px_80px_300px] px-4 py-3 border-b border-border last:border-0 items-center text-sm hover:bg-accent/30 transition-colors">
+                 className="grid grid-cols-[1fr_90px_110px_300px] px-4 py-3 border-b border-border last:border-0 items-center text-sm hover:bg-accent/30 transition-colors">
               <div className="flex items-center gap-2.5 min-w-0">
                 <Database className="size-4 text-muted-foreground shrink-0" />
                 <div className="min-w-0">
@@ -127,7 +127,7 @@ export default function Datasets() {
                   <div className="text-[10px] font-mono text-muted-foreground truncate">
                     {d.source === "hf"
                       ? `${d.subset}/${d.split}${d.eval_split ? ` · eval: ${d.eval_split}` : ""}`
-                      : d.dataset_id}
+                      : `${d.dataset_id}${d.rows != null ? ` · ${d.rows.toLocaleString()} rows` : ""}`}
                   </div>
                 </div>
               </div>
@@ -135,9 +135,6 @@ export default function Datasets() {
                 {d.source === "hf" ? "🤗 hub" : "upload"}
               </div>
               <div><Badge format={d.format} /></div>
-              <div className="text-right font-mono text-xs text-muted-foreground">
-                {d.rows != null ? d.rows.toLocaleString() : "—"}
-              </div>
               <div className="flex justify-end gap-2">
                 <button className={btnPrimary}
                   onClick={() => { sessionStorage.setItem("pick.dataset", d.dataset_id); window.location.hash = "#train"; }}>
