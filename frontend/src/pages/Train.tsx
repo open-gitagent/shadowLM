@@ -15,25 +15,51 @@ const recommend = (format?: string): string[] =>
   : ["lora", "qlora", "dora"];
 
 // A tunable hyperparameter (key = the TrainConfig field it sets).
-interface Param { key: string; label: string; kind: "int" | "float"; def: string; hint?: string }
+interface Param {
+  key: string; label: string;
+  kind: "int" | "float" | "bool" | "select";
+  def: string; options?: string[]; hint?: string;
+}
 
-// Common to every method.
-const COMMON: Param[] = [
+// Core knobs every method has.
+const CORE: Param[] = [
   { key: "max_steps", label: "Max steps", kind: "int", def: "60", hint: "total optimizer steps" },
+  { key: "num_train_epochs", label: "Epochs", kind: "int", def: "", hint: "overrides max steps when set" },
   { key: "learning_rate", label: "Learning rate", kind: "float", def: "", hint: "blank = method default" },
   { key: "per_device_train_batch_size", label: "Batch size", kind: "int", def: "2" },
   { key: "gradient_accumulation_steps", label: "Grad accumulation", kind: "int", def: "4" },
   { key: "max_seq_length", label: "Context length", kind: "int", def: "2048" },
+];
+
+// Optimizer / schedule — relevant to every method (Advanced).
+const OPTIMIZER: Param[] = [
+  { key: "warmup_steps", label: "Warmup steps", kind: "int", def: "5" },
   { key: "weight_decay", label: "Weight decay", kind: "float", def: "0.01" },
+  { key: "lr_scheduler_type", label: "LR scheduler", kind: "select", def: "linear",
+    options: ["linear", "cosine", "constant"] },
+  { key: "max_grad_norm", label: "Grad clip", kind: "float", def: "", hint: "max grad norm (torch)" },
+  { key: "optim", label: "Optimizer", kind: "select", def: "adamw_8bit",
+    options: ["adamw_8bit", "adamw_torch", "adafactor", "sgd"], hint: "torch; mlx uses Adam" },
+  { key: "seed", label: "Seed", kind: "int", def: "3407" },
+];
+
+// Data handling — supervised (sft) methods only (Advanced).
+const DATA: Param[] = [
+  { key: "packing", label: "Pack sequences", kind: "bool", def: "false", hint: "torch" },
+  { key: "train_on_completions", label: "Train on completions only", kind: "bool", def: "false",
+    hint: "mask the prompt (mlx)" },
 ];
 
 const LORA: Param[] = [
   { key: "lora_r", label: "LoRA rank", kind: "int", def: "16" },
   { key: "lora_alpha", label: "LoRA alpha", kind: "int", def: "16" },
   { key: "lora_dropout", label: "LoRA dropout", kind: "float", def: "0" },
+  { key: "target_modules", label: "Target modules", kind: "select", def: "all",
+    options: ["all", "attention", "mlp"] },
+  { key: "use_rslora", label: "Rank-stabilized (rsLoRA)", kind: "bool", def: "false", hint: "torch" },
 ];
 
-// Extra knobs by method name (on top of whatever the adapter kind contributes).
+// Extra knobs by method name (on top of the adapter knobs).
 const EXTRA: Record<string, Param[]> = {
   more: [
     { key: "retrieval_k", label: "Retrieval k", kind: "int", def: "2", hint: "memories per token" },
@@ -49,8 +75,8 @@ const EXTRA: Record<string, Param[]> = {
   ptuning: [{ key: "num_virtual_tokens", label: "Virtual tokens", kind: "int", def: "16" }],
 };
 
-// The adapter kind decides the adapter knobs — so cpt/dpo/grpo/qlora (all
-// default-LoRA) get rank/alpha/dropout, bottleneck gets a width, bitfit/full/
+// The adapter kind decides the adapter knobs — cpt/dpo/grpo/qlora (all
+// default-LoRA) get the full LoRA set, bottleneck gets a width, bitfit/full/
 // soft-prompts get none.
 function adapterParams(adapter: string | undefined): Param[] {
   if (adapter === "lora" || adapter === "dora" || adapter === "more") return LORA;
@@ -58,13 +84,21 @@ function adapterParams(adapter: string | undefined): Param[] {
   return [];
 }
 
-// Everything a method exposes beyond COMMON: its adapter knobs + its extras.
+// The method's own section (adapter knobs + name extras).
 function methodParams(info?: MethodInfo): Param[] {
   if (!info) return [];
   return [...adapterParams(info.adapter), ...(EXTRA[info.name] ?? [])];
 }
 
-const paramsFor = (info?: MethodInfo): Param[] => [...COMMON, ...methodParams(info)];
+// Advanced section depends on trainer: optimizer always; data only for sft.
+function advancedParams(info?: MethodInfo): Param[] {
+  return [...OPTIMIZER, ...(info?.trainer === "sft" ? DATA : [])];
+}
+
+// Everything this method exposes, for config building / defaults seeding.
+function allParams(info?: MethodInfo): Param[] {
+  return [...CORE, ...methodParams(info), ...advancedParams(info)];
+}
 
 export default function Train({ methods }: { methods: MethodInfo[] }) {
   const [step, setStep] = useState(0);
@@ -79,9 +113,10 @@ export default function Train({ methods }: { methods: MethodInfo[] }) {
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
   const [vals, setVals] = useState<Record<string, string>>(
-    () => Object.fromEntries(COMMON.map((p) => [p.key, p.def])));
+    () => Object.fromEntries([...CORE, ...OPTIMIZER].map((p) => [p.key, p.def])));
   const [lrTouched, setLrTouched] = useState(false);
   const [evalSplit, setEvalSplit] = useState(false);
+  const [advanced, setAdvanced] = useState(false);
 
   useEffect(() => {
     getDatasets().then((d) => setDatasets(d.datasets));
@@ -110,8 +145,9 @@ export default function Train({ methods }: { methods: MethodInfo[] }) {
   const filteredModels = allModels.filter((m) =>
     m.id.toLowerCase().includes(search.toLowerCase()));
 
-  const tuneParams = paramsFor(methodInfo);
   const extraParams = methodParams(methodInfo);
+  const advParams = advancedParams(methodInfo);
+  const configParams = allParams(methodInfo);
   const ready = Boolean(ds && model && method);
   const canNext = [Boolean(ds), Boolean(model), Boolean(method), true][step];
 
@@ -132,10 +168,12 @@ export default function Train({ methods }: { methods: MethodInfo[] }) {
 
   function buildConfig(): Record<string, unknown> {
     const config: Record<string, unknown> = { method };
-    for (const p of tuneParams) {
+    for (const p of configParams) {
       const raw = (vals[p.key] ?? "").trim();
+      if (p.kind === "bool") { if (raw === "true") config[p.key] = true; continue; }
       if (raw === "") continue;
-      config[p.key] = p.kind === "int" ? parseInt(raw) : parseFloat(raw);
+      config[p.key] = p.kind === "int" ? parseInt(raw)
+        : p.kind === "float" ? parseFloat(raw) : raw;  // select → string
     }
     return config;
   }
@@ -160,15 +198,19 @@ export default function Train({ methods }: { methods: MethodInfo[] }) {
     const lines = [`shadowlm finetune <data.jsonl> \\`,
                    `  --model ${model ?? "<model>"} \\`,
                    `  --method ${method ?? "<method>"}`];
-    for (const p of tuneParams) {
+    for (const p of configParams) {
       const raw = (vals[p.key] ?? "").trim();
-      if (raw === "" || raw === p.def && p.key !== "max_steps") continue;
+      if (p.kind === "bool") {
+        if (raw === "true") { lines[lines.length - 1] += " \\"; lines.push(`  --set ${p.key}=true`); }
+        continue;
+      }
+      if (raw === "" || (raw === p.def && p.key !== "max_steps")) continue;
       lines[lines.length - 1] += " \\";
       lines.push(headline[p.key] ? `  ${headline[p.key]} ${raw}` : `  --set ${p.key}=${raw}`);
     }
     if (evalSplit) { lines[lines.length - 1] += " \\"; lines.push("  --eval auto"); }
     return lines.join("\n");
-  }, [model, method, vals, tuneParams, evalSplit]);
+  }, [model, method, vals, configParams, evalSplit]);
 
   const summaryVal = (k: string) => (vals[k] ?? "").trim();
 
@@ -303,49 +345,37 @@ export default function Train({ methods }: { methods: MethodInfo[] }) {
             </section>
           )}
 
-          {/* step 4 — Tune (spec-driven: common + this method's own params) */}
+          {/* step 4 — Tune (every knob this method actually uses) */}
           {step === 3 && (
-            <section className="rounded-lg border border-border bg-card p-5 space-y-4">
+            <section className="rounded-lg border border-border bg-card p-5 space-y-5">
               <div>
                 <div className="text-sm font-semibold mb-1">Hyperparameters</div>
                 <p className="text-xs text-muted-foreground">
-                  {method ?? "this method"}'s knobs — defaults are sensible.
-                  {extraParams.length > 0 &&
-                    ` The ${method}-specific settings are split out below.`}
+                  everything <b className="text-foreground">{method ?? "this method"}</b> uses —
+                  defaults are sensible, the {method}-specific knobs are highlighted.
                 </p>
               </div>
-              <div className="grid grid-cols-2 gap-3">
-                {COMMON.map((p) => (
-                  <Field key={p.key} label={p.label}
-                    hint={p.key === "learning_rate" && methodInfo
-                      ? `default for ${method}: ${methodInfo.default_lr}` : p.hint}>
-                    <input value={vals[p.key] ?? ""} placeholder={p.def || "method default"}
-                           inputMode={p.kind === "int" ? "numeric" : "decimal"}
-                           className="w-full font-mono text-sm"
-                           onChange={(e) => setVal(p.key, e.target.value)} />
-                  </Field>
-                ))}
-              </div>
+
+              <ParamGrid params={CORE} vals={vals} setVal={setVal} methodInfo={methodInfo} method={method} />
 
               {extraParams.length > 0 && (
                 <div className="pt-4 border-t border-border">
                   <div className="text-xs font-semibold text-primary mb-3 uppercase tracking-wider font-mono">
                     {method} settings
                   </div>
-                  <div className="grid grid-cols-2 gap-3">
-                    {extraParams.map((p) => (
-                      <Field key={p.key} label={p.label} hint={p.hint}>
-                        <input value={vals[p.key] ?? ""} placeholder={p.def}
-                               inputMode={p.kind === "int" ? "numeric" : "decimal"}
-                               className="w-full font-mono text-sm"
-                               onChange={(e) => setVal(p.key, e.target.value)} />
-                      </Field>
-                    ))}
-                  </div>
+                  <ParamGrid params={extraParams} vals={vals} setVal={setVal} />
                 </div>
               )}
 
-              <label className="flex items-center gap-2 text-sm text-muted-foreground pt-2 border-t border-border">
+              <div className="pt-4 border-t border-border">
+                <button onClick={() => setAdvanced((v) => !v)}
+                        className="text-xs text-muted-foreground hover:text-foreground mb-3">
+                  {advanced ? "▾" : "▸"} Advanced — optimizer{methodInfo?.trainer === "sft" ? " & data" : ""}
+                </button>
+                {advanced && <ParamGrid params={advParams} vals={vals} setVal={setVal} />}
+              </div>
+
+              <label className="flex items-center gap-2 text-sm text-muted-foreground pt-4 border-t border-border">
                 <input type="checkbox" checked={evalSplit} className="w-auto"
                        onChange={(e) => setEvalSplit(e.target.checked)} />
                 hold out 10% for eval — see overfitting, not just training loss
@@ -419,6 +449,45 @@ function SummaryRow({ label, value }: { label: string; value: string }) {
     <div className="flex items-center justify-between gap-3">
       <span className="text-muted-foreground">{label}</span>
       <span className="font-mono truncate text-right">{value}</span>
+    </div>
+  );
+}
+
+function ParamGrid({ params, vals, setVal, methodInfo, method }: {
+  params: Param[]; vals: Record<string, string>;
+  setVal: (k: string, v: string) => void;
+  methodInfo?: MethodInfo; method?: string | null;
+}) {
+  return (
+    <div className="grid grid-cols-2 gap-3">
+      {params.map((p) => {
+        const hint = p.key === "learning_rate" && methodInfo
+          ? `default for ${method}: ${methodInfo.default_lr}` : p.hint;
+        if (p.kind === "bool") {
+          return (
+            <label key={p.key} className="flex items-center gap-2 text-sm self-end pb-2">
+              <input type="checkbox" checked={vals[p.key] === "true"} className="w-auto"
+                     onChange={(e) => setVal(p.key, e.target.checked ? "true" : "false")} />
+              <span>{p.label}{hint && <span className="text-muted-foreground"> · {hint}</span>}</span>
+            </label>
+          );
+        }
+        return (
+          <Field key={p.key} label={p.label} hint={hint}>
+            {p.kind === "select" ? (
+              <select value={vals[p.key] ?? p.def} className="w-full font-mono text-sm"
+                      onChange={(e) => setVal(p.key, e.target.value)}>
+                {p.options!.map((o) => <option key={o} value={o}>{o}</option>)}
+              </select>
+            ) : (
+              <input value={vals[p.key] ?? ""} placeholder={p.def || "method default"}
+                     inputMode={p.kind === "int" ? "numeric" : "decimal"}
+                     className="w-full font-mono text-sm"
+                     onChange={(e) => setVal(p.key, e.target.value)} />
+            )}
+          </Field>
+        );
+      })}
     </div>
   );
 }
