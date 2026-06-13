@@ -36,6 +36,19 @@ _SHAREGPT_ROLES = {"human": "user", "gpt": "assistant", "system": "system",
                    "user": "user", "assistant": "assistant", "tool": "tool"}
 
 
+# Instruction/QA datasets name their prompt and response columns many ways
+# (alpaca instruction/output, gsm8k question/answer, prompt/response, …).
+_PROMPT_KEYS = ("instruction", "question", "prompt", "query", "input")
+_RESPONSE_KEYS = ("output", "answer", "response", "completion", "target")
+
+
+def _instruction_cols(keys) -> tuple[str, str] | None:
+    """The (prompt, response) column names for an instruction-style row, if any."""
+    prompt = next((k for k in _PROMPT_KEYS if k in keys), None)
+    response = next((k for k in _RESPONSE_KEYS if k in keys), None)
+    return (prompt, response) if prompt and response else None
+
+
 def _detect_format(rows: list[dict]) -> str:
     if not rows:
         return RAW
@@ -46,7 +59,7 @@ def _detect_format(rows: list[dict]) -> str:
         return SHAREGPT
     if "chosen" in keys and "rejected" in keys:
         return PREFERENCE
-    if "instruction" in keys and "output" in keys:
+    if _instruction_cols(keys):
         return INSTRUCTION
     if "text" in keys:
         return TEXT
@@ -147,6 +160,54 @@ class Dataset:
         rows = [dict(r) for r in ds]
         return cls(rows=rows, format=_resolve_format(rows, format), name=repo, source=f"hf:{repo}")
 
+    @staticmethod
+    def hf_info(repo: str, *, subset: str | None = None,
+                token: str | None = None) -> dict:
+        """A hub dataset's configs (subsets) and the splits of one — for pickers.
+
+        Returns {configs, subset, splits}; `subset` is the resolved config the
+        splits belong to (the requested one, or the first available).
+        """
+        try:
+            from datasets import (  # noqa: PLC0415
+                get_dataset_config_names, get_dataset_split_names)
+        except ImportError as e:
+            raise ImportError(
+                "Dataset.hf_info needs the 'datasets' library: pip install shadowlm[torch]"
+            ) from e
+        configs = get_dataset_config_names(repo, token=token)
+        chosen = subset if subset in configs else (configs[0] if configs else None)
+        splits: list[str] = []
+        if chosen is not None:
+            try:
+                splits = list(get_dataset_split_names(repo, chosen, token=token))
+            except Exception:  # noqa: BLE001 — some datasets need a full load; leave blank
+                splits = []
+        return {"configs": configs, "subset": chosen, "splits": splits}
+
+    @classmethod
+    def hf_preview(cls, repo: str, *, subset: str | None = None, split: str = "train",
+                   token: str | None = None, limit: int = 8) -> dict:
+        """Stream a few rows from a hub dataset — no full download.
+
+        Returns {format, columns, total, preview}. `total` is None when streaming
+        can't count cheaply (the common case).
+        """
+        try:
+            from datasets import load_dataset  # noqa: PLC0415
+        except ImportError as e:
+            raise ImportError(
+                "Dataset.hf_preview needs the 'datasets' library: pip install shadowlm[torch]"
+            ) from e
+        from itertools import islice  # noqa: PLC0415
+
+        stream = load_dataset(repo, subset or None, split=split, streaming=True, token=token)
+        rows = [dict(r) for r in islice(stream, limit)]
+        if not rows:
+            raise ValueError(f"{repo} ({subset or 'default'}/{split}) returned no rows")
+        return {"format": _detect_format(rows), "columns": list(rows[0].keys()),
+                "total": None, "preview": rows}
+
     # ---- transforms -------------------------------------------------------
     def as_chat(self) -> "Dataset":
         """Normalise to chat format: every row becomes {"messages": [...]}.
@@ -169,12 +230,14 @@ class Dataset:
                     row["tools"] = r["tools"]
                 out.append(row)
             elif self.format == INSTRUCTION:
-                user = r.get("instruction", "")
-                if r.get("input"):
+                cols = _instruction_cols(r) or ("instruction", "output")
+                user = str(r.get(cols[0], ""))
+                # alpaca-style extra context column, when distinct from the prompt
+                if cols[0] != "input" and r.get("input"):
                     user = f"{user}\n\n{r['input']}"
                 out.append({"messages": [
                     {"role": "user", "content": user},
-                    {"role": "assistant", "content": r.get("output", "")},
+                    {"role": "assistant", "content": str(r.get(cols[1], ""))},
                 ]})
             elif self.format == TEXT:
                 out.append({"messages": [{"role": "assistant", "content": r.get("text", "")}]})
@@ -191,11 +254,15 @@ class Dataset:
         if self.format == TEXT:
             return [r["text"] for r in self.rows]
         if self.format == INSTRUCTION:
-            return [_ALPACA.format(
-                instruction=r.get("instruction", ""),
-                input=r.get("input", ""),
-                output=r.get("output", ""),
-            ) for r in self.rows]
+            texts = []
+            for r in self.rows:
+                cols = _instruction_cols(r) or ("instruction", "output")
+                texts.append(_ALPACA.format(
+                    instruction=str(r.get(cols[0], "")),
+                    input=r.get("input", "") if cols[0] != "input" else "",
+                    output=str(r.get(cols[1], "")),
+                ))
+            return texts
         if self.format == SHAREGPT:
             return self.as_chat().to_texts()
         if self.format == CHAT:

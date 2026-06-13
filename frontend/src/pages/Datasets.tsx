@@ -95,7 +95,7 @@ export default function Datasets() {
         </Modal>
       )}
 
-      <div className="px-8 py-6 max-w-[1400px] space-y-4">
+      <div className="px-8 py-6 space-y-4">
         <div className="flex flex-wrap items-center gap-2">
           <div className="relative flex-1 min-w-[220px] max-w-md">
             <Search className="size-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />

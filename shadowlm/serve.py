@@ -108,55 +108,6 @@ _MODEL_CATALOG = [
 ]
 
 
-def hf_info(repo: str, *, subset: str | None = None) -> dict:
-    """A dataset's configs (subsets) and the splits of one — for the pickers.
-
-    Returns {configs, subset, splits}. `subset` is the resolved config the
-    splits belong to (the requested one, or the first available).
-    """
-    try:
-        from datasets import (  # noqa: PLC0415
-            get_dataset_config_names, get_dataset_split_names)
-    except ImportError as e:
-        raise RuntimeError(
-            "HuggingFace datasets need the 'datasets' library — "
-            "pip install 'shadowlm[torch]'") from e
-    token = os.environ.get("HF_TOKEN") or None
-    configs = get_dataset_config_names(repo, token=token)
-    chosen = subset if subset in configs else (configs[0] if configs else None)
-    splits: list[str] = []
-    if chosen is not None:
-        try:
-            splits = list(get_dataset_split_names(repo, chosen, token=token))
-        except Exception:  # noqa: BLE001 — some datasets need a load; leave blank
-            splits = []
-    return {"configs": configs, "subset": chosen, "splits": splits}
-
-
-def hf_preview(repo: str, *, subset: str | None, split: str, limit: int = 10) -> dict:
-    """Stream a handful of rows from a HuggingFace dataset — no full download.
-
-    Returns {format, columns, total, preview}. `total` is None when streaming
-    can't count cheaply (the common case).
-    """
-    try:
-        from datasets import load_dataset  # noqa: PLC0415
-    except ImportError as e:
-        raise RuntimeError(
-            "HuggingFace datasets need the 'datasets' library — "
-            "pip install 'shadowlm[torch]'") from e
-    from itertools import islice  # noqa: PLC0415
-
-    token = os.environ.get("HF_TOKEN") or None
-    stream = load_dataset(repo, subset or None, split=split, streaming=True, token=token)
-    rows = [dict(r) for r in islice(stream, limit)]
-    if not rows:
-        raise RuntimeError(f"{repo} ({subset or 'default'}/{split}) returned no rows")
-    columns = list(rows[0].keys())
-    fmt = Dataset.from_list(rows).format
-    return {"format": fmt, "columns": columns, "total": None, "preview": rows}
-
-
 class DatasetStore:
     """Datasets in the dashboard — uploaded JSONL, or a HuggingFace reference.
     Both persist as a small JSON meta; survives restarts."""
@@ -499,12 +450,12 @@ def make_handler(server: Server, api_key: str | None):
                     b = self._body()
                     if not b.get("repo"):
                         return self._error(422, "provide a HuggingFace 'repo'")
-                    self._send(200, hf_info(b["repo"], subset=b.get("subset")))
+                    self._send(200, Dataset.hf_info(b["repo"], subset=b.get("subset")))
                 elif parts == ["v1", "datasets", "preview"]:
                     b = self._body()
                     if not b.get("repo"):
                         return self._error(422, "provide a HuggingFace 'repo'")
-                    self._send(200, hf_preview(
+                    self._send(200, Dataset.hf_preview(
                         b["repo"], subset=b.get("subset"),
                         split=b.get("split", "train"), limit=b.get("limit", 8)))
                 elif parts == ["v1", "datasets"]:
