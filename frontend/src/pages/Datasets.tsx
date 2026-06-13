@@ -23,14 +23,42 @@ function Badge({ format }: { format: string }) {
   );
 }
 
+interface PreviewState {
+  title: string; source?: string; format: string;
+  columns: string[]; total: number | null | undefined;
+  rows: Record<string, unknown>[];
+}
+
 export default function Datasets() {
   const [list, setList] = useState<DatasetMeta[]>([]);
   const [search, setSearch] = useState("");
   const [tab, setTab] = useState<"none" | "upload" | "hf">("none");
-  const [localPreview, setLocalPreview] = useState<DatasetMeta | null>(null);
+  const [rowPreview, setRowPreview] = useState<PreviewState | null>(null);
+  const [previewing, setPreviewing] = useState<string | null>(null);
 
   const refresh = () => getDatasets().then((d) => setList(d.datasets)).catch(() => {});
   useEffect(() => { refresh(); }, []);
+
+  async function previewRow(d: DatasetMeta) {
+    setPreviewing(d.dataset_id);
+    setRowPreview(null);
+    try {
+      if (d.source === "hf") {
+        const p = await previewHF(d.repo!, d.subset ?? "default", d.split ?? "train");
+        setRowPreview({ title: "Dataset Preview",
+          source: `Hugging Face (${d.repo} / ${d.subset} / ${d.split})`,
+          format: p.format, columns: p.columns, total: p.total, rows: p.preview });
+      } else {
+        const full = await getDataset(d.dataset_id);
+        setRowPreview({ title: `${full.name} · first rows`, format: full.format,
+          columns: Object.keys(full.preview?.[0] ?? {}), total: full.rows,
+          rows: full.preview ?? [] });
+      }
+    } catch (e) {
+      setRowPreview({ title: "Preview failed", format: "?", columns: [], total: null,
+        rows: [{ error: (e as Error).message }] });
+    } finally { setPreviewing(null); }
+  }
 
   const filtered = list.filter((d) => d.name.toLowerCase().includes(search.toLowerCase()));
 
@@ -103,12 +131,10 @@ export default function Datasets() {
                   onClick={() => { sessionStorage.setItem("pick.dataset", d.dataset_id); window.location.hash = "#train"; }}>
                   Use to train
                 </button>
-                {d.source !== "hf" && (
-                  <button className={btnGhost}
-                    onClick={() => getDataset(d.dataset_id).then(setLocalPreview)}>
-                    Preview
-                  </button>
-                )}
+                <button className={btnGhost} disabled={previewing === d.dataset_id}
+                  onClick={() => previewRow(d)}>
+                  {previewing === d.dataset_id ? "loading…" : "Preview"}
+                </button>
                 <button
                   className="inline-flex items-center rounded-md border border-border bg-card px-2.5 py-2 text-xs text-destructive hover:bg-destructive/10 hover:border-destructive/30 transition-colors"
                   onClick={() => deleteDataset(d.dataset_id).then(refresh)}>
@@ -119,14 +145,8 @@ export default function Datasets() {
           ))}
         </div>
 
-        {localPreview && (
-          <PreviewCard
-            title={`${localPreview.name} · first rows`}
-            format={localPreview.format}
-            columns={Object.keys(localPreview.preview?.[0] ?? {})}
-            total={localPreview.rows}
-            rows={localPreview.preview ?? []}
-            onClose={() => setLocalPreview(null)} />
+        {rowPreview && (
+          <PreviewCard {...rowPreview} onClose={() => setRowPreview(null)} />
         )}
       </div>
     </>
