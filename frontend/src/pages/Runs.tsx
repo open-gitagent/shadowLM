@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { Download, MessagesSquare, Search, Square } from "lucide-react";
 import { apiKey, cancelJob, getJob, getJobs, getLogs, getMetrics } from "../api";
 import type { JobDetail, JobSummary, StepMetric } from "../api";
-import { ChartLegend, LossChart, PageHeader, Sparkline, StatTile, StatusBadge, btnGhost } from "../ui";
+import { LossChart, PageHeader, Sparkline, StatTile, StatusBadge, btnGhost } from "../ui";
 
 export default function Runs({ initialId }: { initialId?: string }) {
   const [jobs, setJobs] = useState<JobSummary[]>([]);
@@ -109,6 +109,7 @@ function RunDetail({ run }: { run: JobSummary }) {
   const [steps, setSteps] = useState<StepMetric[]>([]);
   const [evals, setEvals] = useState<StepMetric[]>([]);
   const [logs, setLogs] = useState<string[]>([]);
+  const [tab, setTab] = useState<"loss" | "logs" | "artifact">("loss");
 
   useEffect(() => {
     let live = true;
@@ -186,40 +187,87 @@ function RunDetail({ run }: { run: JobSummary }) {
           <StatTile label="LR" value={last ? last.lr.toExponential(1) : "—"} />
         </div>
 
-        <section className="rounded-lg border border-border bg-card overflow-hidden">
-          <header className="px-5 py-3 border-b border-border flex items-center justify-between">
-            <div>
-              <h3 className="text-sm font-semibold">Loss curve</h3>
-              <p className="text-xs text-muted-foreground">Raw + EMA overlay · eval points</p>
-            </div>
-            <ChartLegend />
-          </header>
-          <div className="p-5">
-            <LossChart steps={steps} evals={evals} />
+        {/* tabs */}
+        <div className="flex items-center gap-1 border-b border-border">
+          {(["loss", "logs", "artifact"] as const).map((t) => (
+            <button key={t} onClick={() => setTab(t)}
+              className={`px-4 py-2.5 text-sm border-b-2 -mb-px transition-colors capitalize ${
+                tab === t ? "border-primary text-foreground"
+                          : "border-transparent text-muted-foreground hover:text-foreground"}`}>
+              {t === "loss" ? "Loss curves" : t === "logs" ? "Training logs" : "Artifact"}
+              {t === "logs" && job?.status === "running" &&
+                <span className="ml-2 inline-block size-1.5 rounded-full bg-primary animate-pulse" />}
+            </button>
+          ))}
+        </div>
+
+        {tab === "loss" && (
+          <div className="grid lg:grid-cols-2 gap-4">
+            <section className="rounded-lg border border-border bg-card overflow-hidden">
+              <header className="px-5 py-3 border-b border-border">
+                <h3 className="text-sm font-semibold">Training loss</h3>
+                <p className="text-xs text-muted-foreground">raw + EMA overlay</p>
+              </header>
+              <div className="p-5"><LossChart steps={steps} evals={[]} /></div>
+            </section>
+            <section className="rounded-lg border border-border bg-card overflow-hidden">
+              <header className="px-5 py-3 border-b border-border">
+                <h3 className="text-sm font-semibold">Eval loss</h3>
+                <p className="text-xs text-muted-foreground">held-out validation</p>
+              </header>
+              <div className="p-5">
+                {evals.length
+                  ? <LossChart steps={evals} evals={[]} />
+                  : <div className="flex h-[240px] items-center justify-center text-center text-sm text-muted-foreground">
+                      <div>
+                        <div className="font-mono text-xs uppercase tracking-wider opacity-60">No eval data</div>
+                        <div className="mt-1 text-xs opacity-50">Train with a held-out eval split to see this</div>
+                      </div>
+                    </div>}
+              </div>
+            </section>
           </div>
-        </section>
-
-        {logs.length > 0 && <TerminalPanel logs={logs} live={job?.status === "running"} />}
-
-        {job?.error && (
-          <section className="rounded-lg border border-destructive/40 bg-destructive/5 p-5">
-            <h3 className="text-sm font-semibold text-destructive mb-2">Error</h3>
-            <pre className="text-xs font-mono whitespace-pre-wrap text-destructive/90">{job.error}</pre>
-          </section>
         )}
 
-        {job?.checkpoint && (
-          <section className="rounded-lg border border-border bg-card overflow-hidden">
-            <header className="px-5 py-3 border-b border-border">
-              <h3 className="text-sm font-semibold">Artifact</h3>
-            </header>
-            <div className="px-5 py-3 flex items-center justify-between text-sm">
-              <div className="font-mono text-xs text-muted-foreground">{job.checkpoint}</div>
-              <button onClick={downloadAdapter} className="text-xs text-primary hover:underline">
-                Download tar.gz
-              </button>
-            </div>
-          </section>
+        {tab === "logs" && (
+          logs.length
+            ? <TerminalPanel logs={logs} live={job?.status === "running"} />
+            : <div className="rounded-lg border border-border bg-card p-8 text-center text-sm text-muted-foreground">
+                no console output captured for this run
+              </div>
+        )}
+
+        {tab === "artifact" && (
+          <div className="space-y-4">
+            {job?.error && (
+              <section className="rounded-lg border border-destructive/40 bg-destructive/5 p-5">
+                <h3 className="text-sm font-semibold text-destructive mb-2">Error</h3>
+                <pre className="text-xs font-mono whitespace-pre-wrap text-destructive/90">{job.error}</pre>
+              </section>
+            )}
+            {job?.checkpoint ? (
+              <section className="rounded-lg border border-border bg-card overflow-hidden">
+                <header className="px-5 py-3 border-b border-border">
+                  <h3 className="text-sm font-semibold">Trained adapter</h3>
+                </header>
+                <div className="px-5 py-4 flex items-center justify-between gap-4 text-sm">
+                  <div className="min-w-0">
+                    <div className="font-mono text-xs text-muted-foreground break-all">{job.checkpoint}</div>
+                    <div className="text-xs text-muted-foreground mt-1">
+                      load it back: <code className="text-foreground/80">slm.load("{run.base_model}", adapter="…")</code>
+                    </div>
+                  </div>
+                  <button onClick={downloadAdapter} className={btnGhost}>
+                    <Download className="size-3.5" /> tar.gz
+                  </button>
+                </div>
+              </section>
+            ) : !job?.error && (
+              <div className="rounded-lg border border-border bg-card p-8 text-center text-sm text-muted-foreground">
+                no artifact yet — finishes when training succeeds
+              </div>
+            )}
+          </div>
         )}
       </div>
     </div>
