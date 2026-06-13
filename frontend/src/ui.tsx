@@ -95,9 +95,9 @@ export function StatTile({ label, value, sub }: { label: string; value: string; 
 
 // ---- buttons -----------------------------------------------------------------
 export const btnPrimary =
-  "inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors";
+  "inline-flex items-center gap-1.5 whitespace-nowrap rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors";
 export const btnGhost =
-  "inline-flex items-center gap-1.5 rounded-md border border-border bg-card px-3 py-2 text-xs hover:bg-accent transition-colors";
+  "inline-flex items-center gap-1.5 whitespace-nowrap rounded-md border border-border bg-card px-3 py-2 text-xs hover:bg-accent transition-colors";
 
 // ---- status ------------------------------------------------------------------
 const STATUS_MAP: Record<string, { label: string; cls: string; dot: string }> = {
