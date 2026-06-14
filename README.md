@@ -128,7 +128,7 @@ to configure.
 One command — installs the right backend for your machine and opens the studio:
 
 ```bash
-curl -fsSL https://shadowlm.sh/install.sh | sh
+curl -fsSL https://install.shadowlm.sh | sh
 ```
 
 It detects your hardware and installs the matching stack — Apple Silicon → mlx,

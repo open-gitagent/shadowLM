@@ -1,7 +1,7 @@
 #!/bin/sh
 # ShadowLM Trainer — one-command install + studio.
 #
-#   curl -fsSL https://shadowlm.sh/install.sh | sh
+#   curl -fsSL https://install.shadowlm.sh | sh
 #
 # Installs shadowlm into an isolated venv (~/.shadowlm/venv), picks the right
 # training backend for your machine, and opens the studio. Re-run any time to
