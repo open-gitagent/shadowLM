@@ -117,6 +117,7 @@ export default function Train({ methods }: { methods: MethodInfo[] }) {
   const [lrTouched, setLrTouched] = useState(false);
   const [evalSplit, setEvalSplit] = useState(false);
   const [advanced, setAdvanced] = useState(false);
+  const [name, setName] = useState("");
 
   useEffect(() => {
     getDatasets().then((d) => setDatasets(d.datasets));
@@ -185,7 +186,7 @@ export default function Train({ methods }: { methods: MethodInfo[] }) {
     setErr(""); setBusy(true);
     try {
       const out = await submitFinetune({
-        base_model: model, config: buildConfig(), dataset_id: ds,
+        base_model: model, name: name.trim(), config: buildConfig(), dataset_id: ds,
         eval_dataset: useHoldout ? "auto" : null,
         load_in_4bit: false, max_seq_length: parseInt(vals.max_seq_length || "2048") });
       window.location.hash = `#runs/${out.job_id}`;
@@ -351,6 +352,16 @@ export default function Train({ methods }: { methods: MethodInfo[] }) {
           {step === 3 && (
             <section className="rounded-lg border border-border bg-card p-5 space-y-5">
               <div>
+                <label className="text-sm font-semibold mb-1 block">Name this shadow</label>
+                <input value={name} onChange={(e) => setName(e.target.value)}
+                  placeholder={`e.g. ${method ?? "support"}-${(model ?? "").split("/").pop()?.split("-")[0]?.toLowerCase() || "v1"}`}
+                  className="w-full font-mono text-sm" />
+                <p className="text-[11px] text-muted-foreground mt-1.5">
+                  what it'll be called in Runs &amp; the playground — optional, the run id is the fallback.
+                </p>
+              </div>
+
+              <div className="pt-4 border-t border-border">
                 <div className="text-sm font-semibold mb-1">Hyperparameters</div>
                 <p className="text-xs text-muted-foreground">
                   everything <b className="text-foreground">{method ?? "this method"}</b> uses —

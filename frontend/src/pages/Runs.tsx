@@ -38,6 +38,7 @@ export default function Runs({ initialId }: { initialId?: string }) {
     (statusFilter === "all" || r.status === statusFilter) &&
     (filter === "" ||
       r.base_model.toLowerCase().includes(filter.toLowerCase()) ||
+      (r.name || "").toLowerCase().includes(filter.toLowerCase()) ||
       r.job_id.includes(filter)));
   const selected = jobs.find((j) => j.job_id === selectedId) ?? null;
 
@@ -80,7 +81,9 @@ export default function Runs({ initialId }: { initialId?: string }) {
                     ? "bg-accent/50 border-l-2 border-l-primary"
                     : "border-l-2 border-l-transparent"}`}>
                 <div className="flex items-center justify-between gap-2 mb-1.5">
-                  <span className="font-mono text-[11px] text-muted-foreground">{r.job_id.slice(0, 12)}</span>
+                  <span className="font-mono text-[11px] text-muted-foreground truncate">
+                    {r.name?.trim() || r.job_id.slice(0, 12)}
+                  </span>
                   <StatusBadge status={r.status} />
                 </div>
                 <div className="text-sm font-medium truncate">{r.base_model}</div>
@@ -147,6 +150,7 @@ function RunDetail({ run }: { run: JobSummary }) {
         <div className="flex items-start justify-between gap-6 flex-wrap">
           <div>
             <div className="flex items-center gap-3 mb-2">
+              {run.name?.trim() && <span className="text-sm font-semibold text-primary">{run.name.trim()}</span>}
               <span className="font-mono text-xs text-muted-foreground">{run.job_id}</span>
               <StatusBadge status={(job?.status ?? run.status)} />
             </div>

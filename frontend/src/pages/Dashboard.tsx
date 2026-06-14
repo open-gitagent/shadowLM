@@ -124,7 +124,7 @@ export default function Dashboard() {
                 {recent.map((r) => (
                   <tr key={r.job_id} className="hover:bg-accent/30 cursor-pointer"
                       onClick={() => (window.location.hash = `#runs/${r.job_id}`)}>
-                    <td className="px-5 py-3 font-mono text-xs text-muted-foreground">{r.job_id.slice(0, 10)}</td>
+                    <td className="px-5 py-3 font-mono text-xs text-muted-foreground truncate max-w-[160px]">{r.name?.trim() || r.job_id.slice(0, 10)}</td>
                     <td className="px-3 py-3 truncate max-w-[260px]">{(r.base_model || "").split("/").pop()}</td>
                     <td className="px-3 py-3 font-mono text-xs uppercase">{r.method ?? "?"}</td>
                     <td className="px-3 py-3"><StatusBadge status={r.status} /></td>

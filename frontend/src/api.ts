@@ -33,6 +33,7 @@ export interface MethodInfo {
 export interface JobSummary {
   job_id: string;
   base_model: string;
+  name?: string;
   status: "pending" | "running" | "succeeded" | "failed" | "stopped";
   error: string | null;
   final_loss: number | null;

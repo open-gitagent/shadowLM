@@ -43,7 +43,7 @@ export default function Playground() {
   const done = jobs.filter((j) => j.status === "succeeded");
   const adapterJob = done.find((j) => j.job_id === adapter);
   const label = adapter
-    ? `${adapter.slice(0, 8)} · ${adapterJob?.method ?? "finetuned"}`
+    ? (adapterJob?.name?.trim() || `${adapter.slice(0, 8)} · ${adapterJob?.method ?? "finetuned"}`)
     : model.split("/").pop();
 
   const hubRows = useMemo(() => {
@@ -52,8 +52,11 @@ export default function Playground() {
     if (q && !models.some((m) => m.id.toLowerCase() === ql)) rows.push({ id: q.trim() });
     return rows;
   }, [models, q]);
-  const tunedRows = done.filter((j) =>
-    j.job_id.includes(q) || (j.base_model || "").toLowerCase().includes(q.toLowerCase()));
+  const tunedRows = done.filter((j) => {
+    const ql = q.toLowerCase();
+    return j.job_id.includes(q) || (j.name || "").toLowerCase().includes(ql)
+      || (j.base_model || "").toLowerCase().includes(ql);
+  });
 
   function pickHub(id: string) { setModel(id); setAdapter(null); setCompare(false); setPop(false); }
   function pickTuned(j: JobSummary) {
@@ -167,7 +170,7 @@ export default function Playground() {
                       {on ? "●" : "›"}
                     </span>
                     <span className={`truncate flex-1 ${on ? "text-primary" : ""}`}>
-                      {j.job_id.slice(0, 10)} <span className="text-muted-foreground">· {j.method}</span>
+                      {j.name?.trim() || j.job_id.slice(0, 10)} <span className="text-muted-foreground">· {j.method}</span>
                     </span>
                     <span className="text-[11px] text-muted-foreground shrink-0">
                       shadows {(j.base_model || "").split("/").pop()}

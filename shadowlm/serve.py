@@ -54,6 +54,7 @@ _NO_BUILD_PAGE = """<!doctype html><meta charset="utf-8">
 class _Job:
     job_id: str
     base_model: str
+    name: str = ""  # human label for the shadow; falls back to the id in the UI
     status: str = "pending"  # pending | running | succeeded | failed | stopped
     steps: list[dict] = field(default_factory=list)
     evals: list[dict] = field(default_factory=list)
@@ -71,6 +72,7 @@ class _Job:
     def record(self) -> dict:
         """The serializable job record persisted to disk (survives restarts)."""
         return {"job_id": self.job_id, "base_model": self.base_model,
+                "name": self.name,
                 "status": self.status, "method": self.method,
                 "error": self.error, "checkpoint": self.checkpoint,
                 "final_loss": self.final_loss, "created": self.created,
@@ -80,6 +82,7 @@ class _Job:
     @classmethod
     def from_record(cls, d: dict) -> "_Job":
         job = cls(job_id=d["job_id"], base_model=d.get("base_model", "?"),
+                  name=d.get("name", ""),
                   status=d.get("status", "succeeded"), method=d.get("method"),
                   error=d.get("error"), checkpoint=d.get("checkpoint"),
                   final_loss=d.get("final_loss"), created=d.get("created", 0.0))
@@ -377,6 +380,7 @@ class Server:
     def submit(self, payload: dict) -> str:
         job_id = uuid.uuid4().hex[:12]
         job = _Job(job_id=job_id, base_model=payload["base_model"],
+                   name=(payload.get("name") or "").strip(),
                    method=(payload.get("config") or {}).get("method"),
                    created=int(time.time()))
         job._payload = payload
@@ -474,6 +478,7 @@ def make_handler(server: Server, api_key: str | None):
                     jobs = sorted(server.jobs.values(), key=lambda j: j.created)
                 self._send(200, {"jobs": [{
                     "job_id": j.job_id, "base_model": j.base_model,
+                    "name": j.name,
                     "status": j.status, "error": j.error,
                     "final_loss": j.final_loss, "steps": len(j.steps),
                     "method": j.method,

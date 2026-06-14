@@ -105,3 +105,7 @@ release:  ## cut a release: auto-bump patch (or BUMP=minor/major, or V=x.y.z)
 clean:  ## remove build artifacts and caches (keeps the built _static)
 	rm -rf dist build *.egg-info
 	find shadowlm -name __pycache__ -type d -prune -exec rm -rf {} +
+
+
+build:
+	cd frontend && npx tsc -b 2>&1 | head -5 && npm run build 2>&1 | tail -2 && cd ..
