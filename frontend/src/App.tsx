@@ -65,12 +65,13 @@ export default function App() {
       <aside className="w-60 shrink-0 border-r border-sidebar-border bg-sidebar flex flex-col sticky top-0 h-screen">
         <div className="px-5 py-5 border-b border-sidebar-border">
           <a href="#" className="flex items-center gap-2.5">
-            <img src="/logo.png" alt="" className="size-8 rounded-md border border-primary/30" />
+            <img src="/lyzr-mark.png" alt="" className="size-8 rounded-lg" />
             <div className="leading-tight">
               <div className="text-sm font-semibold tracking-tight">ShadowLM</div>
               <div className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">Studio</div>
             </div>
           </a>
+          <div className="mt-2.5 text-[10px] text-muted-foreground">from Lyzr Research Labs</div>
         </div>
         <nav className="flex-1 px-3 py-4 space-y-0.5">
           {NAV.map(({ hash: to, label, icon: Icon }) => {

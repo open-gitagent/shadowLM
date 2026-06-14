@@ -562,13 +562,13 @@ def make_handler(server: Server, api_key: str | None):
                 else:
                     self._error(404, "no such asset")
                 return
-            if parts == ["logo.png"]:
+            if len(parts) == 1 and parts[0].endswith(".png") and ".." not in parts[0]:
                 try:
                     from importlib import resources  # noqa: PLC0415
-                    blob = (resources.files("shadowlm") / "_assets" / "logo.png").read_bytes()
+                    blob = (resources.files("shadowlm") / "_assets" / parts[0]).read_bytes()
                     self._send(200, blob, ctype="image/png")
                 except (FileNotFoundError, ModuleNotFoundError):
-                    self._error(404, "no logo bundled")
+                    self._error(404, "no such image bundled")
                 return
             if not self._authed():
                 return
