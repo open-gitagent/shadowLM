@@ -12,14 +12,14 @@
 <details>
   <summary>Table of contents</summary>
 
+- [What ShadowLM is for](#what-shadowlm-is-for)
 - [Why ShadowLM Trainer](#why-shadowlm-trainer)
 - [Backends](#backends)
 - [Training methods](#training-methods)
 - [Install & run](#install--run)
 - [The shadow accelerator](#the-shadow-accelerator)
-- [Training parameters](#training-parameters)
 - [API surface](#api-surface)
-- [Layout](#layout)
+- [The blocks you get today](#the-blocks-you-get-today)
 - [The road ahead](#the-road-ahead)
 - [License](#license)
 
@@ -51,12 +51,31 @@ model.save("out/", fmt="adapter")                            # ship it
 Change `method="lora"` to `qlora`, `dora`, `full`, `dpo`, `grpo`, `bitfit`,
 `prompt`, `adapter`, `more`… and nothing else changes. That's the whole idea.
 
-**Why "shadow"?** Because the model you train here is meant to *shadow* the
-frontier model behind your agent: `slm.capture()` records the traffic the big
-rented model handles, you fine-tune a small open model on it, run it in the
-big one's shadow until it performs identically — then switch, and own the
-weights. The SDK is that engine; [ShadowLM Studio](#shadowlm-studio) will run
-the full loop.
+### What ShadowLM is for
+
+Your agent runs on a rented frontier model — general, costly, someone else's.
+ShadowLM moves **one task** from that model to a small one **you own**, without
+touching the agent. The agent keeps calling the same endpoint; only the model
+behind it changes.
+
+The thing you end up with is **a shadowLM**: a small fine-tuned model that
+*shadows* the frontier model — runs in its shadow on real traffic until it does
+the job as well, then takes over. Lower cost, data stays inside, the weights are
+yours.
+
+The loop:
+
+1. **Baseline** — your agent runs on the frontier model.
+2. **Capture & fine-tune** — `slm.capture()` records the real traffic; you train a
+   small open model on it (12 methods).
+3. **Shadow mode** — the shadowLM runs behind the same agent, answering in
+   parallel so you can compare it to the frontier model on live traffic.
+4. **Gradual switch** — once it holds up, route traffic to the shadowLM. You own it.
+
+This repo is the **engine** for that loop — capture, the 12 methods, judge-scored
+trajectory training, the studio, run records. The orchestration that wraps it
+into a one-click migration (decision inbox, eval gates, the shadow router) is
+[ShadowLM Studio](#the-road-ahead).
 
 ## Why ShadowLM Trainer
 
@@ -475,42 +494,52 @@ tests/
                        each cell: train → reload → generate → continue training
 ```
 
+## The blocks you get today
+
+Every piece of the migration loop's *engine* is here and working — these are the
+building blocks the orchestration just wires together:
+
+| Block | What it does | Where |
+|-------|--------------|-------|
+| **Capture proxy** | drop-in OpenAI endpoint that records your agent's real traffic and reconstructs multi-turn episodes — the agent runs unchanged | `slm.capture()` |
+| **12 training methods** | LoRA · QLoRA · DoRA · full · CPT · DPO · GRPO · MoRE · BitFit · prompt · p-tuning · adapter — one argument switches them | `method=` |
+| **Judge → trajectories** | score whole episodes with an LLM judge, train with trajectory-GRPO or DPO — no reward math | `judge_group`, `TrajectoryGroup` |
+| **MoRE** | facts fused into attention — near-zero-hallucination recall | `method="more"` |
+| **Any hardware** | CUDA · TPU · Trainium · Intel · Apple · CPU — whatever HF accelerate targets | `device=` |
+| **Shadow accelerator** | 4-bit, grad checkpointing, flash-attn, fused optimizer, optional Liger kernels — logged, never silent | `accelerator="shadow"` |
+| **Remote backend + server** | train on a GPU box or fleet over one JSON protocol; metrics stream back | `backend="remote"`, `shadowlm serve` |
+| **The studio** | datasets (upload + HF) → models → guided train → live runs (charts + console) → playground compare | `shadowlm serve` → `/` |
+| **CLI** | finetune / runs / plot / chat / export / methods from the shell | `shadowlm …` |
+| **Run records** | every run persists config, metrics, console, and the adapter — survives restarts | `~/.shadowlm` |
+| **Own the weights** | adapters/merged export; runs on your box; nothing leaves | `model.save()` |
+
+You can run the whole **capture → judge → train → own a shadowLM** loop with
+these today.
+
 ## The road ahead
 
-The SDK is the core, and it ships first. Everything that follows wraps this
-exact API — nothing gets reimplemented.
+What turns the blocks into a one-click migration product — **ShadowLM Studio**,
+the hosted tier — wraps this exact API, nothing reimplemented:
 
-### ShadowLM Studio
+- **Decision inbox** — the captured traces, surfaced for human approve/correct
+  into chosen-vs-rejected pairs (today: auto-scored by an LLM judge).
+- **Eval gates** — advance only when quality holds *and* savings beat cost:
+  task-level evals + cost-per-task on top of the run records.
+- **Shadow router** — the capture proxy, evolved: run the shadowLM in parallel
+  behind the live agent, then shift traffic % from frontier → owned.
+- **Fleet + teams** — GPU job queue, shared run history, dataset/adapter registry.
 
-The multi-user destination: a web service and remote-GPU workers wrapping this
-SDK. Studio runs the enterprise migration loop end to end — baseline on the
-rented frontier model → collect & fine-tune → **shadow mode** (your model runs
-behind the same agent until it's proven) → gradual switch.
+Status:
 
-- **Job queue → CUDA workers** — submit from the browser or the SDK, train on
-  the GPU pool; the torch backend is already the production path.
-- **Live training charts** — streamed over the `on_step` / `on_eval` hooks that
-  exist today; `run.series()` is the data feed.
-- **Team run history** — the `run.json` records every finetune already writes,
-  made shared and searchable.
-- **Dataset + adapter registry** — upload, version, and one-click attach what
-  the SDK's `Dataset` and `load(adapter=)` already understand.
-- **Eval gates** — advance traffic only when quality holds and the savings beat
-  the cost: task-level evals and cost-per-task, built on the SDK's run records.
-
-Current status:
-
-- [x] SDK: datasets → finetune → inference on mlx / torch
+- [x] SDK: datasets → finetune → inference on mlx / torch / remote
 - [x] 12 training methods incl. MoRE, trajectory GRPO, judge rewards
-- [x] Train/eval split with held-out validation loss
-- [x] Shadow accelerator (grad checkpointing, flash-attn, fused optim, 4-bit,
-      optional Liger fused kernels)
-- [x] Harness capture proxy — OpenAI-compatible, SSE streaming, trajectory
-      reconstruction
-- [x] ShadowLM CLI — finetune / runs / plot / chat / methods from the shell
-- [x] Remote backend + reference server — `backend="remote"`, live metric
-      streaming, artifact download; the protocol Studio implements at scale
-- [ ] ShadowLM Studio
+- [x] Capture proxy — record any harness, reconstruct trajectories
+- [x] Shadow accelerator (4-bit, grad checkpointing, flash-attn, fused optim,
+      optional Liger kernels)
+- [x] Any-hardware (CUDA / TPU / Trainium / Intel / Apple / CPU)
+- [x] Remote backend + reference server + the studio dashboard
+- [x] ShadowLM CLI
+- [ ] Studio orchestration — decision inbox · eval gates · shadow router · switch
 
 ## Contributing
 
