@@ -1,9 +1,11 @@
 // Model library — catalog + recently trained, search and family filters.
 import { useEffect, useMemo, useState } from "react";
-import { Cpu, Search } from "lucide-react";
-import { getModels } from "../api";
-import type { CatalogModel } from "../api";
+import { Check, Cpu, Download, Loader2, Search } from "lucide-react";
+import { downloadModel, getDownloads, getModels } from "../api";
+import type { CatalogModel, DownloadStatus } from "../api";
 import { PageHeader, btnGhost, btnPrimary } from "../ui";
+
+const fmtGB = (b?: number) => (b ? `${(b / 1e9).toFixed(b < 1e9 ? 2 : 1)} GB` : "");
 
 function pick(kind: "model" | "adapter", value: string, dest: string) {
   sessionStorage.setItem(`pick.${kind}`, value);
@@ -26,6 +28,7 @@ export default function Models() {
   const [search, setSearch] = useState("");
   const [family, setFamily] = useState("all");
   const [free, setFree] = useState("");
+  const [downloads, setDownloads] = useState<Record<string, DownloadStatus>>({});
 
   useEffect(() => {
     getModels().then((m) => {
@@ -34,6 +37,22 @@ export default function Models() {
       setBackend(m.server_backend);
     }).catch(() => {});
   }, []);
+
+  // poll download progress while anything is in flight
+  useEffect(() => {
+    const tick = () => getDownloads().then((d) => setDownloads(d.downloads)).catch(() => {});
+    tick();
+    const t = setInterval(tick, 1500);
+    return () => clearInterval(t);
+  }, []);
+
+  async function startDownload(id: string) {
+    setDownloads((d) => ({ ...d, [id]: { state: "downloading", total: 0 } }));
+    try {
+      const st = await downloadModel(id);
+      setDownloads((d) => ({ ...d, [id]: st }));
+    } catch { /* the poller will pick up state */ }
+  }
 
   const all: CatalogModel[] = useMemo(
     () => [...recent.map((id) => ({ id, note: "recently trained here" })), ...catalog],
@@ -76,14 +95,19 @@ export default function Models() {
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-          {filtered.map((m) => (
+          {filtered.map((m) => {
+            const dl = downloads[m.id];
+            const onDisk = m.cached || dl?.state === "ready";
+            const downloading = dl?.state === "downloading";
+            return (
             <div key={m.id}
                  className="rounded-lg border border-border bg-card p-4 hover:border-primary/40 transition-colors">
               <div className="flex items-start justify-between mb-2">
                 <div className="size-8 rounded-md bg-primary/10 border border-primary/20 grid place-items-center">
                   <Cpu className="size-4 text-primary" />
                 </div>
-                <span className="flex gap-1.5">
+                <span className="flex gap-1.5 items-center">
+                  {onDisk && <span className="text-[9px] font-mono uppercase px-1.5 py-0.5 rounded border border-success/40 text-success inline-flex items-center gap-1"><Check className="size-2.5" />on disk</span>}
                   {m.dev && <span className="text-[9px] font-mono uppercase px-1.5 py-0.5 rounded border border-success/40 text-success">dev pick</span>}
                   {m.gated && <span className="text-[9px] font-mono uppercase px-1.5 py-0.5 rounded border border-warning/40 text-warning">HF token</span>}
                 </span>
@@ -93,6 +117,27 @@ export default function Models() {
                 {m.id}{m.params ? ` · ${m.params}` : ""}
               </div>
               {m.note && <div className="text-xs text-muted-foreground mt-0.5">{m.note}</div>}
+
+              {downloading && (
+                <div className="mt-3">
+                  <div className="h-1.5 rounded-full bg-muted overflow-hidden">
+                    <div className="h-full bg-primary transition-all"
+                         style={{ width: `${dl.pct ?? 5}%` }} />
+                  </div>
+                  <div className="mt-1 text-[10px] font-mono text-muted-foreground flex items-center gap-1">
+                    <Loader2 className="size-3 animate-spin" />
+                    {dl.pct != null
+                      ? `${dl.pct}% · ${fmtGB(dl.downloaded)} / ${fmtGB(dl.total)}`
+                      : "downloading…"}
+                  </div>
+                </div>
+              )}
+              {dl?.state === "error" && (
+                <div className="mt-2 text-[10px] font-mono text-destructive truncate" title={dl.error ?? ""}>
+                  ⚠ {dl.error}
+                </div>
+              )}
+
               <div className="mt-4 flex gap-2">
                 <button onClick={() => pick("model", m.id, "#train")}
                         className={`${btnPrimary} flex-1 justify-center`}>
@@ -101,9 +146,15 @@ export default function Models() {
                 <button onClick={() => pick("model", m.id, "#playground")} className={btnGhost}>
                   Try
                 </button>
+                {!onDisk && !downloading && (
+                  <button onClick={() => startDownload(m.id)} className={btnGhost} title="prefetch weights to disk">
+                    <Download className="size-3.5" />
+                  </button>
+                )}
               </div>
             </div>
-          ))}
+            );
+          })}
         </div>
       </div>
     </>

@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import {
   Box, Cpu, Database, ExternalLink, History, LayoutDashboard, MessagesSquare,
 } from "lucide-react";
-import { apiKey, getHealth, getMethods } from "./api";
+import { apiKey, getHealth, getMethods, getSettings, setHfToken } from "./api";
 import type { MethodInfo } from "./api";
 import Dashboard from "./pages/Dashboard";
 import Datasets from "./pages/Datasets";
@@ -37,13 +37,20 @@ export default function App() {
   const [health, setHealth] = useState("connecting…");
   const [methods, setMethods] = useState<MethodInfo[]>([]);
   const [key, setKey] = useState(apiKey.get());
+  const [hf, setHf] = useState("");
+  const [hfSet, setHfSet] = useState(false);
 
   useEffect(() => {
     getHealth()
       .then((h) => setHealth(`backend=${h.backend} · v${h.version}`))
       .catch((e) => setHealth(`⚠ ${e.message}`));
     getMethods().then((m) => setMethods(m.methods)).catch(() => {});
+    getSettings().then((s) => setHfSet(s.hf_token_set)).catch(() => {});
   }, []);
+
+  async function saveHfToken() {
+    try { setHfSet((await setHfToken(hf)).hf_token_set); setHf(""); } catch { /* ignore */ }
+  }
 
   const page =
     section === "models" ? <Models /> :
@@ -88,6 +95,18 @@ export default function App() {
                  title="Sent as Bearer auth; stored in this browser only"
                  className="w-full text-xs"
                  onChange={(e) => { setKey(e.target.value); apiKey.set(e.target.value); }} />
+          <div className="flex gap-1.5">
+            <input type="password" value={hf}
+                   placeholder={hfSet ? "HF token ✓ set — replace" : "HF token (gated models)"}
+                   title="Hugging Face token for gated/private models; stored on the server"
+                   className="w-full text-xs"
+                   onKeyDown={(e) => { if (e.key === "Enter") saveHfToken(); }}
+                   onChange={(e) => setHf(e.target.value)} />
+            <button onClick={saveHfToken} disabled={!hf.trim()}
+                    className="text-[11px] px-2 rounded-md border border-sidebar-border text-muted-foreground hover:text-foreground disabled:opacity-40">
+              save
+            </button>
+          </div>
           <a href="https://github.com/open-gitagent/shadowLM" target="_blank" rel="noreferrer"
              className="w-full flex items-center gap-3 px-3 py-2 rounded-md text-xs text-muted-foreground hover:bg-sidebar-accent/40 transition-colors no-underline">
             <ExternalLink className="size-3.5" />

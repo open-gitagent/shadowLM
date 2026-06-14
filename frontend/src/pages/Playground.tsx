@@ -276,7 +276,7 @@ export default function Playground() {
           </button>
         </div>
         <div className="mx-auto mt-1.5 max-w-3xl text-center text-[10px] text-muted-foreground/70">
-          runs on this server · nothing leaves it
+          runs shadow
         </div>
       </div>
     </div>

@@ -263,8 +263,78 @@ class Server:
         self._model_lock = threading.Lock()    # one model computation at a time
         self._infer_cache: dict[tuple, object] = {}  # (model, adapter) → Model
         self._infer_cache_cap = 3  # compare mode alternates base ↔ adapter
+        self._downloads: dict[str, dict] = {}  # model id → prefetch status
+        self._settings_path = work_root / "settings.json"
+        self._load_settings()
         self._load_jobs()
         threading.Thread(target=self._worker, daemon=True).start()
+
+    # ---- settings: HF token for gated/private models --------------------------
+    def _load_settings(self) -> None:
+        from . import hub  # noqa: PLC0415
+
+        try:
+            saved = json.loads(self._settings_path.read_text())
+        except (OSError, ValueError):
+            saved = {}
+        # a persisted token wins; otherwise honor one already in the environment
+        if saved.get("hf_token") or os.environ.get("HF_TOKEN"):
+            hub.set_token(saved.get("hf_token") or os.environ.get("HF_TOKEN"))
+
+    def set_hf_token(self, token: str | None) -> None:
+        from . import hub  # noqa: PLC0415
+
+        hub.set_token(token)
+        try:
+            self._settings_path.write_text(json.dumps({"hf_token": token or ""}))
+        except OSError:
+            pass  # in-memory still works for this process
+
+    # ---- model downloads: prefetch weights, report progress ------------------
+    def start_download(self, model: str) -> dict:
+        from . import hub  # noqa: PLC0415
+
+        with self._lock:
+            cur = self._downloads.get(model)
+            if cur and cur.get("state") == "downloading":
+                return cur
+            if hub.is_cached(model):
+                self._downloads[model] = {"state": "ready", "total": hub.cached_bytes(model)}
+                return self._downloads[model]
+            self._downloads[model] = {"state": "downloading", "total": 0, "error": None}
+
+        def run() -> None:
+            token = os.environ.get("HF_TOKEN")
+            try:
+                total = hub.repo_bytes(model, token)
+                with self._lock:
+                    self._downloads[model]["total"] = total
+                hub.download(model, token)
+                with self._lock:
+                    self._downloads[model] = {"state": "ready",
+                                              "total": total or hub.cached_bytes(model)}
+            except Exception as e:  # noqa: BLE001 — surfaced to the UI
+                with self._lock:
+                    self._downloads[model] = {"state": "error",
+                                              "error": f"{type(e).__name__}: {e}"}
+
+        threading.Thread(target=run, daemon=True).start()
+        return self._downloads[model]
+
+    def download_status(self) -> dict:
+        from . import hub  # noqa: PLC0415
+
+        with self._lock:
+            items = list(self._downloads.items())
+        out = {}
+        for model, st in items:
+            d = dict(st)
+            if d.get("state") == "downloading":  # live progress from disk
+                d["downloaded"] = hub.cached_bytes(model)
+                total = d.get("total") or 0
+                d["pct"] = round(100 * d["downloaded"] / total, 1) if total else None
+            out[model] = d
+        return out
 
     # ---- persistence: jobs survive restarts ----------------------------------
     def _persist(self, job: _Job) -> None:
@@ -504,13 +574,20 @@ def make_handler(server: Server, api_key: str | None):
                     rows = server.datasets.rows(parts[2]) or []
                     self._send(200, {**meta, "preview": rows[:8]})
             elif parts == ["v1", "models"]:
+                from . import hub as _hub  # noqa: PLC0415
                 recent = []
                 with server._lock:
                     for j in server.jobs.values():
                         if j.base_model not in recent:
                             recent.append(j.base_model)
-                self._send(200, {"catalog": _MODEL_CATALOG, "recent": recent,
+                catalog = [{**m, "cached": _hub.is_cached(m["id"])} for m in _MODEL_CATALOG]
+                self._send(200, {"catalog": catalog, "recent": recent,
                                  "server_backend": server.backend_name})
+            elif parts == ["v1", "models", "downloads"]:
+                self._send(200, {"downloads": server.download_status()})
+            elif parts == ["v1", "settings"]:
+                from . import hub as _hub  # noqa: PLC0415
+                self._send(200, {"hf_token_set": _hub.has_token()})
             elif parts == ["v1", "methods"]:
                 from . import methods as _methods  # noqa: PLC0415
                 self._send(200, {"methods": [{
@@ -564,6 +641,16 @@ def make_handler(server: Server, api_key: str | None):
                     if not body.get("dataset") and not body.get("dataset_id"):
                         return self._error(422, "provide 'dataset' rows or a 'dataset_id'")
                     self._send(202, {"job_id": server.submit(body)})
+                elif parts == ["v1", "models", "download"]:
+                    b = self._body()
+                    if not b.get("model"):
+                        return self._error(422, "provide a 'model' id")
+                    self._send(202, server.start_download(b["model"]))
+                elif parts == ["v1", "settings"]:
+                    b = self._body()
+                    server.set_hf_token((b.get("hf_token") or "").strip() or None)
+                    from . import hub as _hub  # noqa: PLC0415
+                    self._send(200, {"hf_token_set": _hub.has_token()})
                 elif parts == ["v1", "datasets", "hf-info"]:
                     b = self._body()
                     if not b.get("repo"):

@@ -20,6 +20,15 @@ export interface CatalogModel {
   note?: string;
   gated?: boolean;
   dev?: boolean;
+  cached?: boolean;
+}
+
+export interface DownloadStatus {
+  state: "downloading" | "ready" | "error";
+  total?: number;
+  downloaded?: number;
+  pct?: number | null;
+  error?: string | null;
 }
 
 export interface MethodInfo {
@@ -116,6 +125,13 @@ export const deleteDataset = (id: string) =>
   api<{ ok: boolean }>(`/v1/datasets/${id}`, { method: "DELETE" });
 export const getModels = () =>
   api<{ catalog: CatalogModel[]; recent: string[]; server_backend: string }>("/v1/models");
+export const getDownloads = () =>
+  api<{ downloads: Record<string, DownloadStatus> }>("/v1/models/downloads");
+export const downloadModel = (model: string) =>
+  api<DownloadStatus>("/v1/models/download", { method: "POST", body: JSON.stringify({ model }) });
+export const getSettings = () => api<{ hf_token_set: boolean }>("/v1/settings");
+export const setHfToken = (hf_token: string) =>
+  api<{ hf_token_set: boolean }>("/v1/settings", { method: "POST", body: JSON.stringify({ hf_token }) });
 export const getMethods = () => api<{ methods: MethodInfo[] }>("/v1/methods");
 export const getJobs = () => api<{ jobs: JobSummary[] }>("/v1/finetunes");
 export const getJob = (id: string) => api<JobDetail>(`/v1/finetunes/${id}`);
