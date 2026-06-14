@@ -91,11 +91,15 @@ export default function Playground() {
              messages: h, max_new_tokens: 256, temperature: 0.7, top_p: 0.95 })
         .then((o) => o.text).catch((e: Error) => `⚠ ${e.message}`);
     try {
-      const reply = await ask(adapter, history);
-      setMsgs((m) => [...m, { role: "assistant", content: reply }]);
+      // fire shadow + base together; each pane fills in as its reply lands
+      const shadowTurn = ask(adapter, history)
+        .then((r) => setMsgs((m) => [...m, { role: "assistant", content: r }]));
       if (duet) {
-        const b = await ask(null, [...base, { role: "user", content: text }]);
-        setBase((m) => [...m, { role: "assistant", content: b }]);
+        const baseTurn = ask(null, [...base, { role: "user", content: text }])
+          .then((r) => setBase((m) => [...m, { role: "assistant", content: r }]));
+        await Promise.all([shadowTurn, baseTurn]);
+      } else {
+        await shadowTurn;
       }
     } finally { setBusy(false); }
   }
