@@ -235,6 +235,7 @@ export default function Playground() {
               base <span className="text-foreground">{model.split("/").pop()}</span>
               {adapter && <> &nbsp;·&nbsp; shadow <span className="text-primary">{adapter.slice(0, 8)}</span></>}
             </p>
+            <div className="text-[10px] text-muted-foreground/70">from Lyzr Research Labs</div>
           </div>
         ) : compare && adapter ? (
           <div className="mx-auto max-w-4xl py-6 space-y-4">
