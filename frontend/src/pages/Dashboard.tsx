@@ -1,8 +1,8 @@
 // The workspace at a glance — all real data from the server.
 import { useEffect, useState } from "react";
-import { ArrowUpRight, Box, Cpu, Database, Zap } from "lucide-react";
+import { ArrowUpRight, Cpu, Database, Zap } from "lucide-react";
 import { getDatasets, getJobs, getMetrics, getModels } from "../api";
-import type { DatasetMeta, JobSummary, MethodInfo } from "../api";
+import type { DatasetMeta, JobSummary } from "../api";
 import { PageHeader, Sparkline, StatusBadge, btnPrimary } from "../ui";
 
 function Stat({ label, value, sub, icon: Icon }: {
@@ -21,7 +21,7 @@ function Stat({ label, value, sub, icon: Icon }: {
   );
 }
 
-export default function Dashboard({ methods }: { methods: MethodInfo[] }) {
+export default function Dashboard() {
   const [jobs, setJobs] = useState<JobSummary[]>([]);
   const [datasets, setDatasets] = useState<DatasetMeta[]>([]);
   const [recentModels, setRecentModels] = useState(0);
@@ -65,9 +65,8 @@ export default function Dashboard({ methods }: { methods: MethodInfo[] }) {
       />
 
       <div className="px-8 py-6 space-y-6 max-w-[1400px]">
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <Stat label="Models" value={String(recentModels)} sub="catalog + trained here" icon={Cpu} />
-          <Stat label="Training methods" value={String(methods.length)} sub="LoRA → DPO → MoRE" icon={Box} />
           <Stat label="Active runs" value={String(running.length)} sub={running.length ? "currently training" : "idle"} icon={Zap} />
           <Stat label="Datasets" value={String(datasets.length)} sub="uploaded to this server" icon={Database} />
         </div>

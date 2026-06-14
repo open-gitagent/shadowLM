@@ -54,7 +54,7 @@ export default function App() {
     section === "playground" ? <Playground /> :
     section === "runs" ? <Runs initialId={arg} /> :
     section === "recipes" ? <Recipes methods={methods} /> :
-    <Dashboard methods={methods} />;
+    <Dashboard />;
 
   return (
     <div className="flex min-h-screen w-full">
