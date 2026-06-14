@@ -9,12 +9,6 @@ import { Dots } from "../ui";
 
 type Msg = { role: "user" | "assistant"; content: string };
 
-function greeting(): string {
-  const h = new Date().getHours();
-  return h < 5 ? "Working late" : h < 12 ? "Good morning"
-    : h < 18 ? "Good afternoon" : "Good evening";
-}
-
 export default function Playground() {
   const [models, setModels] = useState<CatalogModel[]>([]);
   const [jobs, setJobs] = useState<JobSummary[]>([]);
@@ -96,15 +90,16 @@ export default function Playground() {
       {/* model selector */}
       <div className="relative flex items-center gap-3 px-6 py-4">
         <button onClick={() => { setPop((v) => !v); setQ(""); }}
-          className="flex items-center gap-1.5 text-base font-semibold hover:text-primary transition-colors">
-          {adapter ? <span className="text-primary">{label}</span> : label}
+          className="flex items-center gap-2 text-base font-semibold hover:text-primary transition-colors">
+          <span className="font-mono text-primary">{adapter ? "shadow❯" : "base❯"}</span>
+          <span className={adapter ? "text-primary" : ""}>{label}</span>
           <ChevronDown className="size-4 text-muted-foreground" />
         </button>
         {adapter && (
           <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer">
             <input type="checkbox" checked={compare} className="w-auto"
                    onChange={(e) => setCompare(e.target.checked)} />
-            compare to base
+            shadow mode <span className="text-muted-foreground/60">(base ↔ shadow)</span>
           </label>
         )}
         {msgs.length > 0 && (
@@ -117,9 +112,10 @@ export default function Playground() {
             <div className="flex rounded-full bg-muted/40 p-1 mb-2.5">
               {(["hub", "tuned"] as const).map((t) => (
                 <button key={t} onClick={() => setTab(t)}
-                  className={`flex-1 rounded-full py-1.5 text-sm transition-colors ${
-                    tab === t ? "bg-card shadow-sm text-foreground" : "text-muted-foreground"}`}>
-                  {t === "hub" ? "Hub models" : "Fine-tuned"}
+                  className={`flex-1 rounded-full py-1.5 text-sm font-mono transition-colors ${
+                    tab === t ? "bg-card shadow-sm " + (t === "tuned" ? "text-primary" : "text-foreground")
+                              : "text-muted-foreground"}`}>
+                  {t === "hub" ? "base — open models" : "shadow — your runs"}
                 </button>
               ))}
             </div>
@@ -166,12 +162,19 @@ export default function Playground() {
       <div ref={logRef} className="flex-1 overflow-auto scrollbar-thin px-6"
            onClick={() => pop && setPop(false)}>
         {empty ? (
-          <div className="flex h-full flex-col items-center justify-center gap-3">
-            <img src="/logo.png" alt="" className="size-12 rounded-xl border border-border" />
-            <h1 className="text-3xl font-semibold tracking-tight">{greeting()}</h1>
-            <p className="text-sm text-muted-foreground">
-              Talk to <b className="text-foreground">{label}</b>
-              {adapter ? " — your finetuned shadowLM" : ""}.
+          <div className="flex h-full flex-col items-center justify-center gap-4 text-center">
+            <div className="size-16 overflow-hidden rounded-2xl border border-primary/30 shadow-[0_0_56px_#e5484d44,0_0_16px_#e5484d33]">
+              <img src="/logo.png" alt="" className="size-full" />
+            </div>
+            <div>
+              <div className="mb-1.5 font-mono text-[11px] uppercase tracking-[0.25em] text-primary">slm♥ playground</div>
+              <h1 className="text-2xl font-semibold tracking-tight">
+                {adapter ? "Does it cast the same shadow?" : "Talk to a model"}
+              </h1>
+            </div>
+            <p className="font-mono text-sm text-muted-foreground">
+              base <span className="text-foreground">{model.split("/").pop()}</span>
+              {adapter && <> &nbsp;·&nbsp; shadow <span className="text-primary">{adapter.slice(0, 8)}</span></>}
             </p>
           </div>
         ) : compare && adapter ? (
@@ -190,7 +193,9 @@ export default function Playground() {
           <div className="mx-auto max-w-3xl py-6 space-y-4">
             {msgs.map((m, i) => m.role === "user"
               ? <UserBubble key={i} text={m.content} />
-              : <div key={i} className="text-sm leading-relaxed whitespace-pre-wrap">{m.content}</div>)}
+              : <div key={i} className="text-sm leading-relaxed whitespace-pre-wrap">
+                  <span className="font-mono font-bold text-primary">slm♥ › </span>{m.content}
+                </div>)}
             {busy && <Dots />}
           </div>
         )}
@@ -198,11 +203,12 @@ export default function Playground() {
 
       {/* input */}
       <div className="px-6 pb-6 pt-2">
-        <div className="mx-auto flex max-w-3xl items-end gap-2 rounded-[26px] border border-border bg-card py-2.5 pl-5 pr-2.5 shadow-sm focus-within:border-primary/50 transition-colors">
+        <div className="mx-auto flex max-w-3xl items-end gap-2.5 rounded-[26px] border border-border bg-card py-2.5 pl-5 pr-2.5 shadow-sm focus-within:border-primary/50 focus-within:shadow-[0_0_0_1px_#e5484d33] transition-all">
+          <span className="select-none py-1.5 font-mono text-sm font-bold text-primary">you ›</span>
           <textarea ref={inputRef} value={input} rows={1}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
-            placeholder="Ask anything…"
+            placeholder="say something to the shadow…"
             className="flex-1 resize-none border-0 bg-transparent py-1.5 text-sm focus:outline-none max-h-40" />
           <button onClick={send} disabled={!input.trim() || busy}
             className="grid size-9 shrink-0 place-items-center rounded-full bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-40 transition-colors">
