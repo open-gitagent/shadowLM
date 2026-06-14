@@ -148,6 +148,8 @@ export default function Train({ methods }: { methods: MethodInfo[] }) {
   const extraParams = methodParams(methodInfo);
   const advParams = advancedParams(methodInfo);
   const configParams = allParams(methodInfo);
+  // held-out eval only applies when it's meaningful and not already provided
+  const useHoldout = evalSplit && methodInfo?.trainer !== "grpo" && !meta?.eval_split;
   const ready = Boolean(ds && model && method);
   const canNext = [Boolean(ds), Boolean(model), Boolean(method), true][step];
 
@@ -184,7 +186,7 @@ export default function Train({ methods }: { methods: MethodInfo[] }) {
     try {
       const out = await submitFinetune({
         base_model: model, config: buildConfig(), dataset_id: ds,
-        eval_dataset: evalSplit ? "auto" : null,
+        eval_dataset: useHoldout ? "auto" : null,
         load_in_4bit: false, max_seq_length: parseInt(vals.max_seq_length || "2048") });
       window.location.hash = `#runs/${out.job_id}`;
     } catch (ex) { setErr((ex as Error).message); setBusy(false); }
@@ -208,7 +210,7 @@ export default function Train({ methods }: { methods: MethodInfo[] }) {
       lines[lines.length - 1] += " \\";
       lines.push(headline[p.key] ? `  ${headline[p.key]} ${raw}` : `  --set ${p.key}=${raw}`);
     }
-    if (evalSplit) { lines[lines.length - 1] += " \\"; lines.push("  --eval auto"); }
+    if (useHoldout) { lines[lines.length - 1] += " \\"; lines.push("  --eval auto"); }
     return lines.join("\n");
   }, [model, method, vals, configParams, evalSplit]);
 
@@ -375,11 +377,17 @@ export default function Train({ methods }: { methods: MethodInfo[] }) {
                 {advanced && <ParamGrid params={advParams} vals={vals} setVal={setVal} />}
               </div>
 
-              <label className="flex items-center gap-2 text-sm text-muted-foreground pt-4 border-t border-border">
-                <input type="checkbox" checked={evalSplit} className="w-auto"
-                       onChange={(e) => setEvalSplit(e.target.checked)} />
-                hold out 10% for eval — see overfitting, not just training loss
-              </label>
+              {meta?.eval_split ? (
+                <div className="pt-4 border-t border-border text-sm text-muted-foreground">
+                  eval uses the dataset's own <b className="text-foreground">{meta.eval_split}</b> split
+                </div>
+              ) : methodInfo?.trainer === "grpo" ? null : (
+                <label className="flex items-center gap-2 text-sm text-muted-foreground pt-4 border-t border-border">
+                  <input type="checkbox" checked={evalSplit} className="w-auto"
+                         onChange={(e) => setEvalSplit(e.target.checked)} />
+                  hold out 10% for eval — see overfitting, not just training loss
+                </label>
+              )}
             </section>
           )}
 
