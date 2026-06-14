@@ -1,8 +1,8 @@
-// Playground — a clean chat. Pick a model from the "Select model" popover
-// (Hub models / Fine-tuned tabs), then talk. Pick a finetuned run and a quiet
-// "compare to base" toggle appears — the shadow answers next to the base.
+// Playground — a clean chat. The model picker is a command palette (slm❯): one
+// search across base open models AND your shadows, grouped. Pick a shadow and a
+// quiet "shadow mode" toggle appears — the shadow answers next to its base.
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowUp, Check, ChevronDown, Search } from "lucide-react";
+import { ArrowUp, ChevronDown } from "lucide-react";
 import { chat, getJobs, getModels } from "../api";
 import type { CatalogModel, JobSummary } from "../api";
 import { Dots } from "../ui";
@@ -16,7 +16,6 @@ export default function Playground() {
   const [adapter, setAdapter] = useState<string | null>(null);
   const [compare, setCompare] = useState(false);
   const [pop, setPop] = useState(false);
-  const [tab, setTab] = useState<"hub" | "tuned">("hub");
   const [q, setQ] = useState("");
   const [input, setInput] = useState("");
   const [msgs, setMsgs] = useState<Msg[]>([]);
@@ -107,56 +106,83 @@ export default function Playground() {
                   onClick={() => { setMsgs([]); setBase([]); }}>clear</button>
         )}
 
-        {pop && (
-          <div className="absolute left-6 top-14 z-20 w-[520px] rounded-2xl border border-border bg-card p-3 shadow-[0_24px_64px_#0003]">
-            <div className="flex rounded-full bg-muted/40 p-1 mb-2.5">
-              {(["hub", "tuned"] as const).map((t) => (
-                <button key={t} onClick={() => setTab(t)}
-                  className={`flex-1 rounded-full py-1.5 text-sm font-mono transition-colors ${
-                    tab === t ? "bg-card shadow-sm " + (t === "tuned" ? "text-primary" : "text-foreground")
-                              : "text-muted-foreground"}`}>
-                  {t === "hub" ? "base — open models" : "shadow — your runs"}
-                </button>
-              ))}
-            </div>
-            <div className="relative mb-1">
-              <Search className="size-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+      </div>
+
+      {/* model picker — a command palette, not a dropdown: one search across
+          base models AND your shadows, grouped, terminal-styled. */}
+      {pop && (
+        <div className="fixed inset-0 z-50 flex items-start justify-center bg-background/55 backdrop-blur-sm px-4"
+             onMouseDown={() => setPop(false)}>
+          <div onMouseDown={(e) => e.stopPropagation()}
+               className="mt-[11vh] w-full max-w-2xl rounded-xl border border-border bg-card shadow-[0_32px_80px_#0004] overflow-hidden">
+            {/* prompt line */}
+            <div className="flex items-center gap-2.5 px-4 py-3.5 border-b border-border font-mono">
+              <span className="text-primary font-bold select-none">slm❯</span>
               <input autoFocus value={q} onChange={(e) => setQ(e.target.value)}
-                placeholder={tab === "hub" ? "Search models, or type any HF id" : "Search your runs"}
-                className="w-full pl-9 pr-3 py-2 text-sm bg-background" />
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") setPop(false);
+                  if (e.key === "Enter") {
+                    if (hubRows[0] && (!tunedRows.length || q)) pickHub(hubRows[0].id);
+                    else if (tunedRows[0]) pickTuned(tunedRows[0]);
+                  }
+                }}
+                placeholder="filter base models or your shadows · paste any HF id"
+                className="flex-1 border-0 bg-transparent p-0 text-sm focus:outline-none focus:ring-0" />
+              <kbd className="text-[10px] text-muted-foreground border border-border rounded px-1.5 py-0.5">esc</kbd>
             </div>
-            <div className="max-h-80 overflow-auto scrollbar-thin">
-              {tab === "hub" ? hubRows.map((m) => (
-                <button key={m.id} onClick={() => pickHub(m.id)}
-                  className="w-full flex items-center justify-between gap-3 px-3 py-2.5 rounded-lg text-sm hover:bg-accent/40 text-left">
-                  <span className="truncate flex items-center gap-2">
-                    {m.id === model && !adapter && <Check className="size-3.5 text-primary shrink-0" />}
-                    {m.id}
-                  </span>
-                  <span className="text-[11px] text-muted-foreground shrink-0">
-                    {m.dev ? "dev pick" : m.gated ? "HF token" : m.params ?? m.note ?? ""}
-                  </span>
-                </button>
-              )) : tunedRows.length ? tunedRows.map((j) => (
-                <button key={j.job_id} onClick={() => pickTuned(j)}
-                  className="w-full flex items-center justify-between gap-3 px-3 py-2.5 rounded-lg text-sm hover:bg-accent/40 text-left">
-                  <span className="truncate flex items-center gap-2">
-                    {j.job_id === adapter && <Check className="size-3.5 text-primary shrink-0" />}
-                    {j.job_id.slice(0, 10)} · {j.method}
-                  </span>
-                  <span className="text-[11px] text-muted-foreground shrink-0">
-                    {(j.base_model || "").split("/").pop()}
-                  </span>
-                </button>
-              )) : (
-                <div className="px-3 py-6 text-center text-xs text-muted-foreground">
-                  no finetuned runs yet — train one first
+
+            <div className="max-h-[58vh] overflow-auto scrollbar-thin py-1.5">
+              {/* base models */}
+              <div className="px-4 pt-2 pb-1 flex items-center gap-2">
+                <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">base · open models</span>
+                <span className="h-px flex-1 bg-border" />
+              </div>
+              {hubRows.map((m) => {
+                const on = m.id === model && !adapter;
+                return (
+                  <button key={m.id} onClick={() => pickHub(m.id)}
+                    className="group w-full flex items-center gap-3 px-4 py-2 text-sm hover:bg-accent/40 text-left font-mono">
+                    <span className={`w-3 shrink-0 ${on ? "text-primary" : "text-muted-foreground/40 group-hover:text-primary"}`}>
+                      {on ? "●" : "›"}
+                    </span>
+                    <span className={`truncate flex-1 ${on ? "text-primary" : ""}`}>{m.id}</span>
+                    <span className="text-[11px] text-muted-foreground shrink-0">
+                      {m.dev ? "dev pick" : m.gated ? "HF token" : m.params ?? m.note ?? ""}
+                    </span>
+                  </button>
+                );
+              })}
+
+              {/* shadows */}
+              <div className="px-4 pt-3 pb-1 flex items-center gap-2">
+                <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-primary">shadow · your runs</span>
+                <span className="h-px flex-1 bg-border" />
+              </div>
+              {tunedRows.length ? tunedRows.map((j) => {
+                const on = j.job_id === adapter;
+                return (
+                  <button key={j.job_id} onClick={() => pickTuned(j)}
+                    className="group w-full flex items-center gap-3 px-4 py-2 text-sm hover:bg-accent/40 text-left font-mono">
+                    <span className={`w-3 shrink-0 ${on ? "text-primary" : "text-muted-foreground/40 group-hover:text-primary"}`}>
+                      {on ? "●" : "›"}
+                    </span>
+                    <span className={`truncate flex-1 ${on ? "text-primary" : ""}`}>
+                      {j.job_id.slice(0, 10)} <span className="text-muted-foreground">· {j.method}</span>
+                    </span>
+                    <span className="text-[11px] text-muted-foreground shrink-0">
+                      shadows {(j.base_model || "").split("/").pop()}
+                    </span>
+                  </button>
+                );
+              }) : (
+                <div className="px-4 py-3 font-mono text-xs text-muted-foreground/70">
+                  no shadows yet — <a href="#train" className="text-primary">train one</a> to see it here
                 </div>
               )}
             </div>
           </div>
-        )}
-      </div>
+        </div>
+      )}
 
       {/* transcript or greeting */}
       <div ref={logRef} className="flex-1 overflow-auto scrollbar-thin px-6"
