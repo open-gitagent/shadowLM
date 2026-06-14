@@ -1,7 +1,7 @@
 // The studio shell — cream sidebar, lucide icons, hash router.
 import { useEffect, useState } from "react";
 import {
-  Box, Cpu, Database, ExternalLink, History, LayoutDashboard, MessagesSquare, BookOpen,
+  Box, Cpu, Database, ExternalLink, History, LayoutDashboard, MessagesSquare,
 } from "lucide-react";
 import { apiKey, getHealth, getMethods } from "./api";
 import type { MethodInfo } from "./api";
@@ -11,7 +11,6 @@ import Models from "./pages/Models";
 import Train from "./pages/Train";
 import Runs from "./pages/Runs";
 import Playground from "./pages/Playground";
-import Recipes from "./pages/Recipes";
 
 function useHash(): string {
   const [h, setH] = useState(window.location.hash);
@@ -24,13 +23,12 @@ function useHash(): string {
 }
 
 const NAV = [
-  { hash: "", label: "Dashboard", icon: LayoutDashboard },
-  { hash: "models", label: "Models", icon: Box },
-  { hash: "datasets", label: "Datasets", icon: Database },
-  { hash: "train", label: "Train", icon: Cpu },
   { hash: "playground", label: "Playground", icon: MessagesSquare },
+  { hash: "", label: "Dashboard", icon: LayoutDashboard },
+  { hash: "datasets", label: "Datasets", icon: Database },
+  { hash: "models", label: "Models", icon: Box },
+  { hash: "train", label: "Train", icon: Cpu },
   { hash: "runs", label: "Runs", icon: History },
-  { hash: "recipes", label: "Recipes", icon: BookOpen },
 ] as const;
 
 export default function App() {
@@ -53,7 +51,6 @@ export default function App() {
     section === "train" ? <Train methods={methods} /> :
     section === "playground" ? <Playground /> :
     section === "runs" ? <Runs initialId={arg} /> :
-    section === "recipes" ? <Recipes methods={methods} /> :
     <Dashboard />;
 
   return (

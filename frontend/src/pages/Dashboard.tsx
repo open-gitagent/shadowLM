@@ -106,8 +106,7 @@ export default function Dashboard() {
           </div>
           {recent.length === 0 ? (
             <div className="px-5 py-8 text-sm text-muted-foreground text-center">
-              No runs yet — start one from <a href="#train" className="text-primary">Train</a>,
-              or pick a <a href="#recipes" className="text-primary">recipe</a>.
+              No runs yet — start one from <a href="#train" className="text-primary">Train</a>.
             </div>
           ) : (
             <table className="w-full text-sm">
