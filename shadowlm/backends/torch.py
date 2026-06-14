@@ -24,6 +24,14 @@ from .base import Backend, Callbacks, FinetuneResult
 _REQUIRED = ("torch", "transformers", "trl", "peft", "datasets")
 
 
+def _save_kwargs(config) -> dict:
+    """HF/trl Trainer args for periodic checkpoints — shared by every trl path
+    (SFT, DPO, GRPO, MoRE) so `save_steps` writes `checkpoint-<step>/` dirs."""
+    if config.save_steps is not None:
+        return {"save_strategy": "steps", "save_steps": config.save_steps}
+    return {}
+
+
 def _has(mod: str) -> bool:
     return importlib.util.find_spec(mod) is not None
 
@@ -332,6 +340,7 @@ class TorchBackend(Backend):
             use_cpu=(self.device == "cpu"),
             disable_tqdm=True,
             report_to=list(config.report_to),
+            **_save_kwargs(config),
         )
         callbacks.log(
             f"[torch:{self.device}] grpo on {self.model_name} · {len(rows)} prompts · "
@@ -426,6 +435,8 @@ class TorchBackend(Backend):
             f"{len(examples)} trajectories · {iters} iters · lr {config.learning_rate:g}"
         )
         self.model.train()
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
         start = _time.time()
         accum = max(1, config.gradient_accumulation_steps)
         last_loss = None
@@ -444,12 +455,13 @@ class TorchBackend(Backend):
                 callbacks.step(Metric(step=it, loss=last_loss,
                                       lr=config.learning_rate,
                                       elapsed_s=round(_time.time() - start, 2)))
+            if config.save_steps and it % config.save_steps == 0 and it < iters:
+                self.model.save_pretrained(str(out / f"checkpoint-{it}"))  # HF layout
+                callbacks.log(f"[torch] checkpoint @ step {it}")
             if callbacks.stopped():
                 break
         self._restore_inference_state()
 
-        out = Path(output_dir)
-        out.mkdir(parents=True, exist_ok=True)
         self.model.save_pretrained(str(out))
         self.tokenizer.save_pretrained(str(out))
         callbacks.log(f"[torch:{self.device}] done · final pg loss {last_loss} · {out}")
@@ -581,6 +593,7 @@ class TorchBackend(Backend):
             use_cpu=(self.device == "cpu"),
             disable_tqdm=True,
             report_to=[],
+            **_save_kwargs(config),
         )
         callbacks.log(
             f"[torch:{self.device}] more on {self.model_name} · {len(dataset)} facts · "
@@ -812,6 +825,7 @@ class TorchBackend(Backend):
             use_cpu=(self.device == "cpu"),
             disable_tqdm=True,
             report_to=list(config.report_to),
+            **_save_kwargs(config),
         )
         with quiet_backend():
             trainer = DPOTrainer(

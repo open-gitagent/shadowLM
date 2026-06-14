@@ -525,6 +525,8 @@ class MLXBackend(Backend):
             f"[mlx:{self.device}] trajectory-grpo on {self.model_name} · "
             f"{len(examples)} trajectories · {iters} iters · lr {config.learning_rate:g}"
         )
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
         start = _time.time()
         grads_acc = None
         last_loss = None
@@ -541,11 +543,13 @@ class MLXBackend(Backend):
                 callbacks.step(Metric(step=it, loss=last_loss,
                                       lr=float(opt.learning_rate),
                                       elapsed_s=round(_time.time() - start, 2)))
+            if config.save_steps and it % config.save_steps == 0 and it < iters:
+                mx.save_safetensors(str(out / f"{it:07d}_adapters.safetensors"),
+                                    dict(tree_flatten(model.trainable_parameters())))
+                callbacks.log(f"[mlx] checkpoint @ step {it}")
             if callbacks.stopped():
                 break
 
-        out = Path(output_dir)
-        out.mkdir(parents=True, exist_ok=True)
         mx.save_safetensors(str(out / "adapters.safetensors"),
                             dict(tree_flatten(model.trainable_parameters())))
         self._write_adapter_config(out, config, num_layers)
