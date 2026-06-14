@@ -118,6 +118,7 @@ export default function Train({ methods }: { methods: MethodInfo[] }) {
     () => Object.fromEntries([...CORE, ...OPTIMIZER].map((p) => [p.key, p.def])));
   const [lrTouched, setLrTouched] = useState(false);
   const [evalSplit, setEvalSplit] = useState(false);
+  const [evalPct, setEvalPct] = useState("10");
   const [advanced, setAdvanced] = useState(false);
   const [name, setName] = useState("");
 
@@ -189,7 +190,7 @@ export default function Train({ methods }: { methods: MethodInfo[] }) {
     try {
       const out = await submitFinetune({
         base_model: model, name: name.trim(), config: buildConfig(), dataset_id: ds,
-        eval_dataset: useHoldout ? "auto" : null,
+        eval_dataset: useHoldout ? `${evalPct}%` : null,
         load_in_4bit: false, max_seq_length: parseInt(vals.max_seq_length || "2048") });
       window.location.hash = `#runs/${out.job_id}`;
     } catch (ex) { setErr((ex as Error).message); setBusy(false); }
@@ -213,9 +214,9 @@ export default function Train({ methods }: { methods: MethodInfo[] }) {
       lines[lines.length - 1] += " \\";
       lines.push(headline[p.key] ? `  ${headline[p.key]} ${raw}` : `  --set ${p.key}=${raw}`);
     }
-    if (useHoldout) { lines[lines.length - 1] += " \\"; lines.push("  --eval auto"); }
+    if (useHoldout) { lines[lines.length - 1] += " \\"; lines.push(`  --eval ${evalPct}%`); }
     return lines.join("\n");
-  }, [model, method, vals, configParams, evalSplit]);
+  }, [model, method, vals, configParams, evalSplit, evalPct]);
 
   const summaryVal = (k: string) => (vals[k] ?? "").trim();
 
@@ -395,11 +396,22 @@ export default function Train({ methods }: { methods: MethodInfo[] }) {
                   eval uses the dataset's own <b className="text-foreground">{meta.eval_split}</b> split
                 </div>
               ) : methodInfo?.trainer === "grpo" ? null : (
-                <label className="flex items-center gap-2 text-sm text-muted-foreground pt-4 border-t border-border">
-                  <input type="checkbox" checked={evalSplit} className="w-auto"
-                         onChange={(e) => setEvalSplit(e.target.checked)} />
-                  hold out 10% for eval — see overfitting, not just training loss
-                </label>
+                <div className="pt-4 border-t border-border space-y-2">
+                  <label className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <input type="checkbox" checked={evalSplit} className="w-auto"
+                           onChange={(e) => setEvalSplit(e.target.checked)} />
+                    hold out a slice for eval — watch for overfitting, not just training loss
+                  </label>
+                  {evalSplit && (
+                    <div className="flex items-center gap-2 pl-6 text-sm text-muted-foreground">
+                      hold out
+                      <input type="number" min={1} max={50} value={evalPct}
+                             onChange={(e) => setEvalPct(e.target.value)}
+                             className="w-16 text-center font-mono" />
+                      % of the data for evaluation
+                    </div>
+                  )}
+                </div>
               )}
             </section>
           )}
@@ -439,7 +451,7 @@ export default function Train({ methods }: { methods: MethodInfo[] }) {
                   <SummaryRow key={p.key} label={p.label}
                     value={summaryVal(p.key) || p.def} />
                 ))}
-                <SummaryRow label="Eval" value={evalSplit ? "10% held out" : "off"} />
+                <SummaryRow label="Eval" value={evalSplit ? `${evalPct}% held out` : "off"} />
               </div>
               <div className="px-4 pb-4 pt-2 space-y-2">
                 <button onClick={start} disabled={!ready || busy}

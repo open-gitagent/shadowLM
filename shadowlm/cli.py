@@ -205,7 +205,7 @@ def finetune(
     lora_alpha: Annotated[Optional[int], typer.Option("--lora-alpha")] = None,
     max_seq_length: Annotated[Optional[int], typer.Option("--max-seq-length")] = None,
     seed: Annotated[Optional[int], typer.Option()] = None,
-    eval: Annotated[Optional[str], typer.Option(help='eval dataset, or "auto" to hold out 10%')] = None,
+    eval: Annotated[Optional[str], typer.Option(help='eval dataset, or "auto"/"15%"/0.15 to hold out a fraction')] = None,
     save: Annotated[Optional[str], typer.Option(help="also export the adapter to DIR")] = None,
     output_dir: Annotated[Optional[str], typer.Option("--output-dir")] = None,
     backend: Annotated[Optional[str], typer.Option(help="auto | mlx | torch")] = None,

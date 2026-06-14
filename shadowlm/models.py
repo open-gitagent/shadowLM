@@ -32,6 +32,29 @@ def _default_output_dir(base_model: str) -> str:
     return str(RUNS_ROOT / f"{slug}-{int(time.time())}")
 
 
+def _eval_holdout(spec) -> float | None:
+    """Fraction to hold out of training data for eval, or None when `spec` is an
+    explicit dataset (or nothing). Accepts "auto" (0.1), a "15%" string, or a
+    float in (0, 1). Raises for an out-of-range number."""
+    if spec is None or isinstance(spec, bool):
+        return None
+    if spec == "auto":
+        return 0.1
+    if isinstance(spec, (int, float)):
+        frac = float(spec)
+    elif isinstance(spec, str):
+        s = spec.strip()
+        try:
+            frac = float(s[:-1]) / 100 if s.endswith("%") else float(s)
+        except ValueError:
+            return None  # a non-numeric string — treat as a dataset path/spec
+    else:
+        return None
+    if not 0 < frac < 1:
+        raise ValueError(f"eval hold-out must be a fraction in (0, 1), got {spec!r}")
+    return frac
+
+
 _TOOL_CALL_RE = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.DOTALL)
 
 
@@ -109,7 +132,7 @@ class Model:
         dataset: Dataset | list[dict],
         *,
         method: str = "lora",
-        eval_dataset: Dataset | list[dict] | str | None = None,
+        eval_dataset: Dataset | list[dict] | str | float | None = None,
         eval_steps: int | None = None,
         reward_fns: list | None = None,
         on_step: StepCallback | None = None,
@@ -128,7 +151,8 @@ class Model:
 
         Pass `eval_dataset` (and optionally `eval_steps`) to evaluate on a held-out
         set during training; eval loss lands in `run.eval_metrics` / `run.eval_loss`.
-        `eval_dataset="auto"` splits a small portion (10%) off the training data.
+        To carve the eval set out of the training data, pass `"auto"` (10%), a
+        percent like `"15%"`, or a fraction in (0, 1) such as `0.15`.
         Extra keyword args (`max_steps`, `learning_rate`, `lora_r`, ...) override the
         `TrainConfig` defaults. Pass `on_step`/`on_eval` to observe metrics live.
         """
@@ -142,9 +166,13 @@ class Model:
             dataset = Dataset.from_list(weighted_rows(dataset), name="trajectories")
         if not isinstance(dataset, Dataset):
             dataset = Dataset.from_list(list(dataset))
-        if isinstance(eval_dataset, str):
-            if eval_dataset != "auto":
-                raise ValueError(f"eval_dataset={eval_dataset!r} — expected a Dataset, rows, or 'auto'")
+        holdout = _eval_holdout(eval_dataset)  # "auto"/"15%"/0.15 → a fraction
+        if holdout is not None:
+            eval_dataset = None  # split off from the training data below
+        elif isinstance(eval_dataset, str):
+            raise ValueError(
+                f"eval_dataset={eval_dataset!r} — expected a Dataset, rows, 'auto', "
+                "a percent like '15%', or a fraction in (0, 1)")
         elif eval_dataset is not None and not isinstance(eval_dataset, Dataset):
             eval_dataset = Dataset.from_list(list(eval_dataset))
         if verbose:
@@ -157,8 +185,8 @@ class Model:
             config.learning_rate = spec.default_learning_rate
         if eval_steps is not None:
             config.eval_steps = eval_steps
-        if eval_dataset == "auto":
-            dataset, eval_dataset = dataset.split(test_size=0.1, seed=config.seed)
+        if holdout is not None:
+            dataset, eval_dataset = dataset.split(test_size=holdout, seed=config.seed)
         output_dir = output_dir or _default_output_dir(self.name)
         run = TrainingRun(
             config=config,

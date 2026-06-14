@@ -287,6 +287,7 @@ class Server:
 
         from .ascii import _HEART, _NAME  # noqa: PLC0415
         from .backends import Callbacks, select_backend  # noqa: PLC0415
+        from .models import _eval_holdout  # noqa: PLC0415
 
         while True:
             job_id = self.queue.get()
@@ -304,19 +305,22 @@ class Server:
                 print(_HEART); print(_NAME)
                 print("Starting training session...\n")
                 payload = job._payload  # attached at submit time
+                # "auto"/"15%"/0.15 → carve a hold-out; anything else is an
+                # explicit eval set (or the dataset's own split)
+                holdout = _eval_holdout(payload.get("eval_dataset"))
                 # dataset by reference (dashboard — local or HF) or inline rows (SDK)
                 if payload.get("dataset_id"):
                     ds = self.datasets.resolve(payload["dataset_id"])
                     payload["dataset"] = {"rows": ds.rows, "format": ds.format}
-                    # the dataset's own eval split wins unless the user asked
+                    # the dataset's own eval split is used unless the user asked
                     # for an automatic hold-out
-                    if payload.get("eval_dataset") != "auto":
+                    if holdout is None:
                         ev = self.datasets.resolve_eval(payload["dataset_id"])
                         if ev is not None:
                             payload["eval_dataset"] = {"rows": ev.rows, "format": ev.format}
-                if payload.get("eval_dataset") == "auto":
+                if holdout is not None:
                     full = _rebuild_dataset(payload["dataset"])
-                    train, ev = full.split(test_size=0.1)
+                    train, ev = full.split(test_size=holdout)
                     payload["dataset"] = {"rows": train.rows, "format": train.format}
                     payload["eval_dataset"] = {"rows": ev.rows, "format": ev.format}
                 with self._model_lock:
