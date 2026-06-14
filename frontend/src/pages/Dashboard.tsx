@@ -31,7 +31,6 @@ export default function Dashboard({ methods }: { methods: MethodInfo[] }) {
     const tick = () => {
       getJobs().then(async ({ jobs }) => {
         setJobs(jobs);
-        // sparkline data for the most recent few runs
         const want = jobs.slice(0, 6);
         const entries = await Promise.all(want.map(async (j) => {
           try {
@@ -144,28 +143,6 @@ export default function Dashboard({ methods }: { methods: MethodInfo[] }) {
               </tbody>
             </table>
           )}
-        </section>
-
-        <section>
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="text-sm font-semibold">Training methods</h2>
-            <span className="text-xs text-muted-foreground font-mono">{methods.length} registered</span>
-          </div>
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
-            {methods.map((m) => (
-              <div key={m.name}
-                   className="rounded-md border border-border bg-card p-3 hover:border-primary/40 transition-colors">
-                <div className="flex items-center justify-between">
-                  <div className="text-sm font-semibold">{m.name}</div>
-                  <span className="text-[9px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded border border-border text-muted-foreground">
-                    {m.trainer}
-                  </span>
-                </div>
-                <div className="text-xs text-muted-foreground mt-1 line-clamp-2">{m.description}</div>
-                <div className="mt-2 font-mono text-[10px] text-muted-foreground">lr {m.default_lr}</div>
-              </div>
-            ))}
-          </div>
         </section>
       </div>
     </>

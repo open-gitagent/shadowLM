@@ -266,6 +266,7 @@ Prefer picking parts? Each extra is independent:
 | `[mlx]` | the local-dev backend (`mlx-lm`) |
 | `[preference]` | dpo / grpo on the mlx backend (`mlx-lm-lora`) |
 | `[retrieval]` | the `more` method — fact index (`sentence-transformers`) |
+| `[kernels]` | fused Triton kernels on NVIDIA (Liger, Apache-2.0) |
 | `[mlx-all]` | everything for the local dev loop |
 
 To run the examples, grab the repo:
@@ -335,11 +336,17 @@ whichever backend is active and turns on the speed/memory optimizations that are
 
 - gradient checkpointing (trade compute for VRAM on bigger models)
 - flash-attention-2 (on CUDA, when available)
-- a fused optimizer
+- a fused 8-bit optimizer
+- 4-bit QLoRA quantization (`load_in_4bit=True`)
+- **fused Triton kernels** via [Liger](https://github.com/linkedin/Liger-Kernel)
+  (Apache-2.0) — RoPE, RMSNorm, SwiGLU, fused cross-entropy — when you install
+  `pip install 'shadowlm[kernels]'` on an NVIDIA box
 
 Modes: `"auto"` (default — enable what helps at the current size), `"shadow"`
 (force all on), `"none"` (off). It is honest — it logs exactly what it enabled and
-no-ops when an optimization wouldn't help.
+no-ops when an optimization isn't available. ShadowLM rides the PyTorch / HF
+stack and integrates proven optimizations rather than shipping its own GPU
+kernels — no magic speed multipliers, just the standard wins, turned on safely.
 
 ## Training parameters
 
@@ -496,7 +503,8 @@ Current status:
 - [x] SDK: datasets → finetune → inference on mlx / torch
 - [x] 12 training methods incl. MoRE, trajectory GRPO, judge rewards
 - [x] Train/eval split with held-out validation loss
-- [x] Shadow accelerator (gradient checkpointing, flash-attn, fused optim)
+- [x] Shadow accelerator (grad checkpointing, flash-attn, fused optim, 4-bit,
+      optional Liger fused kernels)
 - [x] Harness capture proxy — OpenAI-compatible, SSE streaming, trajectory
       reconstruction
 - [x] ShadowLM CLI — finetune / runs / plot / chat / methods from the shell

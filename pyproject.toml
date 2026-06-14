@@ -74,6 +74,11 @@ torch = [
     "accelerate>=0.33",
     "torch>=2.3",
 ]
+# Fused Triton kernels (Liger, Apache-2.0) — extra speed/VRAM on NVIDIA.
+# Optional: the shadow accelerator uses them when present, no-ops otherwise.
+kernels = [
+    "liger-kernel>=0.4",
+]
 # The full package for a CUDA/CPU box: training + retrieval + CLI.
 all = [
     "shadowlm[torch,retrieval,cli]",

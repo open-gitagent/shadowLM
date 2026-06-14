@@ -27,6 +27,7 @@ class ShadowPlan:
     grad_checkpoint: bool = False
     flash_attention: bool = False
     fused_optimizer: bool = False
+    fused_kernels: bool = False  # Liger fused Triton kernels (RoPE/RMSNorm/…)
     enabled: list[str] = field(default_factory=list)
 
     @property
@@ -38,6 +39,11 @@ class ShadowPlan:
         if not self.enabled:
             return "[shadow] no extra optimizations needed at this size"
         return "[shadow] enabled: " + ", ".join(self.enabled)
+
+
+def _has(mod: str) -> bool:
+    import importlib.util  # noqa: PLC0415
+    return importlib.util.find_spec(mod) is not None
 
 
 def plan(mode: str, *, backend: str, n_layers: int = 0, has_flash: bool = False) -> ShadowPlan:
@@ -67,4 +73,9 @@ def plan(mode: str, *, backend: str, n_layers: int = 0, has_flash: bool = False)
             p.enabled.append("gradient checkpointing")
         p.fused_optimizer = True
         p.enabled.append("fused optimizer")
+        # Liger fused Triton kernels (Apache-2.0) when installed — real speed/VRAM
+        # win on NVIDIA. Optional: `pip install shadowlm[kernels]`. No-ops elsewhere.
+        if _has("liger_kernel"):
+            p.fused_kernels = True
+            p.enabled.append("fused kernels (liger)")
     return p

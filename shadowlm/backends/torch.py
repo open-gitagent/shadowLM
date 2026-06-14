@@ -155,6 +155,8 @@ class TorchBackend(Backend):
         )
         if self.accelerator != "none":
             callbacks.log(shadow.note)
+        if shadow.fused_kernels:
+            self._apply_liger(callbacks)
 
         # The method spec drives base requirements and the trainable surface —
         # no branching on method names here.
@@ -690,6 +692,19 @@ class TorchBackend(Backend):
             callbacks.log(f"[torch] bottleneck adapters (r={config.lora_r}) on {wrapped} layers")
         else:
             raise RuntimeError(f"torch backend has no attach path for adapter kind {adapter!r}")
+
+    def _apply_liger(self, callbacks) -> None:
+        """Patch the loaded model with Liger's fused Triton kernels (Apache-2.0).
+        CUDA/Triton only; falls back cleanly when unavailable or unsupported."""
+        if self.device != "cuda":
+            callbacks.log("[shadow] liger kernels need a CUDA GPU — skipping")
+            return
+        try:
+            from liger_kernel.transformers import (  # noqa: PLC0415
+                _apply_liger_kernel_to_instance)
+            _apply_liger_kernel_to_instance(model=self.model)
+        except Exception as e:  # noqa: BLE001 — model arch may be unsupported
+            callbacks.log(f"[shadow] liger not applied ({e}); continuing without")
 
     def _enable_checkpointable_inputs(self) -> None:
         """Gradient checkpointing needs an input that requires grad; peft does
