@@ -125,8 +125,19 @@ to configure.
 
 ## Install
 
-`pip install 'shadowlm[all]'` gives you everything on a CUDA/CPU box. Each extra
-is independent:
+One command — installs the right backend for your machine and opens the studio:
+
+```bash
+curl -fsSL https://install.shadowlm.sh | sh
+```
+
+It sets up an isolated env in `~/.shadowlm/venv` (Apple Silicon → mlx, else the
+CUDA/CPU torch stack), then launches `shadowlm serve` at `http://127.0.0.1:8329`.
+Re-run any time to upgrade. Override with `SHADOWLM_EXTRAS=cli` (UI only),
+`SHADOWLM_PORT=…`, or `SHADOWLM_NO_SERVE=1` (install without launching).
+
+Or with pip — `pip install 'shadowlm[all]'` gives you everything on a CUDA/CPU
+box. Each extra is independent:
 
 | extra | adds |
 |-------|------|
