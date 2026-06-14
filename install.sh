@@ -30,15 +30,37 @@ for c in python3.13 python3.12 python3.11 python3.10 python3 python; do
 done
 [ -n "$PY" ] || err "Python 3.10+ is required. Install it (e.g. brew install python) and re-run."
 
-# 2. pick the backend extras for this machine ---------------------------------
-EXTRAS="${SHADOWLM_EXTRAS:-}"
+# 2. detect the hardware and pick the matching stack --------------------------
+# Like the SDK's runtime backend=auto, but at install time so the right wheels
+# land: Apple Silicon -> mlx; NVIDIA -> torch + Liger kernels; else torch CPU.
+OS=$(uname -s); ARCH=$(uname -m)
+EXTRAS="${SHADOWLM_EXTRAS:-}"; DEVICE=""; NOTE=""
 if [ -z "$EXTRAS" ]; then
-  if [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ]; then
-    EXTRAS="mlx-all"      # Apple Silicon — the native mlx dev loop
+  if [ "$OS" = "Darwin" ] && [ "$ARCH" = "arm64" ]; then
+    EXTRAS="mlx-all"
+    DEVICE="Apple Silicon GPU · mlx (Metal)"
+  elif command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi >/dev/null 2>&1; then
+    GPU=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)
+    CAP=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1)
+    EXTRAS="all,kernels"          # torch stack + Liger fused kernels (NVIDIA)
+    DEVICE="NVIDIA ${GPU:-GPU} · CUDA${CAP:+ (sm $CAP)}"
+    # flash-attn-2 / bf16 want Ampere+ (sm 80); the shadow accelerator no-ops below it
+    case "$CAP" in
+      8.*|9.*|1[0-9].*) NOTE="flash-attn-2 + bf16 available — for flash-attn run: pip install flash-attn" ;;
+      "") : ;;
+      *) NOTE="GPU is pre-Ampere (sm $CAP) — 4-bit/grad-checkpointing on, flash-attn/bf16 off" ;;
+    esac
+  elif command -v rocminfo >/dev/null 2>&1; then
+    EXTRAS="all"
+    DEVICE="AMD ROCm GPU · torch"
+    NOTE="install a ROCm torch build if needed: pip install torch --index-url https://download.pytorch.org/whl/rocm6.0"
   else
-    EXTRAS="all"          # Linux/other — the CUDA/CPU torch stack
+    EXTRAS="all"
+    DEVICE="CPU — no GPU detected · torch (CPU)"
   fi
 fi
+[ -n "$DEVICE" ] && say "detected: ${dim}${DEVICE}${off}"
+[ -n "$NOTE" ] && say "${dim}${NOTE}${off}"
 
 # 3. install into an isolated venv (idempotent; upgrades on re-run) ------------
 say "using $($PY --version 2>&1)"
