@@ -223,9 +223,8 @@ export default function Playground() {
            onClick={() => pop && setPop(false)}>
         {empty ? (
           <div className="flex h-full flex-col items-center justify-center gap-4 text-center">
-            <div className="size-16 overflow-hidden rounded-2xl border border-primary/30 shadow-[0_0_56px_#e5484d44,0_0_16px_#e5484d33]">
-              <img src="/logo.png" alt="" className="size-full" />
-            </div>
+            <img src="/logo.png" alt=""
+                 className="size-28 [filter:drop-shadow(0_0_40px_#e5484d55)_drop-shadow(0_0_14px_#e5484d44)]" />
             <div>
               <div className="mb-1.5 font-mono text-[11px] uppercase tracking-[0.25em] text-primary">slm♥ playground</div>
               <h1 className="text-2xl font-semibold tracking-tight">
