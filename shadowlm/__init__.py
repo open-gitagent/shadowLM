@@ -15,8 +15,9 @@ datasets → finetune → inference. mlx on Apple Silicon, torch on CUDA (or CPU
 — accelerated by the shadow layer.
 """
 
-from . import methods, runs
+from . import checkpoints, methods, runs
 from .capture import CaptureProxy, capture
+from .checkpoints import Checkpoint
 from .data import Dataset
 from .models import Model, Reply, load
 from .rl import Trajectory, TrajectoryGroup, judge_group
@@ -27,6 +28,8 @@ __version__ = "0.2.1"
 __all__ = [
     "CaptureProxy",
     "capture",
+    "Checkpoint",
+    "checkpoints",
     "Dataset",
     "Model",
     "Reply",

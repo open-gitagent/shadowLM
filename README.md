@@ -78,6 +78,7 @@ The whole **capture → judge → train → own a shadowLM** loop runs on these:
 | **MoRE** | facts fused into attention — near-zero-hallucination recall | `method="more"` |
 | **Any hardware** | CUDA · TPU · Trainium · Intel · Apple · CPU (whatever HF accelerate targets) | `device=` |
 | **Shadow accelerator** | 4-bit, grad checkpointing, flash-attn, fused optimizer, optional Liger kernels — logged, never silent | `accelerator="shadow"` |
+| **Checkpoints** | save every N steps, then load or A/B any version — `step 200` vs `final` — in the playground | `save_steps=` · `run.checkpoint_at(step)` |
 | **Remote + server** | train on a GPU box or fleet over one JSON protocol; metrics stream back | `backend="remote"` · `shadowlm serve` |
 | **Studio** | datasets → models → guided train → live runs (charts + console) → playground compare | `shadowlm serve` → `/` |
 | **CLI** | finetune / runs / plot / chat / export / methods from the shell | `shadowlm …` |

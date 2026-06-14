@@ -41,6 +41,13 @@ export interface JobSummary {
   method: string | null;
 }
 
+export interface Checkpoint {
+  step: number;
+  path: string;
+  final: boolean;
+  label: string;
+}
+
 export interface JobDetail {
   status: JobSummary["status"];
   error: string | null;
@@ -116,6 +123,8 @@ export const getMetrics = (id: string) =>
   api<{ steps: StepMetric[]; evals: StepMetric[] }>(`/v1/finetunes/${id}/metrics`);
 export const getLogs = (id: string) =>
   api<{ logs: string[] }>(`/v1/finetunes/${id}/logs`);
+export const getCheckpoints = (id: string) =>
+  api<{ checkpoints: Checkpoint[] }>(`/v1/finetunes/${id}/checkpoints`);
 export const cancelJob = (id: string) =>
   api<{ ok: boolean }>(`/v1/finetunes/${id}/cancel`, { method: "POST" });
 export const submitFinetune = (body: object) =>

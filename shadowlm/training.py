@@ -160,6 +160,19 @@ class TrainingRun:
         """True when this run continued from a previous checkpoint."""
         return self.config.resume_from_checkpoint is not None
 
+    def checkpoints(self) -> list:
+        """Every saved version of this run — pass ``save_steps=N`` to get mid-run
+        ones. Each is loadable: ``slm.load(base, adapter=ck.path)``."""
+        from . import checkpoints as _ck  # noqa: PLC0415
+
+        return _ck.list_checkpoints(self.checkpoint) if self.checkpoint else []
+
+    def checkpoint_at(self, step: int | None = None) -> str:
+        """Adapter path for a given step (or the final weights when omitted)."""
+        from . import checkpoints as _ck  # noqa: PLC0415
+
+        return _ck.resolve(self.checkpoint, step)
+
     # ---- persistence --------------------------------------------------------
     def to_dict(self) -> dict:
         return {

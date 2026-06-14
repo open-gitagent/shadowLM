@@ -3,8 +3,8 @@
 // quiet "shadow mode" toggle appears — the shadow answers next to its base.
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowUp, ChevronDown } from "lucide-react";
-import { chat, getJobs, getModels } from "../api";
-import type { CatalogModel, JobSummary } from "../api";
+import { chat, getCheckpoints, getJobs, getModels } from "../api";
+import type { CatalogModel, Checkpoint, JobSummary } from "../api";
 import { Dots } from "../ui";
 
 type Msg = { role: "user" | "assistant"; content: string };
@@ -14,6 +14,8 @@ export default function Playground() {
   const [jobs, setJobs] = useState<JobSummary[]>([]);
   const [model, setModel] = useState("mlx-community/Qwen2.5-0.5B-Instruct-4bit");
   const [adapter, setAdapter] = useState<string | null>(null);
+  const [ckpts, setCkpts] = useState<Checkpoint[]>([]);
+  const [ckptStep, setCkptStep] = useState<number | null>(null);  // null = final
   const [compare, setCompare] = useState(false);
   const [pop, setPop] = useState(false);
   const [q, setQ] = useState("");
@@ -39,6 +41,18 @@ export default function Playground() {
   }, []);
   useEffect(() => { inputRef.current?.focus(); });
   useEffect(() => { if (logRef.current) logRef.current.scrollTop = 1e9; }, [msgs, base]);
+
+  // a shadow's saved versions — only mid-run if it was trained with save_steps
+  useEffect(() => {
+    setCkpts([]); setCkptStep(null);
+    if (!adapter) return;
+    getCheckpoints(adapter).then(({ checkpoints }) => {
+      setCkpts(checkpoints);
+      const pc = sessionStorage.getItem("pick.checkpoint");  // deep-link from Runs
+      if (pc && checkpoints.some((c) => !c.final && c.step === Number(pc))) setCkptStep(Number(pc));
+      sessionStorage.removeItem("pick.checkpoint");
+    }).catch(() => {});
+  }, [adapter]);
 
   const done = jobs.filter((j) => j.status === "succeeded");
   const adapterJob = done.find((j) => j.job_id === adapter);
@@ -73,7 +87,8 @@ export default function Playground() {
     if (duet) setBase((b) => [...b, { role: "user", content: text }]);
     setBusy(true);
     const ask = (ad: string | null, h: Msg[]) =>
-      chat({ model, adapter: ad, messages: h, max_new_tokens: 256, temperature: 0.7, top_p: 0.95 })
+      chat({ model, adapter: ad, checkpoint: ad ? ckptStep : null,
+             messages: h, max_new_tokens: 256, temperature: 0.7, top_p: 0.95 })
         .then((o) => o.text).catch((e: Error) => `⚠ ${e.message}`);
     try {
       const reply = await ask(adapter, history);
@@ -103,6 +118,22 @@ export default function Playground() {
                    onChange={(e) => setCompare(e.target.checked)} />
             shadow mode <span className="text-muted-foreground/60">(base ↔ shadow)</span>
           </label>
+        )}
+        {adapter && ckpts.length > 1 && (
+          <div className="flex items-center gap-1 rounded-full border border-border bg-card p-0.5 font-mono text-[11px]">
+            <span className="px-1.5 text-muted-foreground select-none">ckpt</span>
+            {ckpts.map((c) => {
+              const on = c.final ? ckptStep === null : ckptStep === c.step;
+              return (
+                <button key={c.path} title={c.path}
+                  onClick={() => setCkptStep(c.final ? null : c.step)}
+                  className={`rounded-full px-2 py-0.5 transition-colors ${
+                    on ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}>
+                  {c.final ? "final" : c.step}
+                </button>
+              );
+            })}
+          </div>
         )}
         {msgs.length > 0 && (
           <button className="ml-auto text-xs text-muted-foreground hover:text-foreground"

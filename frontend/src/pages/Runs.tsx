@@ -1,8 +1,8 @@
 // Runs — master-detail: searchable run list left, live detail right.
 import { useEffect, useRef, useState } from "react";
 import { Download, MessagesSquare, Search, Square } from "lucide-react";
-import { apiKey, cancelJob, getJob, getJobs, getLogs, getMetrics } from "../api";
-import type { JobDetail, JobSummary, StepMetric } from "../api";
+import { apiKey, cancelJob, getCheckpoints, getJob, getJobs, getLogs, getMetrics } from "../api";
+import type { Checkpoint, JobDetail, JobSummary, StepMetric } from "../api";
 import { ChartLegend, LossChart, PageHeader, Sparkline, StatTile, StatusBadge, btnGhost } from "../ui";
 
 export default function Runs({ initialId }: { initialId?: string }) {
@@ -112,6 +112,7 @@ function RunDetail({ run }: { run: JobSummary }) {
   const [steps, setSteps] = useState<StepMetric[]>([]);
   const [evals, setEvals] = useState<StepMetric[]>([]);
   const [logs, setLogs] = useState<string[]>([]);
+  const [ckpts, setCkpts] = useState<Checkpoint[]>([]);
   const [tab, setTab] = useState<"loss" | "logs" | "artifact">("loss");
 
   useEffect(() => {
@@ -122,6 +123,8 @@ function RunDetail({ run }: { run: JobSummary }) {
           getJob(run.job_id), getMetrics(run.job_id), getLogs(run.job_id)]);
         if (!live) return;
         setJob(j); setSteps(m.steps); setEvals(m.evals); setLogs(l.logs);
+        if (j.checkpoint) getCheckpoints(run.job_id)
+          .then(({ checkpoints }) => live && setCkpts(checkpoints)).catch(() => {});
       } catch { /* transient */ }
     };
     tick();
@@ -279,6 +282,36 @@ function RunDetail({ run }: { run: JobSummary }) {
                     <Download className="size-3.5" /> tar.gz
                   </button>
                 </div>
+                {ckpts.length > 1 && (
+                  <div className="border-t border-border">
+                    <div className="px-5 pt-3 pb-1 text-[10px] font-mono uppercase tracking-[0.18em] text-muted-foreground">
+                      saved versions · {ckpts.length}
+                    </div>
+                    <div className="divide-y divide-border">
+                      {[...ckpts].reverse().map((c) => (
+                        <div key={c.path} className="px-5 py-2.5 flex items-center justify-between gap-3 text-sm">
+                          <span className="font-mono">
+                            {c.final ? <span className="text-primary">{c.label}</span> : `step ${c.step}`}
+                          </span>
+                          <button
+                            onClick={() => {
+                              sessionStorage.setItem("pick.adapter", run.job_id);
+                              sessionStorage.setItem("pick.model", run.base_model);
+                              if (c.final) sessionStorage.removeItem("pick.checkpoint");
+                              else sessionStorage.setItem("pick.checkpoint", String(c.step));
+                              window.location.hash = "#playground";
+                            }}
+                            className="text-xs text-primary hover:underline inline-flex items-center gap-1">
+                            <MessagesSquare className="size-3.5" /> test this version
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="px-5 py-2 text-[11px] text-muted-foreground">
+                      trained with <code className="text-foreground/70">save_steps</code> — each is a point you can roll back to or A/B in the playground.
+                    </div>
+                  </div>
+                )}
               </section>
             ) : !job?.error && (
               <div className="rounded-lg border border-border bg-card p-8 text-center text-sm text-muted-foreground">

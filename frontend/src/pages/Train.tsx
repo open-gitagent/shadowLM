@@ -29,6 +29,8 @@ const CORE: Param[] = [
   { key: "per_device_train_batch_size", label: "Batch size", kind: "int", def: "2" },
   { key: "gradient_accumulation_steps", label: "Grad accumulation", kind: "int", def: "4" },
   { key: "max_seq_length", label: "Context length", kind: "int", def: "2048" },
+  { key: "save_steps", label: "Checkpoint every", kind: "int", def: "",
+    hint: "save a version every N steps — test any of them later (blank = final only)" },
 ];
 
 // Optimizer / schedule — relevant to every method (Advanced).

@@ -355,15 +355,22 @@ class Server:
             self._persist(job)  # terminal state + final metrics + logs → disk
 
     # ---- inference -------------------------------------------------------------
-    def _infer_model(self, model: str, adapter: str | None):
-        """Load (and cache) a model for /generate and /chat."""
+    def _infer_model(self, model: str, adapter: str | None, checkpoint: int | None = None):
+        """Load (and cache) a model for /generate and /chat.
+
+        ``adapter`` is a run id (or a server-local adapter path the caller knows);
+        ``checkpoint`` optionally picks a mid-run step saved via ``save_steps`` —
+        the SDK resolves either backend's layout to a loadable path.
+        """
+        from . import checkpoints as _ck  # noqa: PLC0415
         from .models import load  # noqa: PLC0415
 
         adapter_path = None
         if adapter:
             job = self.jobs.get(adapter)
             if job and job.checkpoint:
-                adapter_path = job.checkpoint
+                adapter_path = (_ck.resolve(job.checkpoint, checkpoint)
+                                if checkpoint is not None else job.checkpoint)
             else:
                 adapter_path = adapter  # a server-local path the caller knows
         key = (model, adapter_path)
@@ -524,6 +531,12 @@ def make_handler(server: Server, api_key: str | None):
                     lines = list(job.logs) + ([job.live] if job.live else [])
                     self._send(200, {"logs": lines})
             elif len(parts) == 4 and parts[:2] == ["v1", "finetunes"] \
+                    and parts[3] == "checkpoints":
+                if (job := self._job_or_404(parts[2])):
+                    from . import checkpoints as _ck  # noqa: PLC0415
+                    cks = _ck.list_checkpoints(job.checkpoint) if job.checkpoint else []
+                    self._send(200, {"checkpoints": [c.to_dict() for c in cks]})
+            elif len(parts) == 4 and parts[:2] == ["v1", "finetunes"] \
                     and parts[3] == "artifact":
                 if (job := self._job_or_404(parts[2])):
                     if job.status != "succeeded" or not job.checkpoint:
@@ -582,7 +595,7 @@ def make_handler(server: Server, api_key: str | None):
                 elif parts == ["v1", "generate"]:
                     b = self._body()
                     with server._model_lock:
-                        m = server._infer_model(b["model"], b.get("adapter"))
+                        m = server._infer_model(b["model"], b.get("adapter"), b.get("checkpoint"))
                         text = m.generate(
                             b["prompt"],
                             max_new_tokens=b.get("max_new_tokens", 256),
@@ -592,7 +605,7 @@ def make_handler(server: Server, api_key: str | None):
                 elif parts == ["v1", "chat"]:
                     b = self._body()
                     with server._model_lock:
-                        m = server._infer_model(b["model"], b.get("adapter"))
+                        m = server._infer_model(b["model"], b.get("adapter"), b.get("checkpoint"))
                         reply = m.chat(
                             b["messages"], tools=b.get("tools"),
                             max_new_tokens=b.get("max_new_tokens", 512),
