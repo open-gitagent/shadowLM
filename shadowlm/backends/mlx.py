@@ -408,6 +408,8 @@ class MLXBackend(Backend):
             f"{iters} iters · retrieval k={config.retrieval_k} on {num_layers} layers "
             f"· lr {config.learning_rate:g}"
         )
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
         start = _time.time()
         grads_acc = None
         last_loss = None
@@ -429,11 +431,15 @@ class MLXBackend(Backend):
             if it % eval_every == 0 or (has_eval and it == iters):
                 callbacks.eval(Metric(step=it, loss=round(eval_loss(), 4),
                                       elapsed_s=round(_time.time() - start, 2)))
+            # checkpoint a mid-run version (the frozen index is shared, so the
+            # final memory_store.npz / config load any of these step weights)
+            if config.save_steps and it % config.save_steps == 0 and it < iters:
+                snap = dict(tree_flatten(model.trainable_parameters()))
+                mx.save_safetensors(str(out / f"{it:07d}_adapters.safetensors"), snap)
+                callbacks.log(f"[mlx] checkpoint @ step {it}")
             if callbacks.stopped():
                 break
 
-        out = Path(output_dir)
-        out.mkdir(parents=True, exist_ok=True)
         weights = dict(tree_flatten(model.trainable_parameters()))
         mx.save_safetensors(str(out / "adapters.safetensors"), weights)
         self._write_adapter_config(out, config, num_layers)
