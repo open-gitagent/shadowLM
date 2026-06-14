@@ -401,10 +401,31 @@ class Server:
                             load_in_4bit=payload["load_in_4bit"],
                             max_seq_length=payload["max_seq_length"])
                     out_dir = self.work_root / job_id
+                    tag = job_id[:8]
+
+                    # Write progress straight to the tee, not via print(): the
+                    # backends run training inside quiet_backend(), which redirects
+                    # sys.stdout to devnull — so a plain print() here would vanish.
+                    def _on_step(m, _tee=tee, _tag=tag):
+                        job.steps.append(m.to_dict())
+                        bits = [f"step {m.step}"]
+                        if m.loss is not None:
+                            bits.append(f"loss {m.loss:.4f}")
+                        if m.lr:
+                            bits.append(f"lr {m.lr:.2e}")
+                        if getattr(m, "tokens_per_s", None):
+                            bits.append(f"{m.tokens_per_s:,.0f} tok/s")
+                        _tee.write(f"[{_tag}] {' · '.join(bits)}\n")
+
+                    def _on_eval(m, _tee=tee, _tag=tag):
+                        job.evals.append(m.to_dict())
+                        if m.loss is not None:
+                            _tee.write(f"[{_tag}] eval · step {m.step} · loss {m.loss:.4f}\n")
+
                     callbacks = Callbacks(
-                        on_step=lambda m: job.steps.append(m.to_dict()),
-                        on_eval=lambda m: job.evals.append(m.to_dict()),
-                        on_log=lambda line: print(f"[{job_id[:8]}] {line}", flush=True),
+                        on_step=_on_step,
+                        on_eval=_on_eval,
+                        on_log=lambda line: tee.write(f"[{tag}] {line}\n"),
                         should_stop=job.cancel.is_set,
                     )
                     result = be.finetune(
