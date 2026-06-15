@@ -16,6 +16,7 @@ datasets → finetune → inference. mlx on Apple Silicon, torch on CUDA (or CPU
 """
 
 from . import checkpoints, hub, methods, runs
+from .apo import APORun, optimize_prompt
 from .capture import CaptureProxy, capture
 from .checkpoints import Checkpoint
 from .data import Dataset
@@ -26,6 +27,8 @@ from .training import Metric, TrainConfig, TrainingRun
 __version__ = "0.3.0"
 
 __all__ = [
+    "APORun",
+    "optimize_prompt",
     "CaptureProxy",
     "capture",
     "Checkpoint",

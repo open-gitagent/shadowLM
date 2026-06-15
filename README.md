@@ -74,6 +74,8 @@ The whole **capture → judge → train → own a shadowLM** loop runs on these:
 | **Capture proxy** | drop-in OpenAI endpoint that records your agent's traffic into trajectories — agent unchanged | `slm.capture()` |
 | **12 methods** | LoRA · QLoRA · DoRA · full · CPT · DPO · GRPO · MoRE · BitFit · prompt · p-tuning · adapter | `method=` |
 | **Judge → train** | score episodes with an LLM judge, train with trajectory-GRPO or DPO | `judge_group` |
+| **APO** | optimize the *prompt* instead of weights — same capture/judge front end, no GPU | `slm.optimize_prompt()` |
+| **VERL RL** | production multi-GPU GRPO (vLLM rollouts + FSDP) for cluster-scale RL | `backend="verl"` |
 | **MoRE** | facts fused into attention — near-zero-hallucination recall | `method="more"` |
 | **Any hardware** | CUDA · TPU · Trainium · Intel · Apple · CPU (whatever HF accelerate targets) | `device=` |
 | **Shadow accelerator** | 4-bit, grad checkpointing, flash-attn, fused optimizer, optional Liger kernels — logged, never silent | `accelerator="shadow"` |
