@@ -33,9 +33,30 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
-# The core SDK is pure-stdlib: `pip install shadowlm` gives you the full API. A
-# training backend is opt-in: [mlx] on Apple Silicon, [torch] on CUDA/CPU.
-dependencies = []
+# Batteries included: `pip install shadowlm` pulls everything needed to train —
+# the torch/HuggingFace stack, retrieval, and the CLI. mlx (the Apple-Silicon dev
+# loop) is auto-installed only on arm64 macOS via an environment marker, so the
+# same install works on Linux/CUDA and on a Mac. Specialized backends — fused
+# kernels and the VERL RL engine — stay opt-in extras.
+dependencies = [
+    # training — the CUDA/CPU production path (torch + HuggingFace)
+    "torch>=2.3",
+    "transformers>=4.43",
+    "trl>=0.9",
+    "peft>=0.12",
+    "accelerate>=0.33",
+    "datasets>=2.20",
+    # mixture of retrieval experts (method="more") — embeddings + faiss index
+    "sentence-transformers>=3.0",
+    "faiss-cpu>=1.8",
+    # the shadowlm CLI (Typer + Rich)
+    "typer>=0.12",
+    "rich>=13",
+    "pyyaml>=6",
+    # Apple-Silicon dev loop — installed automatically on arm64 macOS only
+    "mlx-lm>=0.20; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "mlx-lm-lora>=2.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
+]
 
 [project.urls]
 Homepage = "https://github.com/open-gitagent/shadowLM"
@@ -46,47 +67,20 @@ Issues = "https://github.com/open-gitagent/shadowLM/issues"
 shadowlm = "shadowlm._cli_entry:main"
 
 [project.optional-dependencies]
-# Apple Silicon — the native path (Metal GPU).
-mlx = [
-    "mlx-lm>=0.20",
-]
-# Preference training (dpo/grpo) on Apple Silicon. CUDA boxes use [torch]/trl.
-preference = [
-    "mlx-lm-lora>=2.0",
-]
-# Mixture of Retrieval Experts (method="more") — fact index + retrieval.
-retrieval = [
-    "sentence-transformers>=3.0",
-]
-# The polished `shadowlm` command (Typer + Rich). The library itself stays
-# pure-stdlib; only the CLI rendering needs these.
-cli = [
-    "typer>=0.12",
-    "rich>=13",
-    "pyyaml>=6",
-]
-# CUDA / CPU — the PyTorch / HuggingFace path.
-torch = [
-    "datasets>=2.20",
-    "transformers>=4.43",
-    "trl>=0.9",
-    "peft>=0.12",
-    "accelerate>=0.33",
-    "torch>=2.3",
-]
 # Fused Triton kernels (Liger, Apache-2.0) — extra speed/VRAM on NVIDIA.
 # Optional: the shadow accelerator uses them when present, no-ops otherwise.
 kernels = [
     "liger-kernel>=0.4",
 ]
-# The full package for a CUDA/CPU box: training + retrieval + CLI.
-all = [
-    "shadowlm[torch,retrieval,cli]",
-]
-# The full local-dev-loop package: mlx training + preference + retrieval + CLI.
-mlx-all = [
-    "shadowlm[mlx,preference,retrieval,cli]",
-]
+# Back-compat aliases — the training stack now ships in the base install, so
+# these resolve to nothing but keep older `shadowlm[all]` / `[torch]` commands working.
+all = []
+mlx-all = []
+torch = []
+mlx = []
+preference = []
+retrieval = []
+cli = []
 
 [tool.setuptools.packages.find]
 include = ["shadowlm*"]

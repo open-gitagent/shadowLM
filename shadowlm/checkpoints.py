@@ -26,7 +26,7 @@ _MLX = re.compile(r"^(\d+)_adapters\.safetensors$")
 # files the loaders sniff for; carried along when we materialize an mlx step dir
 _SIDECARS = (
     "adapter_config.json", "bitfit_config.json", "bottleneck_config.json",
-    "more_config.json", "memory_store.npz",  # MoRE: config + frozen fact index
+    "more_config.json", "memory_store.npz", "index.faiss",  # MoRE: config + fact index
 )
 
 

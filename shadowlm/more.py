@@ -27,25 +27,43 @@ EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 INDEX_DIM = 384
 
 _STORE_FILE = "memory_store.npz"
+_INDEX_FILE = "index.faiss"
 _CONFIG_FILE = "more_config.json"
 
 
+def _build_faiss(keys):
+    """Exact faiss IndexFlatL2 over the key embeddings, or None when faiss isn't
+    importable (numpy brute-force fallback). faiss is pinned to a single OpenMP
+    thread so its runtime doesn't fight torch's in the same process."""
+    try:
+        import faiss  # noqa: PLC0415
+    except Exception:  # noqa: BLE001 — faiss missing / load failure → numpy path
+        return None
+    if len(keys) == 0:
+        return None
+    faiss.omp_set_num_threads(1)
+    idx = faiss.IndexFlatL2(int(keys.shape[1]))
+    idx.add(keys)
+    return idx
+
+
 class MemoryIndex:
-    """The frozen memory: fact embeddings behind an exact nearest-neighbor index.
+    """The frozen memory: fact embeddings behind a nearest-neighbor index.
 
     Keys are embeddings of each fact's prompt side (what a query should match);
-    values are embeddings of the full fact (what gets fused back in). Search is
-    exact brute-force in numpy — dependency-free and OpenMP-free (an in-process
-    ANN library's OpenMP runtime conflicts with torch's). At million-fact scale
-    the GPU worker swaps in an approximate index; the interface stays the same.
+    values are embeddings of the full fact (what gets fused back in). Search runs
+    on a faiss `IndexFlatL2` (exact), pinned to one OpenMP thread so faiss's
+    runtime doesn't clash with torch's. If faiss isn't importable it falls back
+    to an exact brute-force numpy search — identical results, slower at scale.
     """
 
-    def __init__(self, keys, values) -> None:
+    def __init__(self, keys, values, index=None) -> None:
         import numpy as np  # noqa: PLC0415
 
         self.keys = np.ascontiguousarray(keys, dtype="float32")
         self.values = np.ascontiguousarray(values, dtype="float32")
-        self._keys_sq = (self.keys ** 2).sum(axis=1)  # cached for L2 distance
+        self.index = index if index is not None else _build_faiss(self.keys)
+        self._keys_sq = None  # numpy-fallback cache, built on first use
 
     @classmethod
     def build(cls, inputs: list[str], outputs: list[str]) -> "MemoryIndex":
@@ -99,25 +117,46 @@ class MemoryIndex:
 
         q = np.ascontiguousarray(queries, dtype="float32")
         k = min(k, len(self.keys))
-        # exact L2: ||q||² - 2 q·K + ||K||² (first term constant per row — skip)
-        dist = self._keys_sq[None, :] - 2.0 * (q @ self.keys.T)
-        idx = np.argpartition(dist, kth=k - 1, axis=1)[:, :k]
-        # sort the k hits for determinism
-        order = np.argsort(np.take_along_axis(dist, idx, axis=1), axis=1)
-        idx = np.take_along_axis(idx, order, axis=1)
+        if self.index is not None:  # faiss: exact L2, results sorted ascending
+            _, idx = self.index.search(q, k)
+            idx = np.clip(idx, 0, len(self.keys) - 1)  # guard -1 padding slots
+        else:  # numpy fallback — exact L2: ||q||²-2q·K+||K||² (first term skipped)
+            if self._keys_sq is None:
+                self._keys_sq = (self.keys ** 2).sum(axis=1)
+            dist = self._keys_sq[None, :] - 2.0 * (q @ self.keys.T)
+            idx = np.argpartition(dist, kth=k - 1, axis=1)[:, :k]
+            order = np.argsort(np.take_along_axis(dist, idx, axis=1), axis=1)
+            idx = np.take_along_axis(idx, order, axis=1)
         return self.keys[idx], self.values[idx]
 
     def save(self, directory: str | Path) -> None:
         import numpy as np  # noqa: PLC0415
 
-        np.savez(Path(directory) / _STORE_FILE, keys=self.keys, values=self.values)
+        d = Path(directory)
+        np.savez(d / _STORE_FILE, keys=self.keys, values=self.values)
+        if self.index is not None:
+            try:
+                import faiss  # noqa: PLC0415
+                faiss.write_index(self.index, str(d / _INDEX_FILE))
+            except Exception:  # noqa: BLE001 — npz already written; rebuild on load
+                pass
 
     @classmethod
     def load(cls, directory: str | Path) -> "MemoryIndex":
         import numpy as np  # noqa: PLC0415
 
-        store = np.load(Path(directory) / _STORE_FILE)
-        return cls(store["keys"], store["values"])
+        d = Path(directory)
+        store = np.load(d / _STORE_FILE)
+        index = None
+        fp = d / _INDEX_FILE
+        if fp.exists():
+            try:
+                import faiss  # noqa: PLC0415
+                faiss.omp_set_num_threads(1)
+                index = faiss.read_index(str(fp))
+            except Exception:  # noqa: BLE001 — rebuild from keys in __init__
+                index = None
+        return cls(store["keys"], store["values"], index=index)
 
 
 def make_memory_attention(base_attn, hidden_size: int, index: MemoryIndex,

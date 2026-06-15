@@ -6,7 +6,7 @@
   <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-E5484D">
   <img alt="Python 3.10+" src="https://img.shields.io/badge/python-3.10%2B-16120E">
   <img alt="Methods" src="https://img.shields.io/badge/training_methods-12-E5484D">
-  <img alt="Core dependencies" src="https://img.shields.io/badge/core_dependencies-0-16120E">
+  <img alt="Batteries included" src="https://img.shields.io/badge/install-batteries_included-16120E">
 </p>
 
 # ShadowLM Trainer
@@ -16,8 +16,7 @@
 Open source · built by [Lyzr Research Labs](https://lyzr.ai) · maintained by [Khush Patel](mailto:khush@lyzr.ai) · `slm♥`
 
 ```bash
-pip install 'shadowlm[all]'      # the full package — every dependency included
-pip install shadowlm             # core SDK only (zero dependencies)
+pip install shadowlm             # batteries included — the full training stack
 ```
 
 ```python
@@ -53,19 +52,14 @@ well, then takes over. Lower cost, data stays inside, the weights are yours.
 This repo is the **engine** for that loop. The orchestration that wraps it into a
 one-click migration is [ShadowLM Studio](#the-road-ahead).
 
-## Train any agent — by any of 12 methods, not just RL
-
-ShadowLM tunes any agent that speaks the OpenAI API: capture the traffic, then
-train it with whatever fits. **RL (GRPO) is just one of twelve** — reach for an
-SFT LoRA on captured turns, DPO on preferences, or MoRE for facts when those fit
-better. Same three steps either way:
+## Agent tuning in three steps
 
 ```python
 with slm.capture(model) as proxy:            # 1. record your agent, unchanged
     run_my_agent(base_url=proxy.base_url)     #    any OpenAI-client harness
 group = slm.judge_group(                      # 2. score whole episodes (LLM judge)
     slm.TrajectoryGroup(proxy.trajectories()), judge=judge)
-run = model.finetune([group], method="grpo") # 3. train — or method="dpo"/"lora"/…
+run = model.finetune([group], method="grpo") # 3. train the shadowLM on them
 ```
 
 No reward math, no rewriting the agent into an RL framework — the model API is
@@ -142,21 +136,18 @@ in `~/.shadowlm/venv`, then launches `shadowlm serve` at `http://127.0.0.1:8329`
 Re-run any time to upgrade. Override with `SHADOWLM_EXTRAS=cli` (UI only),
 `SHADOWLM_PORT=…`, or `SHADOWLM_NO_SERVE=1` (install without launching).
 
-Or with pip — `pip install 'shadowlm[all]'` gives you everything on a CUDA/CPU
-box. Each extra is independent:
+Or with pip — `pip install shadowlm` ships the full training stack (torch +
+HuggingFace, retrieval, CLI). On Apple Silicon the mlx dev backend is pulled in
+automatically. Two extras stay opt-in for specialized hardware:
 
 | extra | adds |
 |-------|------|
-| `[torch]` | training on CUDA / CPU (`transformers` + `trl` + `peft`) |
-| `[mlx]` | the Apple-Silicon dev backend |
-| `[preference]` | dpo / grpo on the mlx backend |
-| `[retrieval]` | the `more` method (fact index) |
 | `[kernels]` | fused Triton kernels on NVIDIA (Liger, Apache-2.0) |
-| `[cli]` | the `shadowlm` command (Typer + Rich) |
+| `[verl]` | the VERL distributed-RL backend (`backend="verl"`) |
 
 ```bash
 git clone https://github.com/open-gitagent/shadowLM && cd shadowLM
-python3 -m venv .venv && source .venv/bin/activate && pip install -e '.[mlx]'
+python3 -m venv .venv && source .venv/bin/activate && pip install -e .
 python examples/quickstart.py    # datasets → finetune → inference, end to end
 ```
 
