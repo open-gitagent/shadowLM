@@ -84,6 +84,7 @@ def optimize_prompt(
     rounds: int = 4,
     candidates: int = 4,
     sample: int | None = None,
+    eval_holdout: float = 0.3,
     max_new_tokens: int = 256,
     temperature: float = 0.8,
     optimizer=None,
@@ -96,9 +97,14 @@ def optimize_prompt(
     judge: optional Model that scores answers 0–1 (LLM-as-judge). If omitted and
         no `score_fn` is given, scoring is exact/contains-match on the answer.
     score_fn: optional `(output, expected, prompt) -> float in [0,1]`.
-    optimizer: Model that proposes improved prompts (defaults to `model`).
+    optimizer: Model that proposes improved prompts (defaults to `model`). A
+        stronger optimizer writes better prompts — pass a larger model here.
+    eval_holdout: fraction held out for *selecting* the best prompt. APO proposes
+        from the train split's failures but scores/keeps prompts on the held-out
+        split, so the winner generalizes instead of overfitting the examples it
+        was tuned on. Ignored when there are too few rows to split.
     rounds × candidates bounds the work: each round evaluates `candidates` new
-    prompts and keeps the best-so-far.
+    prompts and keeps the best-so-far (by held-out score).
     """
     rows = list(data.rows if isinstance(data, Dataset) else data)
     if sample:
@@ -114,6 +120,13 @@ def optimize_prompt(
             "or a score_fn(output, expected, prompt) -> float")
     optimizer = optimizer or model
 
+    # honest selection: propose from `train` failures, select on held-out `eval`
+    k = int(round(len(rows) * eval_holdout))
+    if 1 <= k <= len(rows) - 1:
+        eval_rows, train_rows = rows[:k], rows[k:]
+    else:
+        eval_rows = train_rows = rows  # too few to split — reuse (overfit risk)
+
     def answer(prompt: str, q: str) -> str:
         msgs = ([{"role": "system", "content": prompt}] if prompt else []) + \
                [{"role": "user", "content": q}]
@@ -126,29 +139,30 @@ def optimize_prompt(
             return _judge_one(judge, q, out, exp)
         return _contains_score(out, exp)
 
-    def evaluate(prompt: str) -> float:
+    def evaluate(prompt: str, rows_) -> float:
         total = 0.0
-        for r in rows:
+        for r in rows_:
             out = answer(prompt, str(r[pcol]))
             total += score_one(out, str(r.get(acol, "")) if acol else "", str(r[pcol]))
-        return total / len(rows)
+        return total / len(rows_)
 
     def log(msg: str) -> None:
         if verbose:
             print(f"[apo] {msg}", flush=True)
 
-    base_score = evaluate(seed_prompt)
+    base_score = evaluate(seed_prompt, eval_rows)
     best_prompt, best_score = seed_prompt, base_score
     history: list[dict] = []
-    log(f"base score {base_score:.3f}")
+    split_note = "" if eval_rows is train_rows else f" ({len(train_rows)} train / {len(eval_rows)} eval)"
+    log(f"base score {base_score:.3f}{split_note}")
 
     for rnd in range(1, rounds + 1):
-        failures = _failures(rows, pcol, acol, best_prompt, answer, score_one)
+        failures = _failures(train_rows, pcol, acol, best_prompt, answer, score_one)
         proposals = _propose(optimizer, best_prompt, failures, candidates,
                              temperature, max_new_tokens)
         round_best_p, round_best_s = best_prompt, best_score
         for cand in proposals:
-            s = evaluate(cand)
+            s = evaluate(cand, eval_rows)
             if s > round_best_s:
                 round_best_p, round_best_s = cand, s
         best_prompt, best_score = round_best_p, round_best_s
@@ -177,14 +191,29 @@ def _failures(rows, pcol, acol, prompt, answer, score_one, k: int = 3) -> str:
     return "\n".join(blocks) or "(no failing examples)"
 
 
+def _clean(text: str) -> str:
+    """Strip the wrapper junk weak optimizers add — code fences, surrounding
+    quotes, and a leading 'System prompt:'/'Prompt:' label."""
+    t = text.strip().strip("`").strip()
+    low = t.lower()
+    for pre in ("system prompt:", "new system prompt:", "prompt:", "improved prompt:"):
+        if low.startswith(pre):
+            t = t[len(pre):].strip()
+            break
+    if len(t) >= 2 and t[0] == t[-1] and t[0] in "\"'":
+        t = t[1:-1].strip()
+    return t
+
+
 def _propose(optimizer, current, failures, k, temperature, max_new_tokens) -> list[str]:
     meta = _OPTIMIZER_META.format(current=current or "(none)", failures=failures)
-    out = []
+    out, seen = [], set()
     for _ in range(k):
-        text = str(optimizer.chat([{"role": "user", "content": meta}],
-                                  temperature=temperature,
-                                  max_new_tokens=max_new_tokens)).strip()
-        if text:
+        text = _clean(str(optimizer.chat([{"role": "user", "content": meta}],
+                                         temperature=temperature,
+                                         max_new_tokens=max_new_tokens)))
+        if len(text) >= 8 and text not in seen:  # drop empties, dupes, fragments
+            seen.add(text)
             out.append(text)
     return out
 
