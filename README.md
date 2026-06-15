@@ -156,8 +156,11 @@ python3 -m venv .venv && source .venv/bin/activate && pip install -e .
 python examples/quickstart.py    # datasets → finetune → inference, end to end
 ```
 
-No hardware handy? `examples/colab_quickstart.ipynb` runs the same flow on a free
-Colab GPU. Run output (mlx, a 0.5B model, ~3.5s):
+No hardware handy? Test-drive the whole thing — checkpoints, faiss MoRE, APO —
+on a free Colab GPU:
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/open-gitagent/shadowLM/blob/main/examples/colab_test_drive.ipynb)
+
+Run output (mlx, a 0.5B model, ~3.5s):
 
 ```
 [shadow] enabled: gradient checkpointing
