@@ -53,14 +53,19 @@ well, then takes over. Lower cost, data stays inside, the weights are yours.
 This repo is the **engine** for that loop. The orchestration that wraps it into a
 one-click migration is [ShadowLM Studio](#the-road-ahead).
 
-## Agent tuning in three steps
+## Train any agent — by any of 12 methods, not just RL
+
+ShadowLM tunes any agent that speaks the OpenAI API: capture the traffic, then
+train it with whatever fits. **RL (GRPO) is just one of twelve** — reach for an
+SFT LoRA on captured turns, DPO on preferences, or MoRE for facts when those fit
+better. Same three steps either way:
 
 ```python
 with slm.capture(model) as proxy:            # 1. record your agent, unchanged
     run_my_agent(base_url=proxy.base_url)     #    any OpenAI-client harness
 group = slm.judge_group(                      # 2. score whole episodes (LLM judge)
     slm.TrajectoryGroup(proxy.trajectories()), judge=judge)
-run = model.finetune([group], method="grpo") # 3. train the shadowLM on them
+run = model.finetune([group], method="grpo") # 3. train — or method="dpo"/"lora"/…
 ```
 
 No reward math, no rewriting the agent into an RL framework — the model API is
