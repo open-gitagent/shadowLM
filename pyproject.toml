@@ -72,6 +72,11 @@ shadowlm = "shadowlm._cli_entry:main"
 kernels = [
     "liger-kernel>=0.4",
 ]
+# Production multi-GPU RL — the VERL engine (vLLM rollouts + FSDP). NVIDIA GPUs.
+# Opt-in and heavy: `backend="verl"` for cluster-scale GRPO.
+verl = [
+    "verl>=0.4",
+]
 # Back-compat aliases — the training stack now ships in the base install, so
 # these resolve to nothing but keep older `shadowlm[all]` / `[torch]` commands working.
 all = []

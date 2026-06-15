@@ -67,4 +67,13 @@ def select_backend(name: str = "auto", *, accelerator: str = "auto",
         from .remote import RemoteBackend
         return RemoteBackend(device=device, accelerator=accelerator)
 
-    raise ValueError(f"unknown backend {name!r} (expected auto|mlx|torch|remote)")
+    if name == "verl":
+        # Production multi-GPU RL (GRPO) on VERL — vLLM rollouts + FSDP.
+        from .verl import VerlBackend
+        if not VerlBackend.is_available():
+            raise RuntimeError(
+                "verl backend needs shadowlm[verl] (verl + vllm + ray) and NVIDIA GPUs."
+            )
+        return VerlBackend(device=device, accelerator=accelerator)
+
+    raise ValueError(f"unknown backend {name!r} (expected auto|mlx|torch|remote|verl)")
