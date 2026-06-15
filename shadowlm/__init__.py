@@ -24,7 +24,7 @@ from .models import Model, Reply, load
 from .rl import Trajectory, TrajectoryGroup, judge_group
 from .training import Metric, TrainConfig, TrainingRun
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 __all__ = [
     "APORun",
