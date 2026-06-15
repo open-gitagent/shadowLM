@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -57,6 +58,10 @@ def _build_overrides(model: str, config: TrainConfig, *, train_parquet: str,
     if reward_path:
         ov.append(f"custom_reward_function.path={reward_path}")
         ov.append("custom_reward_function.name=compute_score")
+    # escape hatch: append any raw Hydra overrides (space-separated) so you can
+    # tune VERL — GPU memory, batch sizes, tensor parallel — without code changes.
+    # e.g. SHADOWLM_VERL_OVERRIDES="actor_rollout_ref.rollout.gpu_memory_utilization=0.4"
+    ov.extend(os.environ.get("SHADOWLM_VERL_OVERRIDES", "").split())
     return ov
 
 
