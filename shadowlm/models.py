@@ -19,8 +19,11 @@ from .backends import Callbacks, select_backend
 from .data import Dataset
 from .training import Metric, StepCallback, TrainConfig, TrainingRun, resolve_total_steps
 
-# shadowLM's own output goes to the real terminal even while a backend redirects
-# sys.stdout to swallow its internal logging. Captured once at import.
+# shadowLM's own progress/logs go here even while a backend redirects sys.stdout
+# to swallow its internal logging. finetune() refreshes this to the live stdout at
+# call time — the notebook cell in Jupyter/Colab, the terminal in a CLI — so it
+# isn't pinned to sys.__stdout__ (which Jupyter routes to the kernel log, not the
+# cell). Captured before the backend's quiet_backend() redirect, so it survives it.
 _CONSOLE = sys.__stdout__ or sys.stdout
 
 # Where checkpoints land by default: ~/.shadowlm/runs/<base>-<timestamp>/
@@ -175,6 +178,10 @@ class Model:
                 "a percent like '15%', or a fraction in (0, 1)")
         elif eval_dataset is not None and not isinstance(eval_dataset, Dataset):
             eval_dataset = Dataset.from_list(list(eval_dataset))
+        # Pin progress/logs to the live stream (cell in Jupyter, terminal in CLI)
+        # before the backend redirects sys.stdout — otherwise notebooks show nothing.
+        global _CONSOLE
+        _CONSOLE = sys.stdout
         if verbose:
             from .ascii import print_ascii_art  # noqa: PLC0415
             print_ascii_art()
