@@ -94,8 +94,14 @@ def _reward_shim(reward_fns: list) -> str:
 
 
 def _to_parquet(dataset: Dataset, path: str) -> int:
-    """Write rows in VERL's expected schema (prompt as chat + ground_truth)."""
-    import pandas as pd  # noqa: PLC0415 — pulled in by datasets/verl
+    """Write rows in VERL's expected schema (prompt as chat + ground_truth).
+
+    Uses pyarrow directly (a core datasets/verl dependency) rather than pandas —
+    one less heavy import, and it sidesteps the numpy/pandas ABI clashes the
+    verl+vllm install tends to leave behind.
+    """
+    import pyarrow as pa  # noqa: PLC0415
+    import pyarrow.parquet as pq  # noqa: PLC0415
 
     rows = []
     for r in dataset.rows:
@@ -108,7 +114,7 @@ def _to_parquet(dataset: Dataset, path: str) -> int:
             "reward_model": {"style": "rule", "ground_truth": answer},
             "extra_info": {"prompt": prompt, "answer": answer},
         })
-    pd.DataFrame(rows).to_parquet(path)
+    pq.write_table(pa.Table.from_pylist(rows), path)
     return len(rows)
 
 
