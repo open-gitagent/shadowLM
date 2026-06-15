@@ -187,6 +187,11 @@ class Model:
             print_ascii_art()
 
         spec = methods.get(method)  # raises ValueError for unknown methods
+        for arg in ("backend", "device", "accelerator", "adapter"):
+            if arg in hyperparams:
+                raise ValueError(
+                    f"{arg!r} is a load() argument, not finetune() — set it on "
+                    f"slm.load(model, {arg}=...) (the model is bound to its backend at load).")
         config = TrainConfig(method=method, **hyperparams)
         if config.learning_rate is None:
             config.learning_rate = spec.default_learning_rate

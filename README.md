@@ -113,8 +113,8 @@ tells you to load a 4-bit one). Adding your own method is one file —
 `torch` (CUDA) is the production backend; `mlx` is the local-dev loop on Apple
 Silicon; `remote` runs the same API against any ShadowLM server; `verl` is the
 production, multi-GPU RL engine (vLLM rollouts + FSDP) for cluster-scale GRPO —
-`pip install shadowlm[verl]`, then `model.finetune(ds, method="grpo",
-reward_fns=[…], backend="verl")`. `auto` picks the right one for SFT/local work.
+`pip install shadowlm[verl]`, then `slm.load(model, backend="verl").finetune(ds,
+method="grpo", reward_fns=[…])`. `auto` picks the right one for SFT/local work.
 The torch path rides HuggingFace `Trainer` + `accelerate`, so it trains on **any
 accelerator HuggingFace supports** — pick it with `device=`:
 
