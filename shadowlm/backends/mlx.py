@@ -120,15 +120,12 @@ class MLXBackend(Backend):
         # re-attached by hand; plain adapters go through the normal loader.
         from .. import bottleneck  # noqa: PLC0415
         from .. import more_plus as _mp  # noqa: PLC0415
-        if adapter and _mp.read_config(adapter):
-            raise NotImplementedError(
-                "more_plus: mlx support is coming soon — load with backend='torch'."
-            )
+        more_plus_cfg = _mp.read_config(adapter) if adapter else None
         more_cfg = more.read_config(adapter) if adapter else None
         bn_cfg = bottleneck.read_config(adapter) if adapter else None
         with quiet_backend():  # swallow huggingface_hub "Fetching files" tqdm
             self.model, self.tokenizer = load(
-                name, adapter_path=None if (more_cfg or bn_cfg) else adapter)
+                name, adapter_path=None if (more_cfg or bn_cfg or more_plus_cfg) else adapter)
         if bn_cfg:
             self.model.freeze()
             bottleneck.attach_mlx(self.model, rank=bn_cfg["rank"])
@@ -141,7 +138,7 @@ class MLXBackend(Backend):
             self.model.freeze()
             self.model.unfreeze(keys=["bias"], strict=False)
             self._surface = methods.ADAPTER_BITFIT
-        elif adapter and not (more_cfg or bn_cfg):
+        elif adapter and not (more_cfg or bn_cfg or more_plus_cfg):
             # mlx-lm's load_adapters converts layers but never freezes the
             # model; without this, continued training updates every parameter.
             from mlx_lm.tuner.dora import DoRAEmbedding, DoRALinear  # noqa: PLC0415
@@ -172,6 +169,31 @@ class MLXBackend(Backend):
             self.model.load_weights(str(Path(adapter) / "adapters.safetensors"),
                                     strict=False)
             self._surface = methods.ADAPTER_MORE
+        if more_plus_cfg:
+            # decoupled experts: the base stays untouched at rest; chat()/generate()
+            # merge the BM25-routed deltas into the final FFN per call, then restore.
+            import mlx.core as mx  # noqa: PLC0415
+            if _is_quantized(self.model):
+                raise RuntimeError(
+                    "more_plus inference needs an unquantized base (the merge writes "
+                    "the final-FFN weight) — load a 16-bit repo, not a *-4bit one.")
+            router = _mp.BM25Router.from_dict(
+                json.loads((Path(adapter) / _mp._INDEX_FILE).read_text()))
+            experts = _mp.load_experts(adapter)  # torch tensors
+            if len(experts) != router.N:
+                raise ValueError(
+                    f"more_plus checkpoint is inconsistent: router has {router.N} "
+                    f"experts but {len(experts)} deltas were loaded — the index and "
+                    "experts file are out of sync.")
+            down = self.model.layers[-1].mlp.down_proj
+            deltas = {i: mx.array(t.numpy()) for i, t in experts.items()}
+            self._more_plus = {
+                "router": router, "deltas": deltas, "down": down,
+                "snapshot": mx.array(down.weight),
+                "k": more_plus_cfg["k"], "tau": more_plus_cfg.get("tau", 0.5),
+                "meta": more_plus_cfg,
+            }
+            self._surface = methods.ADAPTER_MORE_PLUS
         self._tuned = False
 
     def finetune(self, dataset: Dataset, config: TrainConfig, callbacks: Callbacks,
@@ -223,9 +245,7 @@ class MLXBackend(Backend):
             return self._finetune_more(dataset, config, callbacks, output_dir,
                                        eval_dataset, iters)
         if spec.adapter == methods.ADAPTER_MORE_PLUS:
-            raise NotImplementedError(
-                "more_plus: mlx support is coming soon — use backend='torch'."
-            )
+            return self._finetune_more_plus(dataset, config, callbacks, output_dir)
         if spec.adapter in (methods.ADAPTER_PROMPT, methods.ADAPTER_PTUNING):
             raise RuntimeError(
                 f"method={config.method!r} (soft-prompt family) runs on the torch "
@@ -460,6 +480,170 @@ class MLXBackend(Backend):
         self._tuned = True
         callbacks.log(f"[mlx] done · final loss {last_loss} · adapter {out}")
         return FinetuneResult(checkpoint=str(out), final_loss=last_loss)
+
+    def _finetune_more_plus(self, dataset: Dataset, config: TrainConfig,
+                            callbacks: Callbacks, output_dir: str) -> FinetuneResult:
+        """MoRE+ on mlx — one tiny final-FFN LoRA expert per knowledge unit.
+
+        Mirrors the torch path: for each unit we swap the last block's down_proj
+        for a LoRA wrapper (base frozen), train it with a short loop, collapse it
+        to a weight delta, and restore the original module — so only one tiny
+        expert is ever live. A BM25 router over the unit surrogates ships with the
+        deltas; inference merges the routed deltas into that one FFN weight.
+        mlx has no forward hooks, so the wrapper is an explicit module swap.
+        """
+        import mlx.core as mx  # noqa: PLC0415
+        import mlx.nn as nn  # noqa: PLC0415
+        import mlx.optimizers as optim  # noqa: PLC0415
+        import numpy as np  # noqa: PLC0415
+
+        from .. import more_plus as mp  # noqa: PLC0415
+
+        if getattr(self, "_surface", None) is not None:
+            raise RuntimeError(
+                f"this model already hosts a {self._surface!r} trainable surface; "
+                "load a fresh model for method='more_plus'.")
+
+        mlp = self.model.layers[-1].mlp
+        down = mlp.down_proj
+        last_idx = len(self.model.layers) - 1
+        out_f, in_f = down.weight.shape
+        r = config.lora_r or 4
+        alpha = config.lora_alpha or r
+        scaling = alpha / r
+
+        units = mp.split_units(dataset, config.more_plus_group_size)
+        kept = [(s, rows) for s, rows in units if mp._tokenize(s)]
+        if len(kept) != len(units):
+            callbacks.log(f"[more+] skipped {len(units) - len(kept)} unit(s) with "
+                          "empty/untokenizable input — not routable")
+        units = kept
+        if not units:
+            raise ValueError(
+                "more_plus: no routable knowledge units — every row's input side is "
+                "empty. Provide rows with an instruction/question/prompt (or a user turn).")
+        callbacks.log(f"[more+] {len(units)} knowledge units → final-FFN experts "
+                      f"(layer {last_idx}, r={r})")
+
+        chatable = (dataset.format in (CHAT, SHAREGPT, INSTRUCTION)
+                    and getattr(self.tokenizer, "chat_template", None))
+
+        def _unit_token_batches(rows):
+            ds_u = Dataset.from_list(rows)
+            if chatable:  # train on the chat-templated turn, as inference sees it
+                return [mx.array([self.tokenizer.apply_chat_template(rr["messages"])])
+                        for rr in ds_u.as_chat().rows]
+            return [mx.array([self.tokenizer.encode(t)[:config.max_seq_length]])
+                    for t in ds_u.to_texts()]
+
+        class _LoRADown(nn.Module):
+            # base(x) + scaling·(x A^T) B^T ; A random, B zero (LoRA no-op at start)
+            def __init__(self, base):
+                super().__init__()
+                self.base = base
+                self.lora_a = mx.random.uniform(
+                    low=-(in_f ** -0.5), high=(in_f ** -0.5), shape=(r, in_f))
+                self.lora_b = mx.zeros((out_f, r))
+
+            def __call__(self, x):
+                y = self.base(x)
+                z = (x.astype(mx.float32) @ self.lora_a.T) @ self.lora_b.T
+                return y + (scaling * z).astype(y.dtype)
+
+        def loss_fn(model, batch):
+            logits = model(batch[:, :-1])
+            return nn.losses.cross_entropy(
+                logits, batch[:, 1:], reduction="mean")
+
+        deltas: dict[int, "mx.array"] = {}
+        surrogates: list[str] = []
+        last_loss = None
+        for i, (surrogate, rows) in enumerate(units):
+            surrogates.append(surrogate)
+            batches = _unit_token_batches(rows)
+            wrapper = _LoRADown(down)
+            mlp.down_proj = wrapper                      # swap in the trainable expert
+            self.model.freeze()
+            self.model.unfreeze(keys=["lora_a", "lora_b"], strict=False, recurse=True)
+            opt = optim.Adam(learning_rate=config.learning_rate or 1e-4)
+            loss_and_grad = nn.value_and_grad(self.model, loss_fn)
+            step = 0
+            while step < config.more_plus_expert_steps and batches:
+                for ids in batches:
+                    if step >= config.more_plus_expert_steps:
+                        break
+                    loss, grads = loss_and_grad(self.model, ids)
+                    opt.update(self.model, grads)
+                    mx.eval(self.model.parameters(), opt.state)
+                    last_loss = round(float(loss), 4)
+                    step += 1
+            # keep deltas float32 (numpy has no bf16; merge casts to the weight
+            # dtype per call) — same on-disk representation as the torch path
+            delta = scaling * (wrapper.lora_b @ wrapper.lora_a)
+            mx.eval(delta)
+            deltas[i] = delta
+            mlp.down_proj = down                          # restore the pristine FFN
+            callbacks.step(Metric(step=i + 1,
+                                  loss=last_loss if last_loss is not None else 0.0))
+        self.model.freeze()
+
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        router = mp.BM25Router.build(surrogates)
+        # store as numpy → save_experts persists as torch so the same file loads
+        # on either backend
+        mp.save_experts({i: np.array(d, copy=False) for i, d in deltas.items()}, out)
+        (out / mp._INDEX_FILE).write_text(json.dumps(router.to_dict()))
+        mp.write_config(out, base_model=self.model_name, lora_r=r, lora_alpha=alpha,
+                        final_layer_idx=last_idx, num_experts=len(units),
+                        k=config.more_plus_k, tau=config.more_plus_tau,
+                        group_size=config.more_plus_group_size)
+        self._surface = methods.ADAPTER_MORE_PLUS
+        self._train_config = config
+        self._more_plus = {"router": router, "deltas": deltas, "down": down,
+                           "snapshot": mx.array(down.weight),
+                           "k": config.more_plus_k, "tau": config.more_plus_tau,
+                           "meta": {"lora_r": r, "lora_alpha": alpha,
+                                    "final_layer_idx": last_idx,
+                                    "group_size": config.more_plus_group_size}}
+        self._tuned = True
+        callbacks.log(f"[mlx] done · final loss {last_loss} · {len(units)} experts · {out}")
+        return FinetuneResult(checkpoint=str(out), final_loss=last_loss)
+
+    def _more_plus_merge(self, messages, tools=None) -> bool:
+        """Merge the BM25-routed expert deltas into the final FFN. Returns whether
+        anything was merged (so the caller knows to restore afterward)."""
+        import mlx.core as mx  # noqa: PLC0415
+
+        state = getattr(self, "_more_plus", None)
+        if not state or not state["router"].N:
+            return False
+        # Route on the current user turn only (the router was indexed on each
+        # unit's user-side surrogate); fall back to the full template otherwise.
+        query = next((m.get("content", "") for m in reversed(messages)
+                      if m.get("role") == "user"), "")
+        if not query:
+            query = self.tokenizer.apply_chat_template(
+                messages, tools=tools, add_generation_prompt=True, tokenize=False)
+        ids = [i for i, _ in state["router"].rank(query, state["k"])]
+        if not ids:
+            return False  # no term overlap → run on the clean base
+        down = state["down"]
+        acc = state["snapshot"]
+        for i in ids:
+            d = state["deltas"].get(i)
+            if d is not None:
+                acc = acc + d.astype(acc.dtype)
+        down.weight = acc
+        mx.eval(down.weight)
+        return True
+
+    def _more_plus_restore(self) -> None:
+        import mlx.core as mx  # noqa: PLC0415
+
+        state = self._more_plus
+        state["down"].weight = state["snapshot"]
+        mx.eval(state["down"].weight)
 
     def _finetune_trajectory_grpo(self, dataset: Dataset, config: TrainConfig,
                                   callbacks: Callbacks, output_dir: str, spec,
@@ -809,13 +993,27 @@ class MLXBackend(Backend):
             return self.chat([{"role": "user", "content": prompt}],
                              max_new_tokens=max_new_tokens, temperature=temperature,
                              top_p=top_p, **kwargs)
-        return self._generate_text(prompt, max_new_tokens, temperature, top_p)
+        # MoRE+ (no chat template): route on the raw prompt, merge, restore.
+        merged = self._more_plus_merge([{"role": "user", "content": prompt}])
+        try:
+            return self._generate_text(prompt, max_new_tokens, temperature, top_p)
+        finally:
+            if merged:
+                self._more_plus_restore()
 
     def chat(self, messages, *, tools=None, max_new_tokens, temperature, top_p, **kwargs) -> str:
         text = self.tokenizer.apply_chat_template(
             messages, tools=tools, add_generation_prompt=True, tokenize=False,
         )
-        return self._generate_text(text, max_new_tokens, temperature, top_p)
+        # MoRE+: BM25-route the prompt, merge the top-k expert deltas into the final
+        # FFN for this call (cache-safe), then restore from the snapshot so calls
+        # stay stateless and drift-free.
+        merged = self._more_plus_merge(messages, tools)
+        try:
+            return self._generate_text(text, max_new_tokens, temperature, top_p)
+        finally:
+            if merged:
+                self._more_plus_restore()
 
     def _generate_text(self, prompt: str, max_new_tokens, temperature, top_p) -> str:
         from mlx_lm import generate  # noqa: PLC0415
@@ -831,6 +1029,23 @@ class MLXBackend(Backend):
 
         out = Path(path)
         out.mkdir(parents=True, exist_ok=True)
+        # MoRE+ stores expert deltas + the BM25 index, not adapter tensors — the
+        # base is reloaded by name at inference, so no model weights are written.
+        st = getattr(self, "_more_plus", None)
+        if st is not None:
+            import numpy as np  # noqa: PLC0415
+            from .. import more_plus as mp  # noqa: PLC0415
+            if fmt == "merged":
+                raise RuntimeError("fmt='merged' isn't supported for method 'more_plus'")
+            meta = st["meta"]
+            mp.save_experts({i: np.array(d, copy=False) for i, d in st["deltas"].items()}, out)
+            (out / mp._INDEX_FILE).write_text(json.dumps(st["router"].to_dict()))
+            mp.write_config(out, base_model=self.model_name, lora_r=meta["lora_r"],
+                            lora_alpha=meta["lora_alpha"],
+                            final_layer_idx=meta["final_layer_idx"],
+                            num_experts=st["router"].N, k=st["k"], tau=st["tau"],
+                            group_size=meta["group_size"])
+            return str(out)
         cfg = getattr(self, "_train_config", None)
         special_kinds = (methods.ADAPTER_BITFIT, methods.ADAPTER_BOTTLENECK,
                          methods.ADAPTER_MORE)

@@ -166,14 +166,26 @@ def read_config(directory) -> dict | None:
 
 # ---- expert deltas: one file, keyed expert_<id> -----------------------------
 def save_experts(deltas: dict, directory) -> None:
-    """Persist every expert's collapsed weight delta into one safetensors file."""
+    """Persist every expert's collapsed weight delta into one safetensors file.
+
+    Accepts torch tensors, mlx arrays, or numpy — stored as torch so the same
+    file loads on either backend (torch is a base dependency)."""
+    import numpy as np  # noqa: PLC0415
+    import torch  # noqa: PLC0415
     from safetensors.torch import save_file  # noqa: PLC0415
 
-    save_file({f"expert_{i}": t.contiguous() for i, t in deltas.items()},
-              str(Path(directory) / _EXPERTS_FILE))
+    out = {}
+    for i, t in deltas.items():
+        if hasattr(t, "detach"):           # torch tensor
+            arr = t.detach().cpu().float()
+        else:                              # mlx array / numpy
+            arr = torch.from_numpy(np.array(t, dtype="float32"))
+        out[f"expert_{i}"] = arr.contiguous()
+    save_file(out, str(Path(directory) / _EXPERTS_FILE))
 
 
 def load_experts(directory) -> dict:
+    """Load expert deltas as torch tensors (the backend converts as needed)."""
     from safetensors.torch import load_file  # noqa: PLC0415
 
     sd = load_file(str(Path(directory) / _EXPERTS_FILE))
