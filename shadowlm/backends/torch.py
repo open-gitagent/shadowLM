@@ -13,6 +13,7 @@ dev machine (which uses the mlx backend).
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 
 from .. import accel, methods
@@ -117,10 +118,12 @@ class TorchBackend(Backend):
             from peft import PeftModel  # noqa: PLC0415
 
             from .. import more  # noqa: PLC0415
+            from .. import more_plus as mp  # noqa: PLC0415
             from .. import bottleneck  # noqa: PLC0415
             bn_cfg = bottleneck.read_config(adapter)
             bitfit_marker = (Path(adapter) / "bitfit_config.json").exists()
             more_cfg = more.read_config(adapter)
+            more_plus_cfg = mp.read_config(adapter)
             if bitfit_marker:
                 from safetensors.torch import load_file  # noqa: PLC0415
                 self.model.load_state_dict(
@@ -146,6 +149,19 @@ class TorchBackend(Backend):
                 self.model._shadow_surface = methods.ADAPTER_MORE
                 self._more_meta = {"rank": more_cfg["rank"], "k": more_cfg["index_k"],
                                    "num_layers": more_cfg["num_layers"]}
+            elif more_plus_cfg:
+                # decoupled experts: base stays untouched at rest; chat() merges
+                # the BM25-routed deltas into the final FFN per call, then restores.
+                router = mp.BM25Router.from_dict(
+                    json.loads((Path(adapter) / mp._INDEX_FILE).read_text()))
+                down, _ = mp.final_ffn_module(self.model)
+                self._more_plus = {
+                    "router": router, "deltas": mp.load_experts(adapter), "down": down,
+                    "snapshot": down.weight.detach().clone(),
+                    "k": more_plus_cfg["k"], "tau": more_plus_cfg.get("tau", 0.5),
+                    "meta": more_plus_cfg,
+                }
+                self.model._shadow_surface = methods.ADAPTER_MORE_PLUS
             else:
                 self.model = PeftModel.from_pretrained(self.model, adapter)
 
@@ -183,6 +199,8 @@ class TorchBackend(Backend):
         if spec.adapter == methods.ADAPTER_MORE:
             return self._finetune_more(dataset, config, callbacks, output_dir,
                                        eval_dataset)
+        if spec.adapter == methods.ADAPTER_MORE_PLUS:
+            return self._finetune_more_plus(dataset, config, callbacks, output_dir)
 
         # Attach whatever surface the method trains (LoRA family, soft-prompt
         # family, biases, bottlenecks, or nothing for full fine-tunes).
@@ -620,6 +638,119 @@ class TorchBackend(Backend):
         callbacks.log(f"[torch:{self.device}] more done · final loss {final_loss} · {out}")
         return FinetuneResult(checkpoint=str(out), final_loss=final_loss)
 
+    def _finetune_more_plus(self, dataset: Dataset, config: TrainConfig,
+                            callbacks: Callbacks, output_dir: str) -> FinetuneResult:
+        """MoRE+ — one tiny final-FFN LoRA expert per knowledge unit (DMoE-style).
+
+        For each unit we attach a manual LoRA to the last block's down_proj (base
+        frozen), train it with a short eager loop, collapse it to a weight delta,
+        and discard it — so only one tiny expert is ever live (flat memory). A
+        BM25 router over the unit surrogates ships alongside the deltas. Inference
+        merges the routed deltas into that one FFN weight (cache-safe).
+        """
+        import math as _math  # noqa: PLC0415
+
+        import torch  # noqa: PLC0415
+
+        from .. import more_plus as mp  # noqa: PLC0415
+
+        existing = self._attached_surface()
+        if existing is not None:
+            raise RuntimeError(
+                f"this model already hosts a {existing!r} trainable surface; "
+                "load a fresh model for method='more_plus' (continued training "
+                "on an existing more_plus checkpoint isn't supported in v1)."
+            )
+
+        down, last_idx = mp.final_ffn_module(self.model)
+        out_f, in_f = down.weight.shape
+        device = down.weight.device
+        r = config.lora_r or 4
+        alpha = config.lora_alpha or r
+        scaling = alpha / r
+
+        units = mp.split_units(dataset, config.more_plus_group_size)
+        callbacks.log(f"[more+] {len(units)} knowledge units → final-FFN experts "
+                      f"(layer {last_idx}, r={r})")
+
+        for p in self.model.parameters():
+            p.requires_grad_(False)
+        self.model.eval()
+
+        from ..data import CHAT, INSTRUCTION, SHAREGPT  # noqa: PLC0415
+
+        chatable = (dataset.format in (CHAT, SHAREGPT, INSTRUCTION)
+                    and getattr(self.tokenizer, "chat_template", None))
+
+        def _unit_token_batches(rows):
+            ds_u = Dataset.from_list(rows)
+            if chatable:  # train on the chat-templated turn, as inference sees it
+                return [self.tokenizer.apply_chat_template(
+                            r["messages"], tokenize=True, return_dict=True,
+                            return_tensors="pt")["input_ids"].to(device)
+                        for r in ds_u.as_chat().rows]
+            return [self.tokenizer(t, return_tensors="pt", truncation=True,
+                                   max_length=config.max_seq_length)["input_ids"].to(device)
+                    for t in ds_u.to_texts()]
+
+        deltas: dict[int, "torch.Tensor"] = {}
+        surrogates: list[str] = []
+        last_loss = None
+        for i, (surrogate, rows) in enumerate(units):
+            surrogates.append(surrogate)
+            batches = _unit_token_batches(rows)
+            # manual LoRA on down_proj: out += scaling · (x A^T) B^T ; A random, B zero
+            A = torch.empty(r, in_f, device=device, dtype=torch.float32)
+            torch.nn.init.kaiming_uniform_(A, a=_math.sqrt(5))
+            B = torch.zeros(out_f, r, device=device, dtype=torch.float32)
+            A.requires_grad_(True)
+            B.requires_grad_(True)
+
+            def _hook(_mod, inp, output, A=A, B=B):
+                x = inp[0].to(torch.float32)
+                return output + scaling * (x @ A.t() @ B.t()).to(output.dtype)
+
+            handle = down.register_forward_hook(_hook)
+            opt = torch.optim.AdamW([A, B], lr=config.learning_rate or 1e-4)
+            try:
+                step = 0
+                while step < config.more_plus_expert_steps and batches:
+                    for ids in batches:
+                        if step >= config.more_plus_expert_steps:
+                            break
+                        loss = self.model(input_ids=ids, labels=ids).loss
+                        opt.zero_grad()
+                        loss.backward()
+                        opt.step()
+                        last_loss = float(loss.detach())
+                        step += 1
+            finally:
+                handle.remove()
+            with torch.no_grad():
+                deltas[i] = (scaling * (B.detach() @ A.detach())).cpu().float()
+            callbacks.step(Metric(step=i + 1, loss=last_loss if last_loss is not None else 0.0))
+
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        router = mp.BM25Router.build(surrogates)
+        mp.save_experts(deltas, out)
+        (out / mp._INDEX_FILE).write_text(json.dumps(router.to_dict()))
+        mp.write_config(out, base_model=self.model_name, lora_r=r, lora_alpha=alpha,
+                        final_layer_idx=last_idx, num_experts=len(units),
+                        k=config.more_plus_k, tau=config.more_plus_tau,
+                        group_size=config.more_plus_group_size)
+        self.tokenizer.save_pretrained(str(out))
+        self.model._shadow_surface = methods.ADAPTER_MORE_PLUS
+        # hold state so save() can re-emit, and so this session can route/generate
+        self._more_plus = {"router": router, "deltas": deltas, "down": down,
+                           "snapshot": down.weight.detach().clone(),
+                           "k": config.more_plus_k, "tau": config.more_plus_tau,
+                           "meta": {"lora_r": r, "lora_alpha": alpha,
+                                    "final_layer_idx": last_idx,
+                                    "group_size": config.more_plus_group_size}}
+        callbacks.log(f"[more+] {len(units)} experts saved · {out}")
+        return FinetuneResult(checkpoint=str(out), final_loss=last_loss)
+
     def _attached_surface(self) -> str | None:
         """Which trainable surface this model currently hosts, if any."""
         marked = getattr(self.model, "_shadow_surface", None)
@@ -861,15 +992,52 @@ class TorchBackend(Backend):
         enc = {k: v.to(self.model.device) for k, v in enc.items()}
         sampling = ({"do_sample": True, "temperature": temperature, "top_p": top_p}
                     if temperature > 0 else {"do_sample": False})
-        with torch.no_grad():
-            out = self.model.generate(
-                **enc,
-                max_new_tokens=max_new_tokens,
-                pad_token_id=self.tokenizer.pad_token_id,
-                **sampling,
-            )
+        # MoRE+: BM25-route the prompt, merge the top-k expert deltas into the final
+        # FFN for this call (cache-safe — only a post-attention weight changes), then
+        # restore from the pristine snapshot so calls are stateless and drift-free.
+        merged = self._more_plus_merge(messages, tools)
+        try:
+            with torch.no_grad():
+                out = self.model.generate(
+                    **enc,
+                    max_new_tokens=max_new_tokens,
+                    pad_token_id=self.tokenizer.pad_token_id,
+                    **sampling,
+                )
+        finally:
+            if merged:
+                self._more_plus_restore()
         prompt_len = enc["input_ids"].shape[1]
         return self.tokenizer.decode(out[0][prompt_len:], skip_special_tokens=True)
+
+    def _more_plus_merge(self, messages, tools) -> bool:
+        """Merge the BM25-routed expert deltas into the final FFN. Returns whether
+        anything was merged (so chat() knows to restore afterward)."""
+        state = getattr(self, "_more_plus", None)
+        if not state or not state["router"].N:
+            return False
+        import torch  # noqa: PLC0415
+
+        text = self.tokenizer.apply_chat_template(
+            messages, tools=tools, add_generation_prompt=True, tokenize=False)
+        ids = [i for i, _ in state["router"].rank(text, state["k"])]
+        if not ids:
+            return False  # no term overlap → run on the clean base
+        weight = state["down"].weight
+        with torch.no_grad():
+            acc = state["snapshot"].to(weight.device, weight.dtype).clone()
+            for i in ids:
+                acc += state["deltas"][i].to(weight.device, weight.dtype)
+            weight.copy_(acc)
+        return True
+
+    def _more_plus_restore(self) -> None:
+        import torch  # noqa: PLC0415
+
+        state = self._more_plus
+        weight = state["down"].weight
+        with torch.no_grad():
+            weight.copy_(state["snapshot"].to(weight.device, weight.dtype))
 
     def save(self, path: str, *, fmt: str = "adapter") -> str:
         import json as _json  # noqa: PLC0415
@@ -879,7 +1047,8 @@ class TorchBackend(Backend):
         surface = self._attached_surface()
         if fmt == "merged" and surface in (methods.ADAPTER_BITFIT,
                                            methods.ADAPTER_BOTTLENECK,
-                                           methods.ADAPTER_MORE):
+                                           methods.ADAPTER_MORE,
+                                           methods.ADAPTER_MORE_PLUS):
             raise RuntimeError(f"fmt='merged' isn't supported for the {surface!r} surface")
         if surface == methods.ADAPTER_BITFIT:
             from safetensors.torch import save_file  # noqa: PLC0415
@@ -902,6 +1071,17 @@ class TorchBackend(Backend):
             self._more_index.save(out)
             more.write_config(out, base_model=self.model_name, rank=meta["rank"],
                               k=meta["k"], num_layers=meta["num_layers"])
+        elif surface == methods.ADAPTER_MORE_PLUS:
+            from .. import more_plus as mp  # noqa: PLC0415
+            st = self._more_plus
+            meta = st["meta"]
+            mp.save_experts(st["deltas"], out)
+            (out / mp._INDEX_FILE).write_text(_json.dumps(st["router"].to_dict()))
+            mp.write_config(out, base_model=self.model_name, lora_r=meta["lora_r"],
+                            lora_alpha=meta["lora_alpha"], final_layer_idx=meta["final_layer_idx"],
+                            num_experts=st["router"].N, k=st["k"], tau=st["tau"],
+                            group_size=meta["group_size"])
+            self.tokenizer.save_pretrained(str(out))
         elif fmt == "merged" and hasattr(self.model, "merge_and_unload"):
             merged = self.model.merge_and_unload()
             merged.save_pretrained(str(out))

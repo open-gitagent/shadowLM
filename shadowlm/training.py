@@ -64,6 +64,12 @@ class TrainConfig:
     retrieval_k: int = 2  # memories retrieved per token
     retrieval_layers: int = 8  # how many attention layers (from the top) get memory
 
+    # decoupled experts (more_plus — DMoE-style final-FFN experts + BM25 routing)
+    more_plus_k: int = 2  # experts merged per query at inference
+    more_plus_expert_steps: int = 30  # training steps per knowledge-unit expert
+    more_plus_group_size: int = 1  # dataset rows folded into one expert
+    more_plus_tau: float = 0.5  # entropy gate threshold (stored for per-token gating; v1.1)
+
     # soft-prompt family (prompt, ptuning)
     num_virtual_tokens: int = 16  # learned virtual tokens prepended to the input
 

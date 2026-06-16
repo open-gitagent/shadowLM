@@ -26,6 +26,7 @@ from .base import (
     ADAPTER_DORA,
     ADAPTER_LORA,
     ADAPTER_MORE,
+    ADAPTER_MORE_PLUS,
     ADAPTER_NONE,
     ADAPTER_PROMPT,
     ADAPTER_PTUNING,
@@ -36,7 +37,7 @@ from .base import (
 )
 
 # Importing a technique module registers it.
-from . import adapter, bitfit, cpt, dora, dpo, full, grpo, lora, more, ptuning, qlora, soft_prompt  # noqa: E402, F401
+from . import adapter, bitfit, cpt, dora, dpo, full, grpo, lora, more, more_plus, ptuning, qlora, soft_prompt  # noqa: E402, F401
 
 __all__ = [
     "ADAPTER_BITFIT",
@@ -44,6 +45,7 @@ __all__ = [
     "ADAPTER_DORA",
     "ADAPTER_LORA",
     "ADAPTER_MORE",
+    "ADAPTER_MORE_PLUS",
     "ADAPTER_NONE",
     "ADAPTER_PROMPT",
     "ADAPTER_PTUNING",

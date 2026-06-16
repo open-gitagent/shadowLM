@@ -5,7 +5,7 @@
 <p align="center">
   <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-E5484D">
   <img alt="Python 3.10+" src="https://img.shields.io/badge/python-3.10%2B-16120E">
-  <img alt="Methods" src="https://img.shields.io/badge/training_methods-12-E5484D">
+  <img alt="Methods" src="https://img.shields.io/badge/training_methods-13-E5484D">
   <img alt="Batteries included" src="https://img.shields.io/badge/install-batteries_included-16120E">
 </p>
 
@@ -32,7 +32,7 @@ model.save("out/", fmt="adapter")                            # ship it
 ```
 
 Change `method="lora"` to `qlora`, `dora`, `full`, `dpo`, `grpo`, `more`, `bitfit`,
-`prompt`, `ptuning`, `adapter`, `cpt` — and nothing else changes. That's the idea.
+`prompt`, `ptuning`, `adapter`, `cpt`, `more_plus` — and nothing else changes. That's the idea.
 
 ## What ShadowLM is for
 
@@ -72,7 +72,7 @@ The whole **capture → judge → train → own a shadowLM** loop runs on these:
 | Block | What it does | API |
 |-------|--------------|-----|
 | **Capture proxy** | drop-in OpenAI endpoint that records your agent's traffic into trajectories — agent unchanged | `slm.capture()` |
-| **12 methods** | LoRA · QLoRA · DoRA · full · CPT · DPO · GRPO · MoRE · BitFit · prompt · p-tuning · adapter | `method=` |
+| **13 methods** | LoRA · QLoRA · DoRA · full · CPT · DPO · GRPO · MoRE · MoRE+ · BitFit · prompt · p-tuning · adapter | `method=` |
 | **Judge → train** | score episodes with an LLM judge, train with trajectory-GRPO or DPO | `judge_group` |
 | **APO** | optimize the *prompt* instead of weights — same capture/judge front end, no GPU | `slm.optimize_prompt()` |
 | **VERL RL** | production multi-GPU GRPO (vLLM rollouts + FSDP) for cluster-scale RL | `backend="verl"` |
@@ -100,6 +100,7 @@ spec (adapter kind, base requirements, data rendering), never the method name.
 | `dpo`   | preference optimization on `{prompt, chosen, rejected}` | either | 5e-6 |
 | `grpo`  | RL from reward functions or scored `TrajectoryGroup`s | either | 5e-6 |
 | `more`  | **mixture of retrieval experts** — facts fused into attention | either | 1e-4 |
+| `more_plus` | **decoupled MoE** — per-fact final-FFN LoRA experts, BM25-routed, cache-safe merge (torch) | either | 1e-4 |
 | `bitfit`| train only the bias terms (~0.1% of params) | **unquantized** | 5e-4 |
 | `prompt`/`ptuning` | soft prompts / p-tuning — learned virtual tokens | either | 5e-3 |
 | `adapter` | bottleneck adapter modules after each layer | either | 1e-4 |
@@ -209,7 +210,7 @@ API — nothing reimplemented — to turn the blocks into a one-click migration:
 
 ```
 [x] SDK — datasets → finetune → inference on mlx / torch / remote
-[x] 12 methods incl. MoRE, trajectory GRPO, judge rewards
+[x] 13 methods incl. MoRE, MoRE+ (decoupled MoE), trajectory GRPO, judge rewards
 [x] Capture proxy · shadow accelerator · any-hardware
 [x] Remote backend + reference server + the studio dashboard + CLI
 [ ] Studio orchestration — decision inbox · eval gates · shadow router · switch

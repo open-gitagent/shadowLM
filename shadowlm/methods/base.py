@@ -14,6 +14,7 @@ from dataclasses import dataclass
 ADAPTER_LORA = "lora"  # low-rank adapters
 ADAPTER_DORA = "dora"  # weight-decomposed LoRA — often better at low rank
 ADAPTER_MORE = "more"  # memory experts: retrieval-fused attention projections
+ADAPTER_MORE_PLUS = "more_plus"  # decoupled per-unit final-FFN experts + BM25 routing
 ADAPTER_BITFIT = "bitfit"  # bias terms only
 ADAPTER_PROMPT = "prompt"  # learned virtual tokens (soft prompts)
 ADAPTER_PTUNING = "ptuning"  # virtual tokens via a small encoder

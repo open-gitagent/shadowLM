@@ -119,6 +119,11 @@ class MLXBackend(Backend):
         # Memory-tuned adapters carry their own index + wrapper config and are
         # re-attached by hand; plain adapters go through the normal loader.
         from .. import bottleneck  # noqa: PLC0415
+        from .. import more_plus as _mp  # noqa: PLC0415
+        if adapter and _mp.read_config(adapter):
+            raise NotImplementedError(
+                "more_plus: mlx support is coming soon — load with backend='torch'."
+            )
         more_cfg = more.read_config(adapter) if adapter else None
         bn_cfg = bottleneck.read_config(adapter) if adapter else None
         with quiet_backend():  # swallow huggingface_hub "Fetching files" tqdm
@@ -217,6 +222,10 @@ class MLXBackend(Backend):
         if spec.adapter == methods.ADAPTER_MORE:
             return self._finetune_more(dataset, config, callbacks, output_dir,
                                        eval_dataset, iters)
+        if spec.adapter == methods.ADAPTER_MORE_PLUS:
+            raise NotImplementedError(
+                "more_plus: mlx support is coming soon — use backend='torch'."
+            )
         if spec.adapter in (methods.ADAPTER_PROMPT, methods.ADAPTER_PTUNING):
             raise RuntimeError(
                 f"method={config.method!r} (soft-prompt family) runs on the torch "

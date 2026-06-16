@@ -27,6 +27,7 @@ _MLX = re.compile(r"^(\d+)_adapters\.safetensors$")
 _SIDECARS = (
     "adapter_config.json", "bitfit_config.json", "bottleneck_config.json",
     "more_config.json", "memory_store.npz", "index.faiss",  # MoRE: config + fact index
+    "more_plus_config.json", "more_plus_index.json", "more_plus_experts.safetensors",  # MoRE+
 )
 
 
