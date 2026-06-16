@@ -102,6 +102,24 @@ function allParams(info?: MethodInfo): Param[] {
   return [...CORE, ...methodParams(info), ...advancedParams(info)];
 }
 
+// Group the methods into families so the picker reads as SFT / PEFT / RL / Memory.
+const FAMILY: Record<string, string> = {
+  lora: "peft", qlora: "peft", dora: "peft", adapter: "peft",
+  bitfit: "peft", prompt: "peft", ptuning: "peft",
+  full: "sft", cpt: "sft",
+  dpo: "rl", grpo: "rl",
+  more: "memory",
+};
+const FAMILY_LABEL: Record<string, string> = {
+  peft: "PEFT · parameter-efficient",
+  sft: "SFT · full & continued pretraining",
+  rl: "Preference & RL",
+  memory: "Memory · retrieval",
+  other: "Other",
+};
+const FAMILY_ORDER = ["peft", "sft", "rl", "memory", "other"];
+const familyOf = (name: string) => FAMILY[name] ?? "other";
+
 export default function Train({ methods }: { methods: MethodInfo[] }) {
   const [step, setStep] = useState(0);
   const [datasets, setDatasets] = useState<DatasetMeta[]>([]);
@@ -327,23 +345,36 @@ export default function Train({ methods }: { methods: MethodInfo[] }) {
               <p className="text-xs text-muted-foreground mb-4">
                 your dataset is <b className="text-foreground">{meta?.format ?? "?"}</b> — recommended methods first.
               </p>
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
-                {ordered.map((m) => (
-                  <button key={m.name} onClick={() => pickMethod(m.name)}
-                    title={m.description}
-                    className={`text-left px-3 py-2 rounded-md border text-sm transition-colors ${
-                      method === m.name
-                        ? "border-primary bg-primary/10 text-foreground"
-                        : "border-border bg-card hover:border-primary/40"}`}>
-                    <div className="flex items-center justify-between">
-                      <span className="font-medium">{m.name}</span>
-                      {rec.includes(m.name) &&
-                        <span className="text-[9px] font-mono uppercase text-primary">rec</span>}
+              <div className="space-y-4">
+                {FAMILY_ORDER.map((fam) => {
+                  const items = ordered.filter((m) => familyOf(m.name) === fam);
+                  if (!items.length) return null;
+                  return (
+                    <div key={fam}>
+                      <div className="text-[10px] font-mono uppercase tracking-[0.18em] text-muted-foreground mb-1.5">
+                        {FAMILY_LABEL[fam]}
+                      </div>
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
+                        {items.map((m) => (
+                          <button key={m.name} onClick={() => pickMethod(m.name)}
+                            title={m.description}
+                            className={`text-left px-3 py-2 rounded-md border text-sm transition-colors ${
+                              method === m.name
+                                ? "border-primary bg-primary/10 text-foreground"
+                                : "border-border bg-card hover:border-primary/40"}`}>
+                            <div className="flex items-center justify-between">
+                              <span className="font-medium">{m.name}</span>
+                              {rec.includes(m.name) &&
+                                <span className="text-[9px] font-mono uppercase text-primary">rec</span>}
+                            </div>
+                            <div className="text-[10px] text-muted-foreground font-mono mt-0.5">
+                              lr {m.default_lr} · {m.trainer}</div>
+                          </button>
+                        ))}
+                      </div>
                     </div>
-                    <div className="text-[10px] text-muted-foreground font-mono mt-0.5">
-                      lr {m.default_lr} · {m.trainer}</div>
-                  </button>
-                ))}
+                  );
+                })}
               </div>
               {methodInfo && (
                 <p className="mt-3 text-xs text-muted-foreground">{methodInfo.description}</p>
