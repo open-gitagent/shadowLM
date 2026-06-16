@@ -65,8 +65,10 @@ class TrainConfig:
     retrieval_layers: int = 8  # how many attention layers (from the top) get memory
 
     # decoupled experts (more_plus — DMoE-style final-FFN experts + BM25 routing)
-    more_plus_k: int = 2  # experts merged per query at inference
-    more_plus_expert_steps: int = 30  # training steps per knowledge-unit expert
+    more_plus_k: int = 1  # experts merged per query; >1 composes facts but the
+    # single-FFN merge surface interferes, so 1 (route to the best expert) is the
+    # clean default — raise only when facts genuinely combine
+    more_plus_expert_steps: int = 60  # training steps per knowledge-unit expert
     more_plus_group_size: int = 1  # dataset rows folded into one expert
     more_plus_tau: float = 0.5  # entropy gate threshold (stored for per-token gating; v1.1)
 
@@ -341,6 +343,12 @@ def resolve_total_steps(config: TrainConfig, n_examples: int) -> int:
     `max_steps` wins if set; otherwise derive from epochs and the effective batch
     size (per-device batch × grad-accumulation).
     """
+    from . import methods  # noqa: PLC0415 — lazy, avoids an import cycle
+
+    if methods.get(config.method).adapter == methods.ADAPTER_MORE_PLUS:
+        # MoRE+ trains one expert per knowledge unit; the run's outer progress is
+        # one step per unit (the per-expert inner loop is more_plus_expert_steps).
+        return max(1, math.ceil(n_examples / max(1, config.more_plus_group_size)))
     if config.max_steps:
         return config.max_steps
     if config.num_train_epochs:
