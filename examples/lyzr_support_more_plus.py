@@ -49,15 +49,11 @@ for q in probes:
     print(f"Q: {q}\nA: {model.generate(q, max_new_tokens=40, temperature=0.0).strip()}\n")
 
 # 2. MoRE+: one final-FFN expert per support fact, BM25-routed -----------------
-run = model.finetune(
-    kb,
-    method="more_plus",
-    more_plus_expert_steps=150,  # steps per knowledge unit (precise numerals want more)
-    more_plus_group_size=1,      # one fact per expert (raise to fold rows together)
-    more_plus_k=1,               # route to the single best expert per question;
-    # >1 composes experts but the single-FFN merge surface interferes
-    lora_r=8, lora_alpha=8,      # rank=alpha → LoRA scaling 1.0 (stable merge)
-)
+# The defaults do the right thing: k=1 (route to the single best expert),
+# steps/expert auto-scaled to the model size, and a BM25 + semantic router (so a
+# question about "human resources" still finds the "HR" expert). Override
+# more_plus_expert_steps / more_plus_k / more_plus_group_size to tune.
+run = model.finetune(kb, method="more_plus")
 
 # 3. answers from the routed experts (base is untouched at rest) ---------------
 print("=== after (MoRE+ — routes + merges the right experts per question) ===")
