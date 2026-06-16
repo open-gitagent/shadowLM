@@ -674,6 +674,9 @@ class TorchBackend(Backend):
         r = config.lora_r or 4
         alpha = config.lora_alpha or r
         scaling = alpha / r
+        # steps/expert scale with the final-FFN width unless the user pins them —
+        # a bigger base's wider FFN needs more steps to converge at a fixed lr.
+        steps = config.more_plus_expert_steps or mp.auto_steps(in_f)
 
         units = mp.split_units(dataset, config.more_plus_group_size)
         # drop units whose surrogate has no routable tokens — they'd train an
@@ -689,7 +692,7 @@ class TorchBackend(Backend):
                 "empty. Provide rows with an instruction/question/prompt (or a user turn)."
             )
         callbacks.log(f"[more+] {len(units)} knowledge units → final-FFN experts "
-                      f"(layer {last_idx}, r={r})")
+                      f"(layer {last_idx}, r={r}, {steps} steps/expert)")
 
         for p in self.model.parameters():
             p.requires_grad_(False)
@@ -718,6 +721,7 @@ class TorchBackend(Backend):
 
         deltas: dict[int, "torch.Tensor"] = {}
         surrogates: list[str] = []
+        expert_losses: list[float] = []
         last_loss = None
         for i, (surrogate, rows) in enumerate(units):
             surrogates.append(surrogate)
@@ -737,9 +741,9 @@ class TorchBackend(Backend):
             opt = torch.optim.AdamW([A, B], lr=config.learning_rate or 1e-4)
             try:
                 step = 0
-                while step < config.more_plus_expert_steps and batches:
+                while step < steps and batches:
                     for ids in batches:
-                        if step >= config.more_plus_expert_steps:
+                        if step >= steps:
                             break
                         loss = self.model(input_ids=ids, labels=ids).loss
                         opt.zero_grad()
@@ -751,14 +755,19 @@ class TorchBackend(Backend):
                 handle.remove()
             with torch.no_grad():
                 deltas[i] = (scaling * (B.detach() @ A.detach())).cpu().float()
+            expert_losses.append(last_loss if last_loss is not None else 0.0)
             callbacks.step(Metric(step=i + 1, loss=last_loss if last_loss is not None else 0.0))
+
+        mp.warn_undertrained(expert_losses, steps, callbacks.log)
 
         if prev_use_cache is not None:
             self.model.config.use_cache = prev_use_cache
 
         out = Path(output_dir)
         out.mkdir(parents=True, exist_ok=True)
-        router = mp.BM25Router.build(surrogates)
+        router = mp.BM25Router.build(surrogates, embed=True)
+        callbacks.log("[more+] router: BM25 + semantic" if router.emb is not None
+                      else "[more+] router: BM25 only (sentence-transformers not installed)")
         mp.save_experts(deltas, out)
         (out / mp._INDEX_FILE).write_text(json.dumps(router.to_dict()))
         mp.write_config(out, base_model=self.model_name, lora_r=r, lora_alpha=alpha,

@@ -511,6 +511,8 @@ class MLXBackend(Backend):
         r = config.lora_r or 4
         alpha = config.lora_alpha or r
         scaling = alpha / r
+        # steps/expert scale with the final-FFN width unless the user pins them.
+        steps = config.more_plus_expert_steps or mp.auto_steps(in_f)
 
         units = mp.split_units(dataset, config.more_plus_group_size)
         kept = [(s, rows) for s, rows in units if mp._tokenize(s)]
@@ -523,7 +525,7 @@ class MLXBackend(Backend):
                 "more_plus: no routable knowledge units — every row's input side is "
                 "empty. Provide rows with an instruction/question/prompt (or a user turn).")
         callbacks.log(f"[more+] {len(units)} knowledge units → final-FFN experts "
-                      f"(layer {last_idx}, r={r})")
+                      f"(layer {last_idx}, r={r}, {steps} steps/expert)")
 
         chatable = (dataset.format in (CHAT, SHAREGPT, INSTRUCTION)
                     and getattr(self.tokenizer, "chat_template", None))
@@ -557,6 +559,7 @@ class MLXBackend(Backend):
 
         deltas: dict[int, "mx.array"] = {}
         surrogates: list[str] = []
+        expert_losses: list[float] = []
         last_loss = None
         for i, (surrogate, rows) in enumerate(units):
             surrogates.append(surrogate)
@@ -568,9 +571,9 @@ class MLXBackend(Backend):
             opt = optim.Adam(learning_rate=config.learning_rate or 1e-4)
             loss_and_grad = nn.value_and_grad(self.model, loss_fn)
             step = 0
-            while step < config.more_plus_expert_steps and batches:
+            while step < steps and batches:
                 for ids in batches:
-                    if step >= config.more_plus_expert_steps:
+                    if step >= steps:
                         break
                     loss, grads = loss_and_grad(self.model, ids)
                     opt.update(self.model, grads)
@@ -583,13 +586,17 @@ class MLXBackend(Backend):
             mx.eval(delta)
             deltas[i] = delta
             mlp.down_proj = down                          # restore the pristine FFN
+            expert_losses.append(last_loss if last_loss is not None else 0.0)
             callbacks.step(Metric(step=i + 1,
                                   loss=last_loss if last_loss is not None else 0.0))
         self.model.freeze()
+        mp.warn_undertrained(expert_losses, steps, callbacks.log)
 
         out = Path(output_dir)
         out.mkdir(parents=True, exist_ok=True)
-        router = mp.BM25Router.build(surrogates)
+        router = mp.BM25Router.build(surrogates, embed=True)
+        callbacks.log("[more+] router: BM25 + semantic" if router.emb is not None
+                      else "[more+] router: BM25 only (sentence-transformers not installed)")
         # store as numpy → save_experts persists as torch so the same file loads
         # on either backend
         mp.save_experts({i: np.array(d, copy=False) for i, d in deltas.items()}, out)

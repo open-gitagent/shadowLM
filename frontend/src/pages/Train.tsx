@@ -69,7 +69,7 @@ const EXTRA: Record<string, Param[]> = {
   ],
   more_plus: [
     { key: "more_plus_k", label: "Experts / query", kind: "int", def: "1", hint: "experts merged per prompt (>1 can interfere)" },
-    { key: "more_plus_expert_steps", label: "Steps / expert", kind: "int", def: "60", hint: "training steps per knowledge unit" },
+    { key: "more_plus_expert_steps", label: "Steps / expert", kind: "int", def: "0", hint: "0 = auto (scales with model size)" },
     { key: "more_plus_group_size", label: "Rows / expert", kind: "int", def: "1", hint: "dataset rows folded into one expert" },
     { key: "lora_r", label: "Expert LoRA rank", kind: "int", def: "4" },
     { key: "lora_alpha", label: "Expert LoRA alpha", kind: "int", def: "4" },

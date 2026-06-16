@@ -29,29 +29,70 @@ def _tokenize(text: str) -> list[str]:
     return _WORD.findall((text or "").lower())
 
 
-# ---- BM25 router (training-free, decoupled) ---------------------------------
+# ---- semantic side of the router: a resident sentence-transformer -----------
+EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"  # 384-dim, shared with MoRE
+_embedder = None  # lazy, resident (in-process, CPU) — loaded once, reused per query
+
+
+def embed(texts) -> "object | None":
+    """L2-normalized float32 embeddings [N, dim] for `texts`, or None if
+    sentence-transformers isn't importable (the router falls back to pure BM25).
+
+    The model is loaded once and kept resident — embedding a query at inference
+    is then a cheap CPU forward, not a subprocess. Runs fine alongside an mlx or
+    torch model in the same process."""
+    import importlib.util  # noqa: PLC0415
+
+    if importlib.util.find_spec("sentence_transformers") is None:
+        return None
+    global _embedder
+    try:
+        import numpy as np  # noqa: PLC0415
+
+        if _embedder is None:
+            from sentence_transformers import SentenceTransformer  # noqa: PLC0415
+            _embedder = SentenceTransformer(EMBED_MODEL, device="cpu")
+        e = _embedder.encode(list(texts), normalize_embeddings=True,
+                             show_progress_bar=False)
+        return np.asarray(e, dtype="float32")
+    except Exception:  # noqa: BLE001 — any embedding failure → BM25-only routing
+        return None
+
+
+# ---- hybrid router (BM25 + semantic, training-free, decoupled) --------------
 class BM25Router:
-    """Okapi BM25 over each expert's text surrogate. Picks which experts to merge.
+    """Hybrid router over each expert's text surrogate — BM25 ∪ embedding cosine.
+
+    BM25 nails exact lexical hits (names, codes, prices); the semantic side
+    bridges the synonym gap that pure lexical routing misses ("HR" ↔ "human
+    resources"). Scores are fused (normalized BM25 + cosine); an expert is a
+    candidate only if it has lexical overlap OR clears a similarity floor, so an
+    off-topic query still activates nothing (generation runs on the clean base).
 
     Decoupled from the model: adding/removing an expert is just editing the doc
-    list, no retraining. `rank` returns only positive-scoring experts, so a query
-    with no term overlap activates nothing (generation runs on the clean base).
+    list, no retraining. With no embeddings (sentence-transformers absent) it
+    degrades to plain BM25, byte-for-byte the old behavior.
     """
 
-    def __init__(self, docs, df, n, avgdl, *, k1: float = 1.5, b: float = 0.75) -> None:
+    def __init__(self, docs, df, n, avgdl, *, k1: float = 1.5, b: float = 0.75,
+                 emb=None, w: float = 0.5, sim_floor: float = 0.35) -> None:
         self.docs = docs        # [{"id", "surrogate", "tf": {term: count}, "len"}]
         self.df = df            # {term: # docs containing it}
         self.n = n              # number of experts
         self.avgdl = avgdl
         self.k1 = k1
         self.b = b
+        self.emb = emb          # np.ndarray [n, dim] (normalized) or None
+        self.w = w              # fusion weight on the (normalized) BM25 side
+        self.sim_floor = sim_floor  # min cosine for a semantic-only candidate
 
     @property
     def N(self) -> int:
         return self.n
 
     @classmethod
-    def build(cls, surrogates: list[str], *, k1: float = 1.5, b: float = 0.75) -> "BM25Router":
+    def build(cls, surrogates: list[str], *, embed: bool = False,
+              k1: float = 1.5, b: float = 0.75) -> "BM25Router":
         docs, df = [], {}
         for i, s in enumerate(surrogates):
             toks = _tokenize(s)
@@ -63,15 +104,16 @@ class BM25Router:
             docs.append({"id": i, "surrogate": s, "tf": tf, "len": len(toks)})
         n = len(docs)
         avgdl = (sum(d["len"] for d in docs) / n) if n else 0.0
-        return cls(docs, df, n, avgdl, k1=k1, b=b)
+        emb = globals()["embed"](surrogates) if (embed and n) else None
+        return cls(docs, df, n, avgdl, k1=k1, b=b, emb=emb)
 
     def _idf(self, term: str) -> float:
         nq = self.df.get(term, 0)
         return math.log(1 + (self.n - nq + 0.5) / (nq + 0.5))
 
-    def rank(self, query: str, k: int) -> list[tuple[int, float]]:
+    def _bm25(self, query: str) -> dict[int, float]:
         q = _tokenize(query)
-        scored = []
+        out: dict[int, float] = {}
         for d in self.docs:
             s = 0.0
             for t in q:
@@ -80,18 +122,81 @@ class BM25Router:
                     continue
                 denom = f + self.k1 * (1 - self.b + self.b * d["len"] / (self.avgdl or 1.0))
                 s += self._idf(t) * (f * (self.k1 + 1)) / denom
-            scored.append((d["id"], s))
-        scored.sort(key=lambda x: (-x[1], x[0]))  # high score first; id tiebreak
-        return [(i, sc) for i, sc in scored if sc > 0.0][:k]
+            if s > 0.0:
+                out[d["id"]] = s
+        return out
+
+    def rank(self, query: str, k: int) -> list[tuple[int, float]]:
+        bm = self._bm25(query)
+        qv = globals()["embed"]([query]) if self.emb is not None else None
+        if qv is None:  # pure BM25 (no embeddings, or embedder vanished)
+            return sorted(bm.items(), key=lambda x: (-x[1], x[0]))[:k]
+        cos = self.emb @ qv[0]  # [n] cosine (both sides L2-normalized)
+        # candidate = lexical overlap OR clears the similarity floor; an off-topic
+        # query matches neither, so nothing activates (run on the clean base).
+        cand = [d["id"] for d in self.docs
+                if bm.get(d["id"], 0.0) > 0 or max(0.0, float(cos[d["id"]])) >= self.sim_floor]
+        if not cand:
+            return []
+        # Min-max normalize BOTH signals over the candidates before fusing: BM25
+        # and cosine live on different scales (cosine's range is compressed), so
+        # without this the lexical side dominates and synonyms get misrouted.
+        bmax = max((bm.get(i, 0.0) for i in cand), default=0.0)
+        sims = {i: max(0.0, float(cos[i])) for i in cand}
+        cmin, cmax = min(sims.values()), max(sims.values())
+        crange = cmax - cmin
+        scored = []
+        for i in cand:
+            b_norm = (bm.get(i, 0.0) / bmax) if bmax > 0 else 0.0
+            c_norm = ((sims[i] - cmin) / crange) if crange > 0 else 1.0
+            scored.append((i, self.w * b_norm + (1 - self.w) * c_norm))
+        scored.sort(key=lambda x: (-x[1], x[0]))
+        return scored[:k]
 
     def to_dict(self) -> dict:
-        return {"version": 1, "k1": self.k1, "b": self.b, "n": self.n,
-                "avgdl": self.avgdl, "df": self.df, "docs": self.docs}
+        d = {"version": 2, "k1": self.k1, "b": self.b, "n": self.n,
+             "avgdl": self.avgdl, "df": self.df, "docs": self.docs,
+             "w": self.w, "sim_floor": self.sim_floor}
+        if self.emb is not None:
+            d["emb"] = self.emb.tolist()
+            d["emb_model"] = EMBED_MODEL
+        return d
 
     @classmethod
     def from_dict(cls, d: dict) -> "BM25Router":
+        emb = d.get("emb")
+        if emb is not None:
+            import numpy as np  # noqa: PLC0415
+            emb = np.asarray(emb, dtype="float32")
         return cls(d["docs"], d["df"], d["n"], d["avgdl"],
-                   k1=d.get("k1", 1.5), b=d.get("b", 0.75))
+                   k1=d.get("k1", 1.5), b=d.get("b", 0.75), emb=emb,
+                   w=d.get("w", 0.5), sim_floor=d.get("sim_floor", 0.35))
+
+
+# ---- training-step budget that scales with the writable surface -------------
+def auto_steps(intermediate_dim: int) -> int:
+    """Default training steps per expert, scaled to the final FFN width.
+
+    A MoRE+ expert is a LoRA driving the final `down_proj` (in-features =
+    intermediate_dim). A wider FFN needs more steps to converge at a fixed lr,
+    and exact tokens (prices, dates) want more than categorical recall — so this
+    errs generous: ~120 for a 0.5B (≈4.9k) vs ~275 for a 3B (≈11k). Calibrated so
+    small models stay fast and large ones don't silently under-train."""
+    return max(60, min(300, round(intermediate_dim / 40)))
+
+
+_UNDERTRAINED_LOSS = 0.2  # per-expert final loss above this ≈ not yet memorized
+
+
+def warn_undertrained(expert_losses, steps: int, log) -> None:
+    """Flag experts that didn't converge — the usual cause of wrong/degenerate
+    answers on a larger base — so the user knows to raise steps or the lr."""
+    bad = [loss for loss in expert_losses if loss > _UNDERTRAINED_LOSS]
+    if bad and len(bad) >= max(1, len(expert_losses) // 4):
+        avg = sum(bad) / len(bad)
+        log(f"[more+] ⚠ {len(bad)}/{len(expert_losses)} experts under-trained "
+            f"(final loss ~{avg:.2f} > {_UNDERTRAINED_LOSS}) at {steps} steps/expert "
+            f"— raise more_plus_expert_steps or learning_rate for cleaner recall")
 
 
 # ---- uncertainty gate (shipped + tested; wired into decode in v1.1) ---------

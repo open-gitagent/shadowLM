@@ -68,7 +68,8 @@ class TrainConfig:
     more_plus_k: int = 1  # experts merged per query; >1 composes facts but the
     # single-FFN merge surface interferes, so 1 (route to the best expert) is the
     # clean default — raise only when facts genuinely combine
-    more_plus_expert_steps: int = 60  # training steps per knowledge-unit expert
+    more_plus_expert_steps: int = 0  # training steps per expert; 0 → auto (scales
+    # with the final-FFN width so a bigger base doesn't silently under-train)
     more_plus_group_size: int = 1  # dataset rows folded into one expert
     more_plus_tau: float = 0.5  # entropy gate threshold (stored for per-token gating; v1.1)
 

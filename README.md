@@ -100,7 +100,7 @@ spec (adapter kind, base requirements, data rendering), never the method name.
 | `dpo`   | preference optimization on `{prompt, chosen, rejected}` | either | 5e-6 |
 | `grpo`  | RL from reward functions or scored `TrajectoryGroup`s | either | 5e-6 |
 | `more`  | **mixture of retrieval experts** — facts fused into attention | either | 1e-4 |
-| `more_plus` | **decoupled MoE** — per-fact final-FFN LoRA experts, BM25-routed, cache-safe merge | **unquantized** | 1e-4 |
+| `more_plus` | **decoupled MoE** — per-fact final-FFN LoRA experts, BM25+semantic routed, cache-safe merge | **unquantized** | 1e-4 |
 | `bitfit`| train only the bias terms (~0.1% of params) | **unquantized** | 5e-4 |
 | `prompt`/`ptuning` | soft prompts / p-tuning — learned virtual tokens | either | 5e-3 |
 | `adapter` | bottleneck adapter modules after each layer | either | 1e-4 |
