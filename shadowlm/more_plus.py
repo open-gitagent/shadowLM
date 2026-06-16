@@ -194,14 +194,18 @@ def final_ffn_module(model):
         down = getattr(mlp, "down_proj", None) if mlp is not None else None
         if down is not None:
             return down, len(layers) - 1
-    last = None
+    # fallback for non-standard architectures: the last module named *down_proj.
+    # Recover its real layer index from the module path (metadata only) rather
+    # than guessing — avoids a misleading or -1 index.
+    last, last_name = None, ""
     for name, mod in model.named_modules():
         if name.endswith("down_proj"):
-            last = mod
+            last, last_name = mod, name
     if last is None:
         raise RuntimeError("more_plus: could not locate a final-FFN down_proj on this model")
-    n_layers = len(layers) if layers is not None else 0
-    return last, n_layers - 1
+    m = re.search(r"layers\.(\d+)\.", last_name)
+    idx = int(m.group(1)) if m else (len(layers) - 1 if layers is not None else 0)
+    return last, idx
 
 
 def merged_weight(base_weight, deltas: dict, ids):

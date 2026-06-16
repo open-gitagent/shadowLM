@@ -40,3 +40,14 @@ def test_split_units_chat_surrogate():
         {"messages": [{"role": "user", "content": "ask me"},
                       {"role": "assistant", "content": "answer"}]}])
     assert mp.split_units(ds, 1)[0][0] == "ask me"
+
+
+def test_router_routes_on_current_turn():
+    # Finding-1 regression: the backend ranks on the current user turn only, so
+    # the right expert wins for the new question regardless of prior turns.
+    r = mp.BM25Router.build([
+        "What does Lyzr Cloud cost per agent run?",   # 0 (cost)
+        "Which Lyzr agent is the marketer?",           # 1 (marketer)
+    ])
+    assert r.rank("Which Lyzr agent is the marketer?", 1)[0][0] == 1
+    assert r.rank("how much does Lyzr Cloud cost", 1)[0][0] == 0

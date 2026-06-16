@@ -154,9 +154,15 @@ class TorchBackend(Backend):
                 # the BM25-routed deltas into the final FFN per call, then restores.
                 router = mp.BM25Router.from_dict(
                     json.loads((Path(adapter) / mp._INDEX_FILE).read_text()))
+                experts = mp.load_experts(adapter)
+                if len(experts) != router.N:
+                    raise ValueError(
+                        f"more_plus checkpoint is inconsistent: router has {router.N} "
+                        f"experts but {len(experts)} deltas were loaded — the index "
+                        "and experts file are out of sync.")
                 down, _ = mp.final_ffn_module(self.model)
                 self._more_plus = {
-                    "router": router, "deltas": mp.load_experts(adapter), "down": down,
+                    "router": router, "deltas": experts, "down": down,
                     "snapshot": down.weight.detach().clone(),
                     "k": more_plus_cfg["k"], "tau": more_plus_cfg.get("tau", 0.5),
                     "meta": more_plus_cfg,
@@ -670,12 +676,29 @@ class TorchBackend(Backend):
         scaling = alpha / r
 
         units = mp.split_units(dataset, config.more_plus_group_size)
+        # drop units whose surrogate has no routable tokens — they'd train an
+        # expert that BM25 can never select (a dead, wasted slot).
+        kept = [(s, rows) for s, rows in units if mp._tokenize(s)]
+        if len(kept) != len(units):
+            callbacks.log(f"[more+] skipped {len(units) - len(kept)} unit(s) with "
+                          "empty/untokenizable input — not routable")
+        units = kept
+        if not units:
+            raise ValueError(
+                "more_plus: no routable knowledge units — every row's input side is "
+                "empty. Provide rows with an instruction/question/prompt (or a user turn)."
+            )
         callbacks.log(f"[more+] {len(units)} knowledge units → final-FFN experts "
                       f"(layer {last_idx}, r={r})")
 
         for p in self.model.parameters():
             p.requires_grad_(False)
         self.model.eval()
+        # training drives the model under grad, not generation — drop the KV cache
+        # (avoidable per-forward peak memory), restored before we return.
+        prev_use_cache = getattr(self.model.config, "use_cache", None)
+        if prev_use_cache is not None:
+            self.model.config.use_cache = False
 
         from ..data import CHAT, INSTRUCTION, SHAREGPT  # noqa: PLC0415
 
@@ -729,6 +752,9 @@ class TorchBackend(Backend):
             with torch.no_grad():
                 deltas[i] = (scaling * (B.detach() @ A.detach())).cpu().float()
             callbacks.step(Metric(step=i + 1, loss=last_loss if last_loss is not None else 0.0))
+
+        if prev_use_cache is not None:
+            self.model.config.use_cache = prev_use_cache
 
         out = Path(output_dir)
         out.mkdir(parents=True, exist_ok=True)
@@ -1018,16 +1044,25 @@ class TorchBackend(Backend):
             return False
         import torch  # noqa: PLC0415
 
-        text = self.tokenizer.apply_chat_template(
-            messages, tools=tools, add_generation_prompt=True, tokenize=False)
-        ids = [i for i, _ in state["router"].rank(text, state["k"])]
+        # Route on the CURRENT user turn only — the router was indexed on each
+        # unit's user-side surrogate, so ranking the full chat-templated prompt
+        # (system + prior turns + role markers) would mismatch and let stale
+        # context dominate BM25. Fall back to the whole template if no user turn.
+        query = next((m.get("content", "") for m in reversed(messages)
+                      if m.get("role") == "user"), "")
+        if not query:
+            query = self.tokenizer.apply_chat_template(
+                messages, tools=tools, add_generation_prompt=True, tokenize=False)
+        ids = [i for i, _ in state["router"].rank(query, state["k"])]
         if not ids:
             return False  # no term overlap → run on the clean base
         weight = state["down"].weight
         with torch.no_grad():
             acc = state["snapshot"].to(weight.device, weight.dtype).clone()
             for i in ids:
-                acc += state["deltas"][i].to(weight.device, weight.dtype)
+                d = state["deltas"].get(i)
+                if d is not None:
+                    acc += d.to(weight.device, weight.dtype)
             weight.copy_(acc)
         return True
 

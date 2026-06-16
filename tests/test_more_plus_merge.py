@@ -77,3 +77,23 @@ def test_final_ffn_module_resolves_down_proj():
             self.model = inner
     down, idx = mp.final_ffn_module(M())
     assert isinstance(down, torch.nn.Linear) and idx == 1
+
+
+def test_final_ffn_module_fallback_recovers_layer_index():
+    # non-standard tree: no decoder.layers, but a *.down_proj exists deep inside
+    class Odd(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.backbone = torch.nn.Module()
+            self.backbone.layers = torch.nn.ModuleList([torch.nn.Module()])
+            self.backbone.layers[0].down_proj = torch.nn.Linear(4, 6, bias=False)
+    down, idx = mp.final_ffn_module(Odd())
+    assert isinstance(down, torch.nn.Linear) and idx == 0  # parsed from layers.0., not -1
+
+    class NoLayers(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.head = torch.nn.Module()
+            self.head.down_proj = torch.nn.Linear(3, 3, bias=False)
+    down2, idx2 = mp.final_ffn_module(NoLayers())
+    assert isinstance(down2, torch.nn.Linear) and idx2 >= 0  # never a negative index
