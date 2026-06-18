@@ -87,7 +87,10 @@ gpu-start:  ## start the cloud GPU box (URL auto-recovers in ~1-2 min)
 gpu-stop:  ## stop the cloud GPU box (halts GPU billing; EBS volume remains)
 	@$(_GPUENV); \
 	aws ec2 stop-instances --instance-ids $$GPU_INSTANCE \
-	  --query "StoppingInstances[0].CurrentState.Name" --output text
+	  --query "StoppingInstances[0].CurrentState.Name" --output text; \
+	echo "waiting for stopped..."; aws ec2 wait instance-stopped --instance-ids $$GPU_INSTANCE; \
+	echo "state: $$(aws ec2 describe-instances --instance-ids $$GPU_INSTANCE \
+	  --query "Reservations[0].Instances[0].State.Name" --output text) · GPU billing off"
 
 .PHONY: gpu-status
 gpu-status:  ## show the cloud GPU box state + public IP
