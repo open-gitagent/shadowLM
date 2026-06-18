@@ -1,8 +1,0 @@
-{"instruction": "What is the capital of France?", "input": "", "output": "The capital of France is Paris."}
-{"instruction": "Summarize the sentence.", "input": "The quick brown fox jumps over the lazy dog.", "output": "A fox jumps over a dog."}
-{"instruction": "Translate to French.", "input": "Good morning", "output": "Bonjour"}
-{"instruction": "What is 12 multiplied by 8?", "input": "", "output": "12 multiplied by 8 is 96."}
-{"instruction": "Give a synonym for happy.", "input": "", "output": "A synonym for happy is joyful."}
-{"instruction": "Name a primary color.", "input": "", "output": "Red is a primary color."}
-{"instruction": "Convert to uppercase.", "input": "hello world", "output": "HELLO WORLD"}
-{"instruction": "What planet do we live on?", "input": "", "output": "We live on Earth."}
