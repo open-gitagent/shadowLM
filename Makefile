@@ -81,7 +81,7 @@ gpu-start:  ## start the cloud GPU box (URL auto-recovers in ~1-2 min)
 	echo "waiting for running..."; aws ec2 wait instance-running --instance-ids $$GPU_INSTANCE; \
 	IP=$$(aws ec2 describe-instances --instance-ids $$GPU_INSTANCE \
 	  --query "Reservations[0].Instances[0].PublicIpAddress" --output text); \
-	echo "running · IP $$IP$${GPU_DOMAIN:+ · https://$$GPU_DOMAIN}"
+	echo "state: running · IP $$IP$${GPU_DOMAIN:+ · https://$$GPU_DOMAIN} (URL back in ~1-2 min)"
 
 .PHONY: gpu-stop
 gpu-stop:  ## stop the cloud GPU box (halts GPU billing; EBS volume remains)
@@ -91,6 +91,17 @@ gpu-stop:  ## stop the cloud GPU box (halts GPU billing; EBS volume remains)
 	echo "waiting for stopped..."; aws ec2 wait instance-stopped --instance-ids $$GPU_INSTANCE; \
 	echo "state: $$(aws ec2 describe-instances --instance-ids $$GPU_INSTANCE \
 	  --query "Reservations[0].Instances[0].State.Name" --output text) · GPU billing off"
+
+.PHONY: gpu-reload
+gpu-reload:  ## restart the studio: frees all GPU VRAM + reloads it (box must be running)
+	@$(_GPUENV); \
+	IP=$$(aws ec2 describe-instances --instance-ids $$GPU_INSTANCE \
+	  --query "Reservations[0].Instances[0].PublicIpAddress" --output text); \
+	[ "$$IP" != "None" ] || { echo "box isn't running — run 'make gpu-start' first"; exit 1; }; \
+	aws ec2-instance-connect send-ssh-public-key --instance-id $$GPU_INSTANCE \
+	  --instance-os-user ubuntu --ssh-public-key "file://$$HOME/.ssh/id_rsa.pub" >/dev/null; \
+	ssh -o StrictHostKeyChecking=no -i $$HOME/.ssh/id_rsa ubuntu@$$IP \
+	  'sudo systemctl restart shadowlm; sleep 3; echo "shadowlm: $$(systemctl is-active shadowlm) · VRAM used: $$(nvidia-smi --query-gpu=memory.used --format=csv,noheader)"'
 
 .PHONY: gpu-status
 gpu-status:  ## show the cloud GPU box state + public IP
