@@ -3,11 +3,11 @@ import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import {
   Box, Cpu, Database, ExternalLink, History, LayoutDashboard, LogOut,
-  MessagesSquare,
+  MessagesSquare, Zap,
 } from "lucide-react";
 import {
-  apiKey, getAuthInfo, getHealth, getMethods, getSettings, login, logout,
-  setHfToken,
+  apiKey, clearVram, getAuthInfo, getHealth, getMethods, getSettings, getVram,
+  login, logout, setHfToken,
 } from "./api";
 import type { AuthInfo, MethodInfo } from "./api";
 import Dashboard from "./pages/Dashboard";
@@ -147,6 +147,10 @@ function Studio({ authEnabled, onSignOut }: { authEnabled: boolean; onSignOut: (
   const [methods, setMethods] = useState<MethodInfo[]>([]);
   const [hf, setHf] = useState("");
   const [hfSet, setHfSet] = useState(false);
+  const [vram, setVram] = useState("");
+
+  const showVram = (used: number | null | undefined) =>
+    setVram(used != null ? `VRAM ${(used / 1024).toFixed(1)} GB used` : "");
 
   useEffect(() => {
     getHealth()
@@ -154,10 +158,17 @@ function Studio({ authEnabled, onSignOut }: { authEnabled: boolean; onSignOut: (
       .catch((e) => setHealth(`⚠ ${e.message}`));
     getMethods().then((m) => setMethods(m.methods)).catch(() => {});
     getSettings().then((s) => setHfSet(s.hf_token_set)).catch(() => {});
+    getVram().then((v) => showVram(v.used_mb)).catch(() => {});
   }, []);
 
   async function saveHfToken() {
     try { setHfSet((await setHfToken(hf)).hf_token_set); setHf(""); } catch { /* ignore */ }
+  }
+
+  async function cleanVram() {
+    setVram("clearing…");
+    try { const r = await clearVram(); showVram(r.after_mb); }
+    catch { setVram("clear failed"); }
   }
 
   const page =
@@ -212,6 +223,12 @@ function Studio({ authEnabled, onSignOut }: { authEnabled: boolean; onSignOut: (
               save
             </button>
           </div>
+          <button onClick={cleanVram} title="Unload cached models + free GPU memory"
+                  className="w-full flex items-center gap-3 px-3 py-2 rounded-md text-xs text-muted-foreground hover:bg-sidebar-accent/40 transition-colors">
+            <Zap className="size-3.5" />
+            <span>Clean VRAM</span>
+            {vram && <span className="ml-auto font-mono text-[10px]">{vram}</span>}
+          </button>
           {authEnabled && (
             <button onClick={onSignOut}
                     className="w-full flex items-center gap-3 px-3 py-2 rounded-md text-xs text-muted-foreground hover:bg-sidebar-accent/40 transition-colors">

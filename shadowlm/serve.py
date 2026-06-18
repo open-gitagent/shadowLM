@@ -607,6 +607,39 @@ class Server:
         self._infer_cache[key] = m
         return m
 
+    @staticmethod
+    def _gpu_used_mb() -> int | None:
+        """Device-wide VRAM in use (MiB), or None off-CUDA."""
+        try:
+            import torch  # noqa: PLC0415
+            if not torch.cuda.is_available():
+                return None
+            free, total = torch.cuda.mem_get_info()
+            return round((total - free) / 1024 / 1024)
+        except Exception:  # noqa: BLE001
+            return None
+
+    def clear_vram(self) -> dict:
+        """Drop every cached inference model and release the GPU allocator's
+        cache — frees VRAM held after inference/compare without restarting the
+        server. Queued/running training is untouched (one job at a time)."""
+        import gc  # noqa: PLC0415
+
+        before = self._gpu_used_mb()
+        with self._model_lock:
+            n = len(self._infer_cache)
+            self._infer_cache.clear()
+        gc.collect()
+        try:
+            import torch  # noqa: PLC0415
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+        except Exception:  # noqa: BLE001
+            pass
+        gc.collect()
+        return {"unloaded": n, "before_mb": before, "after_mb": self._gpu_used_mb()}
+
     # ---- operations ------------------------------------------------------------
     def submit(self, payload: dict) -> str:
         job_id = uuid.uuid4().hex[:12]
@@ -795,6 +828,9 @@ def make_handler(server: Server, auth: "Auth"):
                                  "server_backend": server.backend_name})
             elif parts == ["v1", "models", "downloads"]:
                 self._send(200, {"downloads": server.download_status()})
+            elif parts == ["v1", "vram"]:
+                self._send(200, {"used_mb": server._gpu_used_mb(),
+                                 "cached_models": len(server._infer_cache)})
             elif parts == ["v1", "settings"]:
                 from . import hub as _hub  # noqa: PLC0415
                 self._send(200, {"hf_token_set": _hub.has_token()})
@@ -864,6 +900,8 @@ def make_handler(server: Server, auth: "Auth"):
                     if not b.get("model"):
                         return self._error(422, "provide a 'model' id")
                     self._send(202, server.start_download(b["model"]))
+                elif parts == ["v1", "vram", "clear"]:
+                    self._send(200, server.clear_vram())
                 elif parts == ["v1", "models", "custom"]:
                     b = self._body()
                     model = (b.get("model") or "").strip()

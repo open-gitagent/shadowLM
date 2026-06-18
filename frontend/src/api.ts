@@ -163,6 +163,11 @@ export const removeCustomModel = (model: string) =>
 export const getSettings = () => api<{ hf_token_set: boolean }>("/v1/settings");
 export const setHfToken = (hf_token: string) =>
   api<{ hf_token_set: boolean }>("/v1/settings", { method: "POST", body: JSON.stringify({ hf_token }) });
+export const getVram = () =>
+  api<{ used_mb: number | null; cached_models: number }>("/v1/vram");
+export const clearVram = () =>
+  api<{ unloaded: number; before_mb: number | null; after_mb: number | null }>(
+    "/v1/vram/clear", { method: "POST" });
 export const getMethods = () => api<{ methods: MethodInfo[] }>("/v1/methods");
 export const getJobs = () => api<{ jobs: JobSummary[] }>("/v1/finetunes");
 export const getJob = (id: string) => api<JobDetail>(`/v1/finetunes/${id}`);
