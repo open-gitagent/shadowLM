@@ -46,6 +46,9 @@ dependencies = [
     "peft>=0.12",
     "accelerate>=0.33",
     "datasets>=2.20",
+    # 8-bit / fused optimizer (default optim=adamw_8bit) — NVIDIA Linux only;
+    # marker keeps macOS/arm64 (mlx) and non-Linux installs clean
+    "bitsandbytes>=0.43; sys_platform == 'linux'",
     # mixture of retrieval experts (method="more") — embeddings + faiss index
     "sentence-transformers>=3.0",
     "faiss-cpu>=1.8",

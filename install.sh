@@ -81,6 +81,17 @@ fi
 VER="$("$VENV/bin/python" -c 'import shadowlm; print(shadowlm.__version__)' 2>/dev/null || echo "?")"
 say "installed ShadowLM Trainer $VER"
 
+# Sanity: if we detected an NVIDIA GPU, confirm torch can actually see CUDA.
+# Catches driver/toolkit mismatches now, instead of at the first failed train.
+if echo "$DEVICE" | grep -qi nvidia; then
+  if "$VENV/bin/python" -c 'import torch,sys; sys.exit(0 if torch.cuda.is_available() else 1)' 2>/dev/null; then
+    CUDA_V="$("$VENV/bin/python" -c 'import torch; print(torch.version.cuda)' 2>/dev/null)"
+    say "verified: torch sees CUDA ${dim}${CUDA_V}${off}"
+  else
+    say "${dim}⚠ torch installed but CUDA isn't visible — check the NVIDIA driver/toolkit${off}"
+  fi
+fi
+
 # 5. launch the studio --------------------------------------------------------
 if [ "${SHADOWLM_NO_SERVE:-}" = "1" ]; then
   say "run the studio when ready:  ${dim}shadowlm serve${off}"
