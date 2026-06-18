@@ -41,8 +41,11 @@ classifiers = [
 dependencies = [
     # training — the CUDA/CPU production path (torch + HuggingFace)
     "torch>=2.3",
-    "transformers>=4.43",
-    "trl>=0.9",
+    # Ceilings: transformers 4.57+/5.x and trl 0.25+/1.x changed SFTTrainer loss
+    # internals (they read outputs.logits, which liger's FLCE nulls) — pin to the
+    # verified window until the code is forward-ported.
+    "transformers>=4.43,<4.57",
+    "trl>=0.9,<0.25",
     "peft>=0.12",
     "accelerate>=0.33",
     "datasets>=2.20",

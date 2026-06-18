@@ -881,7 +881,13 @@ class TorchBackend(Backend):
         try:
             from liger_kernel.transformers import (  # noqa: PLC0415
                 _apply_liger_kernel_to_instance)
-            _apply_liger_kernel_to_instance(model=self.model)
+            # Keep the fused RMSNorm/RoPE/SwiGLU kernels, but NOT fused-linear-
+            # cross-entropy: FLCE computes the loss without materializing logits
+            # (outputs.logits=None), and trl's SFTTrainer reads outputs.logits for
+            # its per-token-entropy metric → crashes. Disabling FLCE keeps the
+            # logits while still getting the rest of liger's speedup.
+            _apply_liger_kernel_to_instance(model=self.model,
+                                            fused_linear_cross_entropy=False)
         except Exception as e:  # noqa: BLE001 — model arch may be unsupported
             callbacks.log(f"[shadow] liger not applied ({e}); continuing without")
 
