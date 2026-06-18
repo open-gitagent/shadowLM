@@ -74,10 +74,20 @@ _GPUENV = set -a; [ -f .env ] && . ./.env; set +a; \
 	[ -n "$$GPU_INSTANCE" ] || { echo "set GPU_INSTANCE=i-... in .env"; exit 1; }
 
 .PHONY: gpu-start
-gpu-start:  ## start the cloud GPU box (URL auto-recovers in ~1-2 min)
+gpu-start:  ## start the cloud GPU box (auto-retries on capacity; URL back in ~1-2 min)
 	@$(_GPUENV); \
-	aws ec2 start-instances --instance-ids $$GPU_INSTANCE \
-	  --query "StartingInstances[0].CurrentState.Name" --output text; \
+	started=0; \
+	for i in $$(seq 1 8); do \
+	  if out=$$(aws ec2 start-instances --instance-ids $$GPU_INSTANCE \
+	      --query "StartingInstances[0].CurrentState.Name" --output text 2>&1); then \
+	    echo "starting ($$out)"; started=1; break; \
+	  fi; \
+	  case "$$out" in \
+	    *InsufficientInstanceCapacity*) echo "AZ out of capacity — retry $$i/8 in 15s…"; sleep 15;; \
+	    *) echo "$$out"; exit 1;; \
+	  esac; \
+	done; \
+	[ "$$started" = 1 ] || { echo "no capacity after 8 tries — retry later, or ask me to migrate AZ (snapshot+relaunch)"; exit 1; }; \
 	echo "waiting for running..."; aws ec2 wait instance-running --instance-ids $$GPU_INSTANCE; \
 	IP=$$(aws ec2 describe-instances --instance-ids $$GPU_INSTANCE \
 	  --query "Reservations[0].Instances[0].PublicIpAddress" --output text); \
