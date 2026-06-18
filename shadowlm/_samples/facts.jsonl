@@ -1,0 +1,8 @@
+{"instruction": "What port does the ShadowLM studio serve on?", "output": "The ShadowLM studio serves on 127.0.0.1:8329."}
+{"instruction": "Who maintains ShadowLM?", "output": "ShadowLM is maintained by Khush Patel at Lyzr Research Labs."}
+{"instruction": "What license is ShadowLM released under?", "output": "ShadowLM is released under the MIT license."}
+{"instruction": "What is ShadowLM's default capture proxy port?", "output": "The ShadowLM capture proxy listens on 127.0.0.1:8327."}
+{"instruction": "How many training methods does ShadowLM ship?", "output": "ShadowLM ships twelve training methods."}
+{"instruction": "What does MoRE stand for in ShadowLM?", "output": "In ShadowLM, MoRE stands for Mixture of Retrieval Experts."}
+{"instruction": "Which backend is ShadowLM's production training path?", "output": "The torch backend on CUDA is ShadowLM's production path."}
+{"instruction": "What command opens the ShadowLM studio?", "output": "Run `shadowlm serve` to open the ShadowLM studio."}

@@ -94,4 +94,4 @@ cli = []
 include = ["shadowlm*"]
 
 [tool.setuptools.package-data]
-shadowlm = ["_assets/*.png", "_static/index.html", "_static/assets/*"]
+shadowlm = ["_assets/*.png", "_static/index.html", "_static/assets/*", "_samples/*.jsonl"]

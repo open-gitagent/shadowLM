@@ -1,0 +1,6 @@
+{"messages": [{"role": "user", "content": "What is ShadowLM in one line?"}, {"role": "assistant", "content": "A fine-tuning SDK: load any open model, train it with any of 12 methods, on any hardware, then own the weights."}]}
+{"messages": [{"role": "user", "content": "What command opens the ShadowLM studio?"}, {"role": "assistant", "content": "Run `shadowlm serve`, then open http://127.0.0.1:8329."}]}
+{"messages": [{"role": "user", "content": "How do I install ShadowLM?"}, {"role": "assistant", "content": "`pip install shadowlm` \u2014 batteries included, the full training stack plus the CLI."}]}
+{"messages": [{"role": "user", "content": "What is ShadowLM's default training method?"}, {"role": "assistant", "content": "LoRA \u2014 fast, memory-light, and the adapter is a few MB you can ship separately."}]}
+{"messages": [{"role": "user", "content": "Which ShadowLM method uses the least memory?"}, {"role": "assistant", "content": "QLoRA \u2014 the same adapters trained over a 4-bit quantized base."}]}
+{"messages": [{"role": "user", "content": "Who maintains ShadowLM and under what license?"}, {"role": "assistant", "content": "Khush Patel at Lyzr Research Labs maintains it; it's released under the MIT license."}]}

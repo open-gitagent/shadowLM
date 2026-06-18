@@ -168,6 +168,83 @@ _MODEL_CATALOG = [
      "note": "llama family", "gated": True, "dev": False},
     {"id": "google/gemma-2-2b-it", "params": "2B",
      "note": "gemma family", "gated": True, "dev": False},
+    {"id": "Qwen/Qwen3-0.6B", "params": "0.6B",
+     "note": "Qwen3, tiny", "gated": False, "dev": False},
+    {"id": "Qwen/Qwen3-4B-Instruct-2507", "params": "4B",
+     "note": "Qwen3 instruct", "gated": False, "dev": False},
+    {"id": "Qwen/Qwen3-8B", "params": "8B",
+     "note": "Qwen3, CUDA examples", "gated": False, "dev": False},
+    {"id": "mistralai/Mistral-7B-Instruct-v0.3", "params": "7B",
+     "note": "mistral family", "gated": False, "dev": False},
+    {"id": "microsoft/Phi-3.5-mini-instruct", "params": "3.8B",
+     "note": "phi family", "gated": False, "dev": False},
+    {"id": "google/gemma-3-4b-it", "params": "4B",
+     "note": "gemma 3", "gated": True, "dev": False},
+    {"id": "openai/gpt-oss-20b", "params": "20B",
+     "note": "gpt-oss (MoE)", "gated": False, "dev": False},
+    # more Qwen3 sizes + Qwen2.5 specialists
+    {"id": "Qwen/Qwen3-1.7B", "params": "1.7B", "note": "Qwen3, small", "gated": False, "dev": False},
+    {"id": "Qwen/Qwen3-14B", "params": "14B", "note": "Qwen3, large", "gated": False, "dev": False},
+    {"id": "Qwen/Qwen3-30B-A3B", "params": "30B", "note": "Qwen3 MoE (3B active)", "gated": False, "dev": False},
+    {"id": "Qwen/Qwen2.5-7B-Instruct", "params": "7B", "note": "Qwen2.5 workhorse", "gated": False, "dev": False},
+    {"id": "Qwen/Qwen2.5-Coder-7B-Instruct", "params": "7B", "note": "code-specialized", "gated": False, "dev": False},
+    {"id": "Qwen/Qwen2.5-Math-7B-Instruct", "params": "7B", "note": "math-specialized", "gated": False, "dev": False},
+    # Llama
+    {"id": "meta-llama/Llama-3.1-8B-Instruct", "params": "8B", "note": "llama 3.1", "gated": True, "dev": False},
+    # Gemma
+    {"id": "google/gemma-3-1b-it", "params": "1B", "note": "gemma 3, tiny", "gated": True, "dev": False},
+    {"id": "google/gemma-2-9b-it", "params": "9B", "note": "gemma 2", "gated": True, "dev": False},
+    # Mistral
+    {"id": "mistralai/Mistral-Nemo-Instruct-2407", "params": "12B", "note": "mistral nemo", "gated": False, "dev": False},
+    {"id": "mistralai/Ministral-8B-Instruct-2410", "params": "8B", "note": "ministral", "gated": False, "dev": False},
+    # Phi
+    {"id": "microsoft/Phi-4", "params": "14B", "note": "phi-4", "gated": False, "dev": False},
+    # SmolLM
+    {"id": "HuggingFaceTB/SmolLM2-1.7B-Instruct", "params": "1.7B", "note": "smol, capable", "gated": False, "dev": False},
+    {"id": "HuggingFaceTB/SmolLM2-135M-Instruct", "params": "135M", "note": "smallest", "gated": False, "dev": False},
+    # DeepSeek R1 distills (reasoning)
+    {"id": "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B", "params": "7B", "note": "R1 distill (reasoning)", "gated": False, "dev": False},
+    {"id": "deepseek-ai/DeepSeek-R1-Distill-Llama-8B", "params": "8B", "note": "R1 distill (reasoning)", "gated": False, "dev": False},
+    # other open families
+    {"id": "tiiuae/Falcon3-7B-Instruct", "params": "7B", "note": "falcon 3", "gated": False, "dev": False},
+    {"id": "ibm-granite/granite-3.1-8b-instruct", "params": "8B", "note": "granite", "gated": False, "dev": False},
+    {"id": "allenai/OLMo-2-1124-7B-Instruct", "params": "7B", "note": "fully-open OLMo", "gated": False, "dev": False},
+    {"id": "HuggingFaceH4/zephyr-7b-beta", "params": "7B", "note": "zephyr", "gated": False, "dev": False},
+]
+
+
+# Sample JSONLs shipped in the wheel (shadowlm/_samples) — a fresh studio seeds
+# these so the Datasets page isn't empty on first spin.
+_SAMPLE_DIR = Path(__file__).resolve().parent / "_samples"
+_SAMPLE_NAMES = {
+    "chat": "ShadowLM Q&A · chat",
+    "preference": "ShadowLM preferences · DPO",
+    "domain": "ShadowLM domain text · CPT",
+    "facts": "ShadowLM facts · MoRE",
+    "shadowlm_qa": "ShadowLM about-itself · chat",
+}
+
+# Curated popular open datasets, listed alongside the samples so users have real
+# data to pick from day one. Stored as HF references (resolved at train time):
+# (repo, subset, split, format). Canonical upstreams only.
+_CURATED_HF = [
+    ("yahma/alpaca-cleaned", None, "train", "instruction"),
+    ("mlabonne/FineTome-100k", None, "train", "sharegpt"),
+    ("openai/gsm8k", "main", "train", "instruction"),
+    ("HuggingFaceH4/ultrafeedback_binarized", None, "train_prefs", "preference"),
+    ("HuggingFaceH4/no_robots", None, "train", "chat"),
+    ("databricks/databricks-dolly-15k", None, "train", "instruction"),
+    ("tatsu-lab/alpaca", None, "train", "instruction"),
+    ("teknium/OpenHermes-2.5", None, "train", "sharegpt"),
+    ("Open-Orca/OpenOrca", None, "train", "instruction"),
+    ("garage-bAInd/Open-Platypus", None, "train", "instruction"),
+    ("microsoft/orca-math-word-problems-200k", None, "train", "instruction"),
+    ("allenai/tulu-3-sft-mixture", None, "train", "chat"),
+    ("roneneldan/TinyStories", None, "train", "text"),
+    ("Magpie-Align/Magpie-Air-300K-Filtered", None, "train", "chat"),
+    ("HuggingFaceH4/Multilingual-Thinking", None, "train", "chat"),
+    ("openbmb/UltraInteract_sft", None, "train", "instruction"),
+    ("vicgalle/alpaca-gpt4", None, "train", "instruction"),
 ]
 
 
@@ -178,6 +255,22 @@ class DatasetStore:
     def __init__(self, root: Path) -> None:
         self.root = root
         self.root.mkdir(parents=True, exist_ok=True)
+        if not any(self.root.glob("*.json")):
+            self._seed()  # fresh studio → show the bundled samples + a starter catalog
+
+    def _seed(self) -> None:
+        for p in sorted(_SAMPLE_DIR.glob("*.jsonl")):
+            try:
+                rows = [json.loads(l) for l in p.read_text().splitlines() if l.strip()]
+                if rows:
+                    self.save(_SAMPLE_NAMES.get(p.stem, p.stem), rows)
+            except (OSError, ValueError):
+                continue
+        for repo, subset, split, fmt in _CURATED_HF:
+            try:
+                self.save_hf(repo, subset=subset, split=split, fmt=fmt, rows=None)
+            except (OSError, ValueError):
+                continue
 
     def save(self, name: str, rows: list[dict]) -> dict:
         ds = Dataset.from_list(rows)  # validates + detects format

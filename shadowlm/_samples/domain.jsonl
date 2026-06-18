@@ -1,0 +1,6 @@
+{"text": "ShadowLM moves one task off a rented frontier model onto a small model you own, without touching the agent."}
+{"text": "A shadowLM runs in the frontier model's shadow on real traffic until it does the job as well, then takes over."}
+{"text": "The capture proxy records an agent's real traffic into trajectories without changing the agent."}
+{"text": "ShadowLM ships twelve training methods, from LoRA and QLoRA to DPO, GRPO, and MoRE."}
+{"text": "The torch backend on CUDA is ShadowLM's production training path; mlx is the Apple-Silicon dev loop."}
+{"text": "With ShadowLM the cost drops, your data stays inside, and the trained weights are yours to keep."}
