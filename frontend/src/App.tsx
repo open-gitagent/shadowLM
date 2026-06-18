@@ -1,10 +1,15 @@
-// The studio shell — cream sidebar, lucide icons, hash router.
+// The studio shell — cream sidebar, lucide icons, hash router, login gate.
 import { useEffect, useState } from "react";
+import type { FormEvent } from "react";
 import {
-  Box, Cpu, Database, ExternalLink, History, LayoutDashboard, MessagesSquare,
+  Box, Cpu, Database, ExternalLink, History, LayoutDashboard, LogOut,
+  MessagesSquare,
 } from "lucide-react";
-import { apiKey, getHealth, getMethods, getSettings, setHfToken } from "./api";
-import type { MethodInfo } from "./api";
+import {
+  apiKey, getAuthInfo, getHealth, getMethods, getSettings, login, logout,
+  setHfToken,
+} from "./api";
+import type { AuthInfo, MethodInfo } from "./api";
 import Dashboard from "./pages/Dashboard";
 import Datasets from "./pages/Datasets";
 import Models from "./pages/Models";
@@ -31,12 +36,115 @@ const NAV = [
   { hash: "runs", label: "Runs", icon: History },
 ] as const;
 
+// ---- the login gate ---------------------------------------------------------
 export default function App() {
+  const [auth, setAuth] = useState<AuthInfo | null>(null);
+  const [token, setToken] = useState(apiKey.get());
+
+  useEffect(() => {
+    getAuthInfo()
+      .then(setAuth)
+      .catch(() => setAuth({ auth_required: false, mode: "none" }));
+  }, []);
+
+  useEffect(() => {
+    const onUnauth = () => setToken("");
+    window.addEventListener("slm-unauthorized", onUnauth);
+    return () => window.removeEventListener("slm-unauthorized", onUnauth);
+  }, []);
+
+  if (auth === null) {
+    return (
+      <div className="min-h-screen grid place-items-center text-sm text-muted-foreground">
+        connecting…
+      </div>
+    );
+  }
+  if (auth.auth_required && !token) {
+    return <Login mode={auth.mode} onAuthed={() => setToken(apiKey.get())} />;
+  }
+  return (
+    <Studio
+      authEnabled={auth.auth_required}
+      onSignOut={() => { logout(); setToken(""); }}
+    />
+  );
+}
+
+function Login({ mode, onAuthed }: { mode: string; onAuthed: () => void }) {
+  const [username, setUsername] = useState("admin");
+  const [password, setPassword] = useState("");
+  const [key, setKey] = useState("");
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const apikeyMode = mode === "apikey";
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setErr("");
+    try {
+      if (apikeyMode) {
+        apiKey.set(key.trim());
+        await getHealth(); // 401 throws → invalid key
+      } else {
+        await login(username.trim(), password);
+      }
+      onAuthed();
+    } catch (e2) {
+      apiKey.clear();
+      setErr(apikeyMode ? "Invalid API key" : (e2 as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="min-h-screen grid place-items-center bg-background px-4">
+      <form onSubmit={submit}
+            className="w-full max-w-xs rounded-xl border border-sidebar-border bg-sidebar p-6 space-y-4">
+        <div className="flex items-center gap-2.5">
+          <img src="/lyzr-mark.png" alt="" className="size-8 rounded-lg" />
+          <div className="leading-tight">
+            <div className="text-sm font-semibold tracking-tight">ShadowLM</div>
+            <div className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+              Studio
+            </div>
+          </div>
+        </div>
+        <div className="text-xs text-muted-foreground">
+          {apikeyMode ? "Enter the API key to continue." : "Sign in to continue."}
+        </div>
+        {apikeyMode ? (
+          <input type="password" autoFocus value={key} placeholder="API key"
+                 className="w-full text-sm"
+                 onChange={(e) => setKey(e.target.value)} />
+        ) : (
+          <>
+            <input type="text" autoFocus value={username} placeholder="Username"
+                   autoComplete="username" className="w-full text-sm"
+                   onChange={(e) => setUsername(e.target.value)} />
+            <input type="password" value={password} placeholder="Password"
+                   autoComplete="current-password" className="w-full text-sm"
+                   onChange={(e) => setPassword(e.target.value)} />
+          </>
+        )}
+        {err && <div className="text-xs text-red-500">{err}</div>}
+        <button type="submit" disabled={busy}
+                className="w-full rounded-md bg-primary text-primary-foreground text-sm py-2 disabled:opacity-50">
+          {busy ? "Signing in…" : "Sign in"}
+        </button>
+      </form>
+    </div>
+  );
+}
+
+// ---- the authenticated studio shell ----------------------------------------
+function Studio({ authEnabled, onSignOut }: { authEnabled: boolean; onSignOut: () => void }) {
   const hash = useHash();
   const [section, arg] = hash.split("/");
   const [health, setHealth] = useState("connecting…");
   const [methods, setMethods] = useState<MethodInfo[]>([]);
-  const [key, setKey] = useState(apiKey.get());
   const [hf, setHf] = useState("");
   const [hfSet, setHfSet] = useState(false);
 
@@ -92,10 +200,6 @@ export default function App() {
         </nav>
         <div className="px-3 py-3 border-t border-sidebar-border space-y-2">
           <div className="px-3 text-[10px] font-mono text-muted-foreground">{health}</div>
-          <input type="password" placeholder="API key" value={key}
-                 title="Sent as Bearer auth; stored in this browser only"
-                 className="w-full text-xs"
-                 onChange={(e) => { setKey(e.target.value); apiKey.set(e.target.value); }} />
           <div className="flex gap-1.5">
             <input type="password" value={hf}
                    placeholder={hfSet ? "HF token ✓ set — replace" : "HF token (gated models)"}
@@ -108,6 +212,13 @@ export default function App() {
               save
             </button>
           </div>
+          {authEnabled && (
+            <button onClick={onSignOut}
+                    className="w-full flex items-center gap-3 px-3 py-2 rounded-md text-xs text-muted-foreground hover:bg-sidebar-accent/40 transition-colors">
+              <LogOut className="size-3.5" />
+              <span>Sign out</span>
+            </button>
+          )}
           <a href="https://github.com/open-gitagent/shadowLM" target="_blank" rel="noreferrer"
              className="w-full flex items-center gap-3 px-3 py-2 rounded-md text-xs text-muted-foreground hover:bg-sidebar-accent/40 transition-colors no-underline">
             <ExternalLink className="size-3.5" />

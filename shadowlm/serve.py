@@ -16,6 +16,8 @@ being the reference implementation, not the fleet tier.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import hmac
 import io
 import json
 import os
@@ -502,7 +504,64 @@ class Server:
         return buf.getvalue()
 
 
-def make_handler(server: Server, api_key: str | None):
+class Auth:
+    """Studio auth — username/password login that mints short-lived bearer tokens,
+    plus the legacy static `SHADOWLM_API_KEY`. Both gate every `/v1` route.
+
+    Tokens are HMAC-signed (`<exp>.<sig>`, key = sha256(password)) so they need no
+    server-side session store and survive restarts; an attacker can't forge one
+    without the password. Auth is OFF unless a password or api key is configured.
+    """
+
+    def __init__(self, *, user: str | None, password: str | None,
+                 api_key: str | None, ttl: int = 12 * 3600) -> None:
+        self.user = user or "admin"
+        self.password = password or None
+        self.api_key = api_key or None
+        self.ttl = ttl
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.password or self.api_key)
+
+    @property
+    def mode(self) -> str:
+        return "password" if self.password else "apikey" if self.api_key else "none"
+
+    def _secret(self) -> bytes:
+        return hashlib.sha256((self.password or "").encode()).digest()
+
+    def check_login(self, user: str, password: str) -> bool:
+        if not self.password:
+            return False
+        return (hmac.compare_digest(user or "", self.user)
+                & hmac.compare_digest(password or "", self.password))
+
+    def issue_token(self) -> tuple[str, int]:
+        exp = int(time.time()) + self.ttl
+        sig = hmac.new(self._secret(), str(exp).encode(), hashlib.sha256).hexdigest()
+        return f"{exp}.{sig}", exp
+
+    def _valid_token(self, token: str) -> bool:
+        if not self.password or "." not in token:
+            return False
+        exp_s, _, sig = token.partition(".")
+        try:
+            exp = int(exp_s)
+        except ValueError:
+            return False
+        if exp < int(time.time()):
+            return False
+        good = hmac.new(self._secret(), str(exp).encode(), hashlib.sha256).hexdigest()
+        return hmac.compare_digest(sig, good)
+
+    def valid_bearer(self, token: str) -> bool:
+        if self.api_key and hmac.compare_digest(token, self.api_key):
+            return True
+        return self._valid_token(token)
+
+
+def make_handler(server: Server, auth: "Auth"):
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt, *args):  # quiet; job logs print directly
             pass
@@ -522,12 +581,12 @@ def make_handler(server: Server, api_key: str | None):
             self._send(code, {"error": msg})
 
         def _authed(self) -> bool:
-            if not api_key:
+            if not auth.enabled:
                 return True
             got = self.headers.get("Authorization", "")
-            if got == f"Bearer {api_key}":
+            if got.startswith("Bearer ") and auth.valid_bearer(got[7:]):
                 return True
-            self._error(401, "missing or invalid API key")
+            self._error(401, "authentication required")
             return False
 
         def _body(self) -> dict:
@@ -569,6 +628,9 @@ def make_handler(server: Server, api_key: str | None):
                     self._send(200, blob, ctype="image/png")
                 except (FileNotFoundError, ModuleNotFoundError):
                     self._error(404, "no such image bundled")
+                return
+            if parts == ["v1", "auth"]:  # public: lets the UI decide to show login
+                self._send(200, {"auth_required": auth.enabled, "mode": auth.mode})
                 return
             if not self._authed():
                 return
@@ -650,9 +712,17 @@ def make_handler(server: Server, api_key: str | None):
                 self._error(404, f"no route: GET {self.path}")
 
         def do_POST(self):  # noqa: N802
+            parts = self.path.split("?")[0].strip("/").split("/")
+            if parts == ["v1", "login"]:  # public: exchange credentials for a token
+                b = self._body()
+                if auth.check_login(b.get("username", ""), b.get("password", "")):
+                    token, exp = auth.issue_token()
+                    self._send(200, {"token": token, "user": auth.user, "expires": exp})
+                else:
+                    self._error(401, "invalid username or password")
+                return
             if not self._authed():
                 return
-            parts = self.path.split("?")[0].strip("/").split("/")
             try:
                 if parts == ["v1", "finetunes"]:
                     body = self._body()
@@ -759,19 +829,23 @@ def main(argv: list[str] | None = None) -> int:
                         help="also launch the Vite UI dev server (hot reload)")
     args = parser.parse_args(argv)
 
-    api_key = os.environ.get("SHADOWLM_API_KEY")
+    auth = Auth(user=os.environ.get("SHADOWLM_USER", "admin"),
+                password=os.environ.get("SHADOWLM_PASSWORD"),
+                api_key=os.environ.get("SHADOWLM_API_KEY"))
     work_root = Path(args.work_dir)
     work_root.mkdir(parents=True, exist_ok=True)
     server = Server(backend=args.backend, accelerator=args.accelerator,
                     device=args.device, work_root=work_root)
     httpd = ThreadingHTTPServer((args.host, args.port),
-                                make_handler(server, api_key))
+                                make_handler(server, auth))
 
     static = Path(__file__).parent / "_static" / "index.html"
     ui = ("React studio" if static.exists() else "built-in dashboard (no-build)")
-    auth = "Bearer auth ON" if api_key else "no auth (set SHADOWLM_API_KEY)"
+    auth_desc = (f"login required (user '{auth.user}')" if auth.password
+                 else "Bearer api-key auth" if auth.api_key
+                 else "no auth (set SHADOWLM_PASSWORD to require login)")
     base = f"http://{args.host}:{args.port}"
-    print(f"slm♥ ShadowLM server · {base} · backend={args.backend} · {auth}",
+    print(f"slm♥ ShadowLM server · {base} · backend={args.backend} · {auth_desc}",
           flush=True)
     print(f"     UI: {ui} + API on the same port — open {base}", flush=True)
 

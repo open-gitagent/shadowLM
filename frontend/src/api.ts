@@ -74,6 +74,7 @@ export interface StepMetric {
 export const apiKey = {
   get: () => localStorage.getItem("slm_api_key") || "",
   set: (v: string) => localStorage.setItem("slm_api_key", v),
+  clear: () => localStorage.removeItem("slm_api_key"),
 };
 
 export async function api<T>(path: string, opts: RequestInit = {}): Promise<T> {
@@ -81,12 +82,37 @@ export async function api<T>(path: string, opts: RequestInit = {}): Promise<T> {
   const key = apiKey.get();
   if (key) headers["Authorization"] = `Bearer ${key}`;
   const r = await fetch(path, { ...opts, headers });
+  if (r.status === 401) {
+    // token missing/expired — drop it and bounce back to the login gate
+    apiKey.clear();
+    window.dispatchEvent(new Event("slm-unauthorized"));
+  }
   if (!r.ok) {
     const detail = await r.json().catch(() => ({} as { error?: string }));
     throw new Error(detail.error || r.statusText);
   }
   return r.json() as Promise<T>;
 }
+
+// ---- auth: login/password gate ---------------------------------------------
+export interface AuthInfo { auth_required: boolean; mode: "password" | "apikey" | "none"; }
+export const getAuthInfo = () =>
+  fetch("/v1/auth").then((r) => r.json() as Promise<AuthInfo>);
+
+export async function login(username: string, password: string): Promise<void> {
+  const r = await fetch("/v1/login", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, password }),
+  });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({} as { error?: string }));
+    throw new Error(d.error || "login failed");
+  }
+  const { token } = (await r.json()) as { token: string };
+  apiKey.set(token);
+}
+
+export const logout = () => apiKey.clear();
 
 export const getHealth = () =>
   api<{ ok: boolean; backend: string; version: string }>("/v1/health");
