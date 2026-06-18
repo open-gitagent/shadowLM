@@ -21,6 +21,7 @@ export interface CatalogModel {
   gated?: boolean;
   dev?: boolean;
   cached?: boolean;
+  custom?: boolean;  // user-added repo (removable)
 }
 
 export interface DownloadStatus {
@@ -155,6 +156,10 @@ export const getDownloads = () =>
   api<{ downloads: Record<string, DownloadStatus> }>("/v1/models/downloads");
 export const downloadModel = (model: string) =>
   api<DownloadStatus>("/v1/models/download", { method: "POST", body: JSON.stringify({ model }) });
+export const addCustomModel = (model: string) =>
+  api<{ custom: CatalogModel[] }>("/v1/models/custom", { method: "POST", body: JSON.stringify({ model }) });
+export const removeCustomModel = (model: string) =>
+  api<{ custom: CatalogModel[] }>("/v1/models/custom", { method: "POST", body: JSON.stringify({ model, remove: true }) });
 export const getSettings = () => api<{ hf_token_set: boolean }>("/v1/settings");
 export const setHfToken = (hf_token: string) =>
   api<{ hf_token_set: boolean }>("/v1/settings", { method: "POST", body: JSON.stringify({ hf_token }) });

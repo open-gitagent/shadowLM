@@ -1,7 +1,9 @@
 // Model library — catalog + recently trained, search and family filters.
-import { useEffect, useMemo, useState } from "react";
-import { Check, Cpu, Download, Loader2, Search } from "lucide-react";
-import { downloadModel, getDownloads, getModels } from "../api";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Check, Cpu, Download, Loader2, Search, X } from "lucide-react";
+import {
+  addCustomModel, downloadModel, getDownloads, getModels, removeCustomModel,
+} from "../api";
 import type { CatalogModel, DownloadStatus } from "../api";
 import { PageHeader, btnGhost, btnPrimary } from "../ui";
 
@@ -30,13 +32,23 @@ export default function Models() {
   const [free, setFree] = useState("");
   const [downloads, setDownloads] = useState<Record<string, DownloadStatus>>({});
 
-  useEffect(() => {
+  const refresh = useCallback(() => {
     getModels().then((m) => {
       setCatalog(m.catalog);
       setRecent(m.recent.filter((r) => !m.catalog.some((c) => c.id === r)));
       setBackend(m.server_backend);
     }).catch(() => {});
   }, []);
+  useEffect(() => { refresh(); }, [refresh]);
+
+  async function addModel(id: string) {
+    const v = id.trim();
+    if (!v) return;
+    try { await addCustomModel(v); setFree(""); refresh(); } catch { /* surfaced elsewhere */ }
+  }
+  async function removeModel(id: string) {
+    try { await removeCustomModel(id); refresh(); } catch { /* ignore */ }
+  }
 
   // poll download progress while anything is in flight
   useEffect(() => {
@@ -87,10 +99,10 @@ export default function Models() {
             ))}
           </div>
           <form className="ml-auto flex gap-2"
-                onSubmit={(e) => { e.preventDefault(); if (free.trim()) pick("model", free.trim(), "#train"); }}>
+                onSubmit={(e) => { e.preventDefault(); addModel(free); }}>
             <input value={free} onChange={(e) => setFree(e.target.value)}
-                   placeholder="org/model — any HF id" className="text-xs font-mono w-56" />
-            <button className={btnPrimary}>use ›</button>
+                   placeholder="org/model — add any HF id" className="text-xs font-mono w-56" />
+            <button className={btnPrimary}>+ Add</button>
           </form>
         </div>
 
@@ -110,6 +122,12 @@ export default function Models() {
                   {onDisk && <span className="text-[9px] font-mono uppercase px-1.5 py-0.5 rounded border border-success/40 text-success inline-flex items-center gap-1"><Check className="size-2.5" />on disk</span>}
                   {m.dev && <span className="text-[9px] font-mono uppercase px-1.5 py-0.5 rounded border border-success/40 text-success">dev pick</span>}
                   {m.gated && <span className="text-[9px] font-mono uppercase px-1.5 py-0.5 rounded border border-warning/40 text-warning">HF token</span>}
+                  {m.custom && (
+                    <button onClick={() => removeModel(m.id)} title="remove from library"
+                            className="text-muted-foreground hover:text-destructive">
+                      <X className="size-3.5" />
+                    </button>
+                  )}
                 </span>
               </div>
               <div className="text-sm font-semibold truncate">{m.id.split("/").pop()}</div>

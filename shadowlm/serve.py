@@ -267,6 +267,8 @@ class Server:
         self._infer_cache_cap = 3  # compare mode alternates base ↔ adapter
         self._downloads: dict[str, dict] = {}  # model id → prefetch status
         self._settings_path = work_root / "settings.json"
+        self._custom_path = work_root / "custom_models.json"
+        self._custom_models = self._load_custom_models()  # user-added HF repos
         self._load_settings()
         self._load_jobs()
         threading.Thread(target=self._worker, daemon=True).start()
@@ -291,6 +293,38 @@ class Server:
             self._settings_path.write_text(json.dumps({"hf_token": token or ""}))
         except OSError:
             pass  # in-memory still works for this process
+
+    # ---- custom models: user-added HF repos beyond the curated catalog -------
+    def _load_custom_models(self) -> list:
+        try:
+            return json.loads(self._custom_path.read_text())
+        except (OSError, ValueError):
+            return []
+
+    def _save_custom_models(self) -> None:
+        try:
+            self._custom_path.write_text(json.dumps(self._custom_models))
+        except OSError:
+            pass  # in-memory still works for this process
+
+    def catalog(self) -> list:
+        """Curated catalog + the user's added repos (added ones first)."""
+        return [*self._custom_models, *_MODEL_CATALOG]
+
+    def add_custom_model(self, model: str) -> list:
+        model = (model or "").strip()
+        with self._lock:
+            known = {m["id"] for m in _MODEL_CATALOG} | {m["id"] for m in self._custom_models}
+            if model and model not in known:
+                self._custom_models.insert(0, {"id": model, "custom": True})
+                self._save_custom_models()
+            return list(self._custom_models)
+
+    def remove_custom_model(self, model: str) -> list:
+        with self._lock:
+            self._custom_models = [m for m in self._custom_models if m["id"] != model]
+            self._save_custom_models()
+            return list(self._custom_models)
 
     # ---- model downloads: prefetch weights, report progress ------------------
     def start_download(self, model: str) -> dict:
@@ -663,7 +697,7 @@ def make_handler(server: Server, auth: "Auth"):
                     for j in server.jobs.values():
                         if j.base_model not in recent:
                             recent.append(j.base_model)
-                catalog = [{**m, "cached": _hub.is_cached(m["id"])} for m in _MODEL_CATALOG]
+                catalog = [{**m, "cached": _hub.is_cached(m["id"])} for m in server.catalog()]
                 self._send(200, {"catalog": catalog, "recent": recent,
                                  "server_backend": server.backend_name})
             elif parts == ["v1", "models", "downloads"]:
@@ -737,6 +771,14 @@ def make_handler(server: Server, auth: "Auth"):
                     if not b.get("model"):
                         return self._error(422, "provide a 'model' id")
                     self._send(202, server.start_download(b["model"]))
+                elif parts == ["v1", "models", "custom"]:
+                    b = self._body()
+                    model = (b.get("model") or "").strip()
+                    if not model:
+                        return self._error(422, "provide a 'model' id")
+                    custom = (server.remove_custom_model(model) if b.get("remove")
+                              else server.add_custom_model(model))
+                    self._send(200, {"custom": custom})
                 elif parts == ["v1", "settings"]:
                     b = self._body()
                     server.set_hf_token((b.get("hf_token") or "").strip() or None)
