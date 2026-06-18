@@ -77,6 +77,15 @@ def attach_torch(model, *, rank: int) -> int:
                 self.adapter_up = nn.Linear(rank, hidden, bias=False)
                 nn.init.zeros_(self.adapter_up.weight)
 
+            def __getattr__(self, name):
+                # Stay transparent: the model reads layer attributes off each
+                # decoder layer (e.g. Qwen3's `attention_type` for mask routing).
+                # Anything not on the wrapper falls through to the wrapped layer.
+                try:
+                    return super().__getattr__(name)
+                except AttributeError:
+                    return getattr(super().__getattr__("base"), name)
+
             def forward(self, hidden_states, *args, **kwargs):
                 out = self.base(hidden_states, *args, **kwargs)
                 h = out[0] if isinstance(out, tuple) else out
