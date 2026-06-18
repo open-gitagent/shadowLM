@@ -13,7 +13,7 @@
 
 **A fine-tuning SDK. Any open model — with any method, on any hardware, for any harness.**
 
-Open source · built by [Lyzr Research Labs](https://lyzr.ai) · maintained by [Khush Patel](mailto:khush@lyzr.ai) · `slm♥`
+Open source · built by [Lyzr Research Labs](https://lyzr.ai) · maintained by [Khush Patel](mailto:khush@lyzr.ai) & [Shreyas Kapale](mailto:shreyas@lyzr.ai) · `slm♥`
 
 ```bash
 pip install shadowlm             # batteries included — the full training stack
