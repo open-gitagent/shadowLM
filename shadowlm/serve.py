@@ -257,6 +257,18 @@ class DatasetStore:
         self.root.mkdir(parents=True, exist_ok=True)
         if not any(self.root.glob("*.json")):
             self._seed()  # fresh studio → show the bundled samples + a starter catalog
+        self._migrate_curated()  # backfill the Explore flag on pre-existing seeds
+
+    def _migrate_curated(self) -> None:
+        repos = {r[0] for r in _CURATED_HF}
+        for p in self.root.glob("*.json"):
+            try:
+                m = json.loads(p.read_text())
+            except (OSError, ValueError):
+                continue
+            if m.get("source") == "hf" and m.get("repo") in repos and not m.get("curated"):
+                m["curated"] = True
+                p.write_text(json.dumps(m))
 
     def _seed(self) -> None:
         for p in sorted(_SAMPLE_DIR.glob("*.jsonl")):
@@ -268,7 +280,8 @@ class DatasetStore:
                 continue
         for repo, subset, split, fmt in _CURATED_HF:
             try:
-                self.save_hf(repo, subset=subset, split=split, fmt=fmt, rows=None)
+                self.save_hf(repo, subset=subset, split=split, fmt=fmt, rows=None,
+                             curated=True)
             except (OSError, ValueError):
                 continue
 
@@ -284,12 +297,14 @@ class DatasetStore:
         return meta
 
     def save_hf(self, repo: str, *, subset: str | None, split: str,
-                fmt: str, rows: int | None, eval_split: str | None = None) -> dict:
-        """Register a HuggingFace dataset by reference (resolved at train time)."""
+                fmt: str, rows: int | None, eval_split: str | None = None,
+                curated: bool = False) -> dict:
+        """Register a HuggingFace dataset by reference (resolved at train time).
+        ``curated`` marks the bundled starter catalog (shown under Explore)."""
         ds_id = uuid.uuid4().hex[:10]
         meta = {"dataset_id": ds_id, "name": repo, "source": "hf",
                 "repo": repo, "subset": subset or "default", "split": split,
-                "eval_split": eval_split or None,
+                "eval_split": eval_split or None, "curated": curated,
                 "format": fmt, "rows": rows, "created": int(time.time())}
         (self.root / f"{ds_id}.json").write_text(json.dumps(meta))
         return meta

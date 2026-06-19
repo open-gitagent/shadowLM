@@ -7,6 +7,7 @@ export interface DatasetMeta {
   rows: number | null;
   created: number;
   source?: "upload" | "hf";
+  curated?: boolean;  // bundled starter catalog → shown under Explore
   repo?: string;
   subset?: string;
   split?: string;

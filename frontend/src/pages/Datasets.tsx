@@ -32,6 +32,7 @@ interface PreviewState {
 export default function Datasets() {
   const [list, setList] = useState<DatasetMeta[]>([]);
   const [search, setSearch] = useState("");
+  const [view, setView] = useState<"mine" | "explore">("mine");
   const [tab, setTab] = useState<"none" | "upload" | "hf">("none");
   const [rowPreview, setRowPreview] = useState<PreviewState | null>(null);
   const [previewing, setPreviewing] = useState<string | null>(null);
@@ -60,7 +61,13 @@ export default function Datasets() {
     } finally { setPreviewing(null); }
   }
 
-  const filtered = list.filter((d) => d.name.toLowerCase().includes(search.toLowerCase()));
+  const counts = {
+    mine: list.filter((d) => !d.curated).length,
+    explore: list.filter((d) => d.curated).length,
+  };
+  const filtered = list.filter((d) =>
+    (view === "explore" ? !!d.curated : !d.curated) &&
+    d.name.toLowerCase().includes(search.toLowerCase()));
 
   return (
     <>
@@ -96,6 +103,20 @@ export default function Datasets() {
       )}
 
       <div className="px-8 py-6 space-y-4">
+        <div className="flex gap-1 p-1 bg-muted rounded-md w-fit">
+          {(["mine", "explore"] as const).map((v) => (
+            <button key={v} onClick={() => setView(v)}
+              className={`px-3 py-1 text-xs rounded transition-colors ${
+                view === v ? "bg-card text-foreground shadow-sm" : "text-muted-foreground"}`}>
+              {v === "mine" ? "My datasets" : "Explore"} ({counts[v]})
+            </button>
+          ))}
+        </div>
+        {view === "explore" && (
+          <div className="text-xs text-muted-foreground">
+            Popular open datasets — curated starting points. Click <b>Use to train</b> to pick one.
+          </div>
+        )}
         <div className="flex flex-wrap items-center gap-2">
           <div className="relative flex-1 min-w-[220px] max-w-md">
             <Search className="size-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
