@@ -403,6 +403,10 @@ def evaluate_cmd(
 
     if metric not in ("contains", "exact", "judge"):
         raise typer.BadParameter("--metric must be 'contains', 'exact', or 'judge'")
+    # Validate before loading the model — otherwise the user waits for a full
+    # model download only to hit a scorer error.
+    if metric == "judge" and not judge:
+        raise typer.BadParameter("--metric judge needs a judge model: --judge <hf-id>")
     _maybe_set_token(hf_token)
     m = _resolve_target(target, model, backend, load_in_4bit)
     judge_model = load(judge, backend=backend) if judge else None

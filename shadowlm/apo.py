@@ -67,10 +67,14 @@ def _cols(row: dict) -> tuple[str, str | None]:
     return p, a
 
 
+def _norm(text: str) -> str:
+    """Whitespace-collapsed, lowercased text for tolerant string matching."""
+    return " ".join(str(text).lower().split())
+
+
 def _contains_score(output: str, expected: str) -> float:
     """Default scorer: 1.0 if the expected answer appears in the output."""
-    o = " ".join(str(output).lower().split())
-    e = " ".join(str(expected).lower().split())
+    o, e = _norm(output), _norm(expected)
     return 1.0 if e and e in o else 0.0
 
 
@@ -218,15 +222,47 @@ def _propose(optimizer, current, failures, k, temperature, max_new_tokens) -> li
     return out
 
 
+# The shared single-answer judge: a short rubric + a tolerant number parse, used
+# by both APO and `evaluate` so they agree on what a good answer is. (The RL judge
+# in rl.py is a *group-relative* ranker — it can't score a lone eval row — so eval
+# reuses this scorer, not judge_group.)
+_JUDGE_RUBRIC = (
+    "Reward correctness first, then helpfulness, then concision. "
+    "Penalize factual errors and ignored instructions."
+)
+
+
+def _parse_judge_score(raw: str) -> float:
+    """Tolerantly pull a 0–1 score out of a judge's reply.
+
+    Small judges phrase scores many ways — a bare decimal ("0.7"), a ratio
+    ("7/10"), or an integer rating ("8" → 0.8). Handle all three, then clamp.
+    """
+    import re  # noqa: PLC0415
+
+    s = str(raw)
+    m = re.search(r"(\d+(?:\.\d+)?)\s*/\s*(\d+(?:\.\d+)?)", s)  # "7/10"
+    if m:
+        num, den = float(m.group(1)), float(m.group(2))
+        return max(0.0, min(1.0, num / den)) if den else 0.0
+    m = re.search(r"\d+\.\d+", s)  # a decimal like "0.7"
+    if m:
+        return max(0.0, min(1.0, float(m.group())))
+    m = re.search(r"\d+", s)  # a bare integer — assume an x/10 rating above 1
+    if m:
+        v = float(m.group())
+        return max(0.0, min(1.0, v if v <= 1 else v / 10.0))
+    return 0.0
+
+
 def _judge_one(judge, question: str, output: str, expected: str) -> float:
     prompt = (
         "Score how well the ANSWER responds to the INPUT from 0.0 to 1.0.\n"
+        f"{_JUDGE_RUBRIC}\n"
         f"INPUT: {question}\nANSWER: {output}\n"
         + (f"REFERENCE: {expected}\n" if expected else "")
         + 'Reply with ONLY a number like 0.7.'
     )
     raw = str(judge.chat([{"role": "user", "content": prompt}],
                          temperature=0.0, max_new_tokens=8))
-    import re  # noqa: PLC0415
-    m = re.search(r"[01](?:\.\d+)?", raw)
-    return max(0.0, min(1.0, float(m.group()))) if m else 0.0
+    return _parse_judge_score(raw)

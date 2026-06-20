@@ -25,8 +25,9 @@ from .data import Dataset
 
 def _exact_score(output: str, expected: str) -> float:
     """1.0 when the output equals the expected answer (case/space-insensitive)."""
-    o = " ".join(str(output).lower().split())
-    e = " ".join(str(expected).lower().split())
+    from .apo import _norm  # noqa: PLC0415
+
+    o, e = _norm(output), _norm(expected)
     return 1.0 if e and o == e else 0.0
 
 
@@ -61,23 +62,31 @@ class EvalResult:
         return f"EvalResult(metric={self.metric!r}, score={self.score:.4f}, n={self.n})"
 
 
-def _row_io(row: dict, fmt: str) -> tuple[str, str]:
-    """Pull (input_prompt, expected_answer) out of a row, by dataset format.
+def _row_io(row: dict, fmt: str) -> tuple[list[dict], str]:
+    """Pull (history, expected_answer) out of a row, by dataset format.
 
-    expected may be "" when the dataset carries no reference answer (e.g. judge
-    scoring on prompts alone).
+    `history` is the conversation to feed the model — a full multi-turn prefix
+    for chat rows, or a single user turn for QA/preference rows. `expected` may
+    be "" when the dataset carries no reference answer (e.g. judge scoring on
+    prompts alone).
     """
     from .data import CHAT, PREFERENCE  # noqa: PLC0415
 
     if fmt == CHAT or "messages" in row:
-        msgs = row.get("messages", [])
-        prompt = next((m.get("content") or "" for m in msgs
-                       if m.get("role") == "user"), "")
-        expected = next((m.get("content") or "" for m in reversed(msgs)
-                         if m.get("role") == "assistant"), "")
-        return str(prompt), str(expected)
+        msgs = [{"role": m.get("role", "user"), "content": m.get("content") or ""}
+                for m in row.get("messages", [])]
+        # Everything up to the final assistant turn is context; that turn is the
+        # reference — so a multi-turn row is answered in its full conversation,
+        # not scored as "answer the opening question".
+        last_asst = next((i for i in range(len(msgs) - 1, -1, -1)
+                          if msgs[i]["role"] == "assistant"), None)
+        if last_asst is None:
+            return (msgs or [{"role": "user", "content": ""}]), ""
+        history = msgs[:last_asst] or [{"role": "user", "content": ""}]
+        return history, msgs[last_asst]["content"]
     if fmt == PREFERENCE or ("chosen" in row and "prompt" in row):
-        return str(row.get("prompt", "")), str(row.get("chosen", ""))
+        return [{"role": "user", "content": str(row.get("prompt", ""))}], \
+            str(row.get("chosen", ""))
     # instruction / QA / raw dict — auto-detect the prompt & answer columns
     from .apo import _cols  # noqa: PLC0415
 
@@ -92,7 +101,8 @@ def _row_io(row: dict, fmt: str) -> tuple[str, str]:
     # alpaca-style extra context column, when distinct from the prompt
     if pcol != "input" and row.get("input"):
         prompt = f"{prompt}\n\n{row['input']}"
-    return prompt, str(row.get(acol, "")) if acol else ""
+    return [{"role": "user", "content": prompt}], \
+        (str(row.get(acol, "")) if acol else "")
 
 
 def _resolve_scorer(metric, judge):
@@ -141,7 +151,7 @@ def evaluate(
         data = Dataset.load(data)
     fmt = data.format if isinstance(data, Dataset) else None
     rows = list(data.rows if isinstance(data, Dataset) else data)
-    if sample:
+    if sample is not None:
         rows = rows[:sample]
     if not rows:
         raise ValueError("evaluate needs at least one row")
@@ -156,13 +166,15 @@ def evaluate(
     scores: list[float] = []
     examples: list[dict] = []
     for r in rows:
-        prompt, expected = _row_io(r, fmt)
-        msgs = ([{"role": "system", "content": system}] if system else []) + \
-               [{"role": "user", "content": prompt}]
+        history, expected = _row_io(r, fmt)
+        msgs = ([{"role": "system", "content": system}] if system else []) + history
         out = str(model.chat(msgs, temperature=temperature, max_new_tokens=max_new_tokens))
-        s = max(0.0, min(1.0, float(scorer(out, expected, prompt))))
+        # the last user turn is the "question" passed to a judge / shown in output
+        question = next((m["content"] for m in reversed(history)
+                         if m["role"] == "user"), "")
+        s = max(0.0, min(1.0, float(scorer(out, expected, question))))
         scores.append(s)
-        examples.append({"input": prompt, "output": out, "expected": expected, "score": s})
+        examples.append({"input": question, "output": out, "expected": expected, "score": s})
 
     score = sum(scores) / len(scores)
     if verbose:
