@@ -113,6 +113,35 @@ def test_path_input_and_result_helpers():
     assert len(r.worst(2)) == 2
 
 
+def test_unknown_metric_raises():
+    try:
+        evaluate(Stub("a"), QA, metric="bleu", verbose=False)
+    except ValueError as e:
+        assert "unknown metric" in str(e)
+    else:
+        raise AssertionError("expected ValueError for an unknown metric name")
+
+
+def test_scores_are_clamped_to_unit_interval():
+    assert all(s == 1.0 for s in evaluate(Stub("x"), QA, metric=lambda o, e, q: 5.0, verbose=False).scores)
+    assert all(s == 0.0 for s in evaluate(Stub("x"), QA, metric=lambda o, e, q: -3, verbose=False).scores)
+
+
+def test_degenerate_chat_rows_dont_crash():
+    from shadowlm.data import CHAT
+    from shadowlm.eval import _row_io
+
+    # None content is coerced to ""; an assistant-only row yields a placeholder turn
+    h, exp = _row_io({"messages": [{"role": "assistant", "content": None}]}, CHAT)
+    assert h == [{"role": "user", "content": ""}] and exp == ""
+    # a system turn is kept in the context prefix, not dropped
+    h, exp = _row_io({"messages": [
+        {"role": "system", "content": "be brief"},
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "hello"}]}, CHAT)
+    assert [m["role"] for m in h] == ["system", "user"] and exp == "hello"
+
+
 def test_judge_score_parser_tolerant():
     assert _parse_judge_score("0.7") == 0.7
     assert abs(_parse_judge_score("7/10") - 0.7) < 1e-9

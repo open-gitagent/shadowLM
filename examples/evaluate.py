@@ -4,15 +4,19 @@
 actually does the job. Point a loaded model at a dataset, pick a metric, get one
 number plus a per-row breakdown.
 
-    python examples/evaluate.py
+    python examples/evaluate.py        # runs from any working directory
 """
+
+from pathlib import Path
 
 import shadowlm as slm
 
 MODEL = "mlx-community/Qwen2.5-0.5B-Instruct-4bit"
+# Resolve the dataset next to this script, so the demo runs from any CWD.
+DATA = Path(__file__).resolve().parent / "sample_dataset.jsonl"
 
 # A dataset with a prompt column (instruction/question/...) and an answer column.
-ds = slm.Dataset.from_jsonl("examples/sample_dataset.jsonl")
+ds = slm.Dataset.from_jsonl(DATA)
 model = slm.load(MODEL)
 
 # contains-match: 1.0 when the expected answer appears in the output ----------
