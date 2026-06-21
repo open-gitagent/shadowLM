@@ -378,6 +378,63 @@ def export(
     console.print(f"exported [slm]{format}[/slm] → [slm]{out}[/slm]")
 
 
+@app.command(name="eval", rich_help_panel="Models")
+def evaluate_cmd(
+    target: Annotated[str, typer.Argument(help="model name, or an adapter directory")],
+    dataset: Annotated[str, typer.Argument(
+        help="dataset (.jsonl/.json/.csv/.parquet) with a prompt + answer column")],
+    metric: Annotated[str, typer.Option(help="contains | exact | judge")] = "contains",
+    judge: Annotated[Optional[str], typer.Option(
+        help="judge model (HF id) — implies --metric judge")] = None,
+    system: Annotated[Optional[str], typer.Option(help="system prompt for every query")] = None,
+    sample: Annotated[Optional[int], typer.Option(help="evaluate only the first N rows")] = None,
+    show: Annotated[int, typer.Option(help="how many worst examples to show")] = 5,
+    model: Annotated[Optional[str], typer.Option("--model", "-m",
+        help="base model override for adapter dirs")] = None,
+    backend: Annotated[str, typer.Option(help="auto | mlx | torch")] = "auto",
+    load_in_4bit: Annotated[bool, typer.Option("--load-in-4bit")] = False,
+    max_new_tokens: Annotated[int, typer.Option("--max-new-tokens")] = 256,
+    hf_token: Annotated[Optional[str], typer.Option("--hf-token", envvar="HF_TOKEN")] = None,
+):
+    """Score a model on a dataset — task quality, not training loss."""
+    from .data import Dataset  # noqa: PLC0415
+    from .eval import evaluate as _evaluate  # noqa: PLC0415
+    from .models import load  # noqa: PLC0415
+
+    if metric not in ("contains", "exact", "judge"):
+        raise typer.BadParameter("--metric must be 'contains', 'exact', or 'judge'")
+    # Validate before loading the model — otherwise the user waits for a full
+    # model download only to hit a scorer error.
+    if metric == "judge" and not judge:
+        raise typer.BadParameter("--metric judge needs a judge model: --judge <hf-id>")
+    _maybe_set_token(hf_token)
+    m = _resolve_target(target, model, backend, load_in_4bit)
+    judge_model = load(judge, backend=backend) if judge else None
+    data = Dataset.load(dataset)
+
+    result = _evaluate(m, data, metric=metric, judge=judge_model, system=system,
+                       sample=sample, max_new_tokens=max_new_tokens, verbose=False)
+
+    console.print(
+        f"[slm]{result.metric}[/slm]  score [ok]{result.score:.3f}[/ok]  "
+        f"over {result.n} rows  {result.sparkline()}")
+    worst = result.worst(show)
+    if worst and result.score < 1.0:
+        table = Table(title="lowest-scoring examples", title_style="slm",
+                      header_style="slm", border_style="muted")
+        for col in ("score", "input", "expected", "output"):
+            table.add_column(col, no_wrap=(col == "score"))
+        for ex in worst:
+            table.add_row(f"{ex['score']:.2f}", _trunc(ex["input"]),
+                          _trunc(ex["expected"]), _trunc(ex["output"]))
+        console.print(table)
+
+
+def _trunc(text: str, n: int = 60) -> str:
+    text = " ".join(str(text).split())
+    return text if len(text) <= n else text[: n - 1] + "…"
+
+
 # ---- runs / history ---------------------------------------------------------
 @app.command(rich_help_panel="Runs")
 def runs(
