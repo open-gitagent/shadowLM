@@ -92,6 +92,13 @@ class _Job:
         job.steps = d.get("steps", [])
         job.evals = d.get("evals", [])
         job.logs = d.get("logs", [])
+        if job.worker is None:
+            # records written before the worker field existed: the worker
+            # announced itself in the captured console — recover it from there
+            for ln in job.logs:
+                if ln.startswith("[worker:") and "] picked up job" in ln:
+                    job.worker = ln[len("[worker:"):ln.index("]")]
+                    break
         # a run that was mid-flight when the server died can't still be running
         if job.status in ("pending", "running"):
             job.status, job.error = "stopped", "interrupted by a server restart"
@@ -724,6 +731,14 @@ class Server:
         adapter_path = None
         if adapter:
             job = self.jobs.get(adapter)
+            if job and job.checkpoint and Path(job.checkpoint).is_file():
+                # a worker-uploaded tarball: trained elsewhere, in that
+                # machine's format — this box must not try to load it
+                raise RuntimeError(
+                    f"this shadow was trained on another machine"
+                    f"{f' ({job.worker})' if job.worker else ''} and its "
+                    "adapter format matches that backend — chat with it while "
+                    "that machine's `shadowlm worker` is connected")
             if job and job.checkpoint:
                 adapter_path = (_ck.resolve(job.checkpoint, checkpoint)
                                 if checkpoint is not None else job.checkpoint)

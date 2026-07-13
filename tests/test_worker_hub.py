@@ -247,6 +247,17 @@ def test_chat_with_offline_machine_says_which_machine(hub):
             "messages": [{"role": "user", "content": "hi"}]})
 
 
+def test_old_job_records_recover_their_worker_from_logs():
+    """job.json written before the worker field existed: the name comes back
+    from the '[worker:X] picked up job' console line."""
+    from shadowlm.serve import _Job
+
+    job = _Job.from_record({
+        "job_id": "old123", "base_model": "m", "status": "succeeded",
+        "logs": ["banner", "[worker:patel] picked up job old123 · backend mlx"]})
+    assert job.worker == "patel"
+
+
 def test_machine_tokens_mint_authenticate_revoke(tmp_path):
     """Against an auth-enabled hub: a minted machine token opens the worker
     socket, survives a hub restart (tokens.json), and dies on revoke."""
