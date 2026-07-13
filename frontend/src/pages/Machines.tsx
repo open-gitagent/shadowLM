@@ -1,9 +1,42 @@
 // Machines — every device serving this hub via `shadowlm worker`.
 import { useEffect, useState } from "react";
-import { MonitorSmartphone } from "lucide-react";
-import { getWorkers } from "../api";
+import { Check, Copy, MonitorSmartphone } from "lucide-react";
+import { apiKey, getWorkers } from "../api";
 import type { WorkerInfo } from "../api";
 import { PageHeader } from "../ui";
+
+function ConnectCmd() {
+  const [copied, setCopied] = useState(false);
+  const token = apiKey.get();
+  // your own studio session token — same credential, ~12h validity; reconnects
+  // after expiry need a fresh one from a new login
+  const cmd = `shadowlm worker --hub ${window.location.origin} --name my-machine` +
+    (token ? ` --api-key ${token}` : "");
+  const copy = () => {
+    navigator.clipboard.writeText(cmd).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  };
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-start gap-2">
+        <pre className="flex-1 overflow-x-auto text-left text-xs font-mono bg-accent/40 border border-border rounded-md px-4 py-2.5">
+          {cmd}
+        </pre>
+        <button onClick={copy} title="copy"
+                className="shrink-0 p-2 rounded-md border border-border text-muted-foreground hover:text-foreground hover:bg-accent/40">
+          {copied ? <Check className="size-3.5 text-emerald-500" /> : <Copy className="size-3.5" />}
+        </button>
+      </div>
+      {token && (
+        <p className="text-[11px] text-muted-foreground">
+          includes your session token (valid ~12h) — the machine connects with the same access you have here.
+        </p>
+      )}
+    </div>
+  );
+}
 
 function ago(ts: number): string {
   const s = Math.max(0, Math.floor(Date.now() / 1000 - ts));
@@ -25,8 +58,6 @@ export default function Machines() {
     return () => clearInterval(t);
   }, []);
 
-  const connectCmd = `shadowlm worker --hub ${window.location.origin} --name my-machine`;
-
   return (
     <>
       <PageHeader
@@ -43,9 +74,7 @@ export default function Machines() {
               On any machine with <span className="font-mono">shadowlm</span> installed
               (a MacBook, an office GPU box — NAT is fine, it dials out):
             </p>
-            <pre className="inline-block text-left text-xs font-mono bg-accent/40 border border-border rounded-md px-4 py-2.5">
-              {connectCmd}
-            </pre>
+            <div className="max-w-2xl mx-auto"><ConnectCmd /></div>
           </section>
         ) : (
           <section className="rounded-lg border border-border bg-card overflow-hidden">
@@ -91,9 +120,10 @@ export default function Machines() {
         )}
 
         {workers.length > 0 && (
-          <p className="text-xs text-muted-foreground">
-            Add another: <span className="font-mono">{connectCmd}</span>
-          </p>
+          <div className="max-w-2xl">
+            <p className="text-xs text-muted-foreground mb-1.5">Add another machine:</p>
+            <ConnectCmd />
+          </div>
         )}
       </div>
     </>
