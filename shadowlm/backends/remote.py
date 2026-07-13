@@ -6,7 +6,11 @@
 The job runs wherever SHADOWLM_API_URL points — `python -m shadowlm.serve` on
 a GPU box, or ShadowLM Studio. Metrics stream back into the normal callback
 machinery, so the live progress bar, sparkline, and local run records work
-exactly as they do for local training. Pure stdlib, like the core.
+exactly as they do for local training. The server's console streams back too, so
+a remote run reads like a local one. Pure stdlib, like the core.
+
+SHADOWLM_API_URL may list several servers (comma-separated); the backend binds to
+the least-busy reachable one at load() and stays there for the session.
 """
 
 from __future__ import annotations
@@ -49,14 +53,39 @@ class RemoteBackend(Backend):
         if api_url or api_key:  # load-time override of env/defaults
             self._client = RemoteClient(api_url or self._client.api_url,
                                         api_key or self._client.api_key)
-        health = self._client.health()  # fail fast: reachable + authorized
+        # fail fast: reachable + authorized. With a pool, this also binds us to
+        # the least-busy box for the rest of the session.
+        health = self._client.pick()
         self.model_name = name
         self.load_in_4bit = load_in_4bit
         self.max_seq_length = max_seq_length
         self.adapter = adapter  # a remote job id, or a server-known adapter ref
         self._server_backend = health.get("backend", "?")
+        self._server_gpus = health.get("gpus", 0)
 
     # ---- training ------------------------------------------------------------
+    def _drain_logs(self, job_id: str, seen: int, callbacks: Callbacks,
+                    *, final: bool) -> int:
+        """Mirror the server's console into the local callbacks; return the new mark.
+
+        Two things get filtered. The server appends its in-progress (post-`\\r`)
+        line to the end, so while the job runs we hold the last line back rather
+        than print a half-drawn one. And the server logs its own per-step lines —
+        those already arrive as metrics and drive the local progress bar, so
+        echoing them would double every step.
+        """
+        try:
+            lines = self._client.logs(job_id)
+        except RemoteError:
+            return seen  # logs are best-effort: never fail a run over them
+        seen = min(seen, len(lines))  # the server keeps only the tail (log cap)
+        end = len(lines) if final else max(seen, len(lines) - 1)
+        noise = (f"[{job_id[:8]}] step ", f"[{job_id[:8]}] eval · step ")
+        for line in lines[seen:end]:
+            if not line.startswith(noise):
+                callbacks.log(line)
+        return end
+
     def finetune(self, dataset: Dataset, config: TrainConfig, callbacks: Callbacks,
                  output_dir: str, eval_dataset: Dataset | None = None,
                  reward_fns: list | None = None) -> FinetuneResult:
@@ -75,10 +104,11 @@ class RemoteBackend(Backend):
             max_seq_length=self.max_seq_length,
         )
         self._last_job = job_id
+        gpus = f", {self._server_gpus} gpu" if self._server_gpus else ""
         callbacks.log(f"[remote:{self._client.api_url}] job {job_id} submitted "
-                      f"(server backend: {self._server_backend})")
+                      f"(server backend: {self._server_backend}{gpus})")
 
-        seen_steps = seen_evals = 0
+        seen_steps = seen_evals = seen_logs = 0
         cancelled = False
         status: dict = {}
         while True:
@@ -93,10 +123,13 @@ class RemoteBackend(Backend):
             for d in m.get("evals", [])[seen_evals:]:
                 callbacks.eval(Metric(**d))
                 seen_evals += 1
+            seen_logs = self._drain_logs(job_id, seen_logs, callbacks, final=False)
             status = self._client.job(job_id)
             if status["status"] in _TERMINAL:
                 break
             time.sleep(_POLL_S)
+        # the job is over: flush the console tail, including any failure traceback
+        self._drain_logs(job_id, seen_logs, callbacks, final=True)
 
         if status["status"] == "failed":
             raise RuntimeError(f"remote training failed: {status.get('error')}")
