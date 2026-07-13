@@ -1234,8 +1234,9 @@ def make_handler(server: Server, auth: "Auth"):
                 # Our client sends nothing until it has read this 101, so no
                 # frames can be stranded in rfile's buffer — the raw socket is
                 # safe to hand over. This handler thread becomes the session.
-                server.serve_worker_socket(
-                    parts[2], ws.WSConn(self.connection, is_client=False))
+                conn = ws.WSConn(self.connection, is_client=False)
+                conn.trace = f"ws:{parts[2]}"  # every frame → the hub console
+                server.serve_worker_socket(parts[2], conn)
             elif len(parts) == 4 and parts[:2] == ["v1", "finetunes"] \
                     and parts[3] == "logs":
                 if (job := self._job_or_404(parts[2])):

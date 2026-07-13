@@ -61,6 +61,7 @@ class _Link:
                 conn = ws.connect(self._client.api_url,
                                   f"/v1/workers/{self._name}/socket",
                                   api_key=self._client.api_key)
+                conn.trace = "hub"  # every frame → this terminal
                 # models are rescanned per connect — a reconnect refreshes them
                 conn.send_json({"type": "register", **self._register,
                                 "models": _local_models()})

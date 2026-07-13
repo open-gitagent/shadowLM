@@ -75,18 +75,56 @@ def recv_frame(sock: socket.socket) -> tuple[int, bytes]:
     return opcode, payload
 
 
+def _describe(obj: dict) -> str:
+    """One line per wire message — the socket narrates its own traffic."""
+    kind = obj.get("type", "?")
+    bits = [kind]
+    if obj.get("job_id"):
+        bits.append(str(obj["job_id"])[:8])
+    if kind == "job" and isinstance(obj.get("job"), dict):
+        j = obj["job"]
+        bits.append(str(j.get("job_id", ""))[:8])
+        rows = len((j.get("dataset") or {}).get("rows") or [])
+        bits.append(f"{j.get('base_model', '?')} · {rows} rows")
+    elif kind == "events":
+        n_s, n_l = len(obj.get("steps") or []), len(obj.get("logs") or [])
+        if n_s:
+            bits.append(f"{n_s} steps")
+        if n_l:
+            bits.append(f"{n_l} log lines")
+        if obj.get("status"):
+            bits.append(f"status={obj['status']}")
+    elif kind == "register":
+        bits.append(f"{obj.get('backend', '?')} · {obj.get('gpu_name') or obj.get('device', '?')}"
+                    f" · {len(obj.get('models') or [])} models")
+    elif kind == "infer_result":
+        bits.append(f"{len(obj.get('text') or '')} chars"
+                    if not obj.get("error") else f"error: {obj['error'][:60]}")
+    elif kind in ("chat", "generate"):
+        bits.append(f"→ answer on this wire, id {str(obj.get('id', ''))[:8]}")
+    return " · ".join(bits)
+
+
 class WSConn:
     """A connected websocket: thread-safe JSON sends, ping/pong handled inline.
 
-    `is_client` decides masking (clients mask, servers don't).
+    `is_client` decides masking (clients mask, servers don't). Set `trace` to a
+    label ("ws:patel") and every frame — messages, pings, close — prints as a
+    one-liner, so the socket's whole conversation is visible in the console.
     """
 
     def __init__(self, sock: socket.socket, *, is_client: bool) -> None:
         self._sock = sock
         self._mask = is_client
         self._send_lock = threading.Lock()
+        self.trace: str | None = None
+
+    def _log(self, arrow: str, what: str) -> None:
+        if self.trace:
+            print(f"[{self.trace}] {arrow} {what}", flush=True)
 
     def send_json(self, obj: dict) -> None:
+        self._log("→", _describe(obj))
         with self._send_lock:
             send_frame(self._sock, json.dumps(obj).encode(), mask=self._mask)
 
@@ -97,16 +135,21 @@ class WSConn:
         while True:
             opcode, payload = recv_frame(self._sock)
             if opcode == OP_TEXT:
-                return json.loads(payload)
+                obj = json.loads(payload)
+                self._log("←", _describe(obj))
+                return obj
             if opcode == OP_PING:
+                self._log("←", "ping (answered)")
                 with self._send_lock:
                     send_frame(self._sock, payload, opcode=OP_PONG,
                                mask=self._mask)
             elif opcode == OP_CLOSE:
+                self._log("←", "close")
                 return None
             # OP_PONG and anything else: liveness noise, keep reading
 
     def ping(self) -> None:
+        self._log("→", "ping")
         with self._send_lock:
             send_frame(self._sock, b"", opcode=OP_PING, mask=self._mask)
 
