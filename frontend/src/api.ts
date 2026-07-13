@@ -170,6 +170,11 @@ export const clearVram = () =>
   api<{ unloaded: number; before_mb: number | null; after_mb: number | null }>(
     "/v1/vram/clear", { method: "POST" });
 export const getMethods = () => api<{ methods: MethodInfo[] }>("/v1/methods");
+export interface WorkerInfo {
+  name: string; backend: string; device: string; gpus: number;
+  last_seen: number; online: boolean; queued: number;
+}
+export const getWorkers = () => api<{ workers: WorkerInfo[] }>("/v1/workers");
 export const getJobs = () => api<{ jobs: JobSummary[] }>("/v1/finetunes");
 export const getJob = (id: string) => api<JobDetail>(`/v1/finetunes/${id}`);
 export const getMetrics = (id: string) =>

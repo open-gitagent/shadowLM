@@ -1,8 +1,8 @@
 // The workspace at a glance — all real data from the server.
 import { useEffect, useState } from "react";
-import { ArrowUpRight, Cpu, Database, Zap } from "lucide-react";
-import { getDatasets, getJobs, getMetrics, getModels } from "../api";
-import type { DatasetMeta, JobSummary } from "../api";
+import { ArrowUpRight, Cpu, Database, MonitorSmartphone, Zap } from "lucide-react";
+import { getDatasets, getJobs, getMetrics, getModels, getWorkers } from "../api";
+import type { DatasetMeta, JobSummary, WorkerInfo } from "../api";
 import { PageHeader, Sparkline, StatusBadge, btnPrimary } from "../ui";
 
 function Stat({ label, value, sub, icon: Icon }: {
@@ -26,9 +26,11 @@ export default function Dashboard() {
   const [datasets, setDatasets] = useState<DatasetMeta[]>([]);
   const [recentModels, setRecentModels] = useState(0);
   const [curves, setCurves] = useState<Record<string, number[]>>({});
+  const [workers, setWorkers] = useState<WorkerInfo[]>([]);
 
   useEffect(() => {
     const tick = () => {
+      getWorkers().then((w) => setWorkers(w.workers)).catch(() => {});
       getJobs().then(async ({ jobs }) => {
         setJobs(jobs);
         const want = jobs.slice(0, 6);
@@ -70,6 +72,35 @@ export default function Dashboard() {
           <Stat label="Active runs" value={String(running.length)} sub={running.length ? "currently training" : "idle"} icon={Zap} />
           <Stat label="Datasets" value={String(datasets.length)} sub="uploaded to this server" icon={Database} />
         </div>
+
+        {workers.length > 0 && (
+          <section className="rounded-lg border border-border bg-card overflow-hidden">
+            <div className="px-5 py-3 border-b border-border flex items-center gap-2">
+              <MonitorSmartphone className="size-4 text-primary" />
+              <h2 className="text-sm font-semibold">Machines</h2>
+              <a href="#machines" className="text-xs text-primary hover:underline inline-flex items-center gap-1 no-underline ml-auto">
+                {workers.filter((w) => w.online).length}/{workers.length} online <ArrowUpRight className="size-3" />
+              </a>
+            </div>
+            <div className="divide-y divide-border">
+              {workers.map((w) => (
+                <div key={w.name} className="px-5 py-3 flex items-center gap-3 text-sm">
+                  <span className={`size-2 rounded-full shrink-0 ${
+                    w.online ? "bg-emerald-500" : "bg-muted-foreground/40"}`} />
+                  <span className="font-medium font-mono">{w.name}</span>
+                  <span className="text-xs text-muted-foreground font-mono">
+                    {w.backend} · {w.device}{w.gpus ? ` · ${w.gpus} gpu` : ""}
+                  </span>
+                  <span className="text-xs text-muted-foreground font-mono ml-auto">
+                    {w.online
+                      ? (w.queued ? `${w.queued} queued` : "idle")
+                      : `last seen ${new Date(w.last_seen * 1000).toLocaleTimeString()}`}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
 
         {running.length > 0 && (
           <section className="rounded-lg border border-border bg-card overflow-hidden">

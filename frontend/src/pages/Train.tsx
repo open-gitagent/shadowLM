@@ -3,7 +3,8 @@
 // exactly its own hyperparameters (LoRA rank for adapters, beta for DPO, …).
 import { useEffect, useMemo, useState } from "react";
 import { Check, ChevronLeft, ChevronRight, Play, Search } from "lucide-react";
-import { getDatasets, getModels, submitFinetune } from "../api";
+import { getDatasets, getModels, getWorkers, submitFinetune } from "../api";
+import type { WorkerInfo } from "../api";
 import type { CatalogModel, DatasetMeta, MethodInfo } from "../api";
 import { Field, PageHeader, btnGhost, btnPrimary } from "../ui";
 
@@ -147,9 +148,12 @@ export default function Train({ methods }: { methods: MethodInfo[] }) {
   const [evalPct, setEvalPct] = useState("10");
   const [advanced, setAdvanced] = useState(false);
   const [name, setName] = useState("");
+  const [workers, setWorkers] = useState<WorkerInfo[]>([]);
+  const [device, setDevice] = useState("");  // "" = train on this server
 
   useEffect(() => {
     getDatasets().then((d) => setDatasets(d.datasets));
+    getWorkers().then((w) => setWorkers(w.workers)).catch(() => {});
     getModels().then((m) => {
       setCatalog(m.catalog);
       setRecent(m.recent.filter((r) => !m.catalog.some((c) => c.id === r)));
@@ -216,7 +220,7 @@ export default function Train({ methods }: { methods: MethodInfo[] }) {
     try {
       const out = await submitFinetune({
         base_model: model, name: name.trim(), config: buildConfig(), dataset_id: ds,
-        eval_dataset: useHoldout ? `${evalPct}%` : null,
+        eval_dataset: useHoldout ? `${evalPct}%` : null, worker: device || null,
         load_in_4bit: false, max_seq_length: parseInt(vals.max_seq_length || "2048") });
       window.location.hash = `#runs/${out.job_id}`;
     } catch (ex) { setErr((ex as Error).message); setBusy(false); }
@@ -402,6 +406,24 @@ export default function Train({ methods }: { methods: MethodInfo[] }) {
                   what it'll be called in Runs &amp; the playground — optional, the run id is the fallback.
                 </p>
               </div>
+
+              {workers.length > 0 && (
+                <div className="pt-4 border-t border-border">
+                  <label className="text-sm font-semibold mb-1 block">Train on</label>
+                  <select value={device} onChange={(e) => setDevice(e.target.value)}
+                          className="w-full font-mono text-sm">
+                    <option value="">this server</option>
+                    {workers.map((w) => (
+                      <option key={w.name} value={w.name} disabled={!w.online}>
+                        {w.name} — {w.backend} · {w.device}{w.online ? "" : " (offline)"}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-[11px] text-muted-foreground mt-1.5">
+                    connected devices (`shadowlm worker`) — the run streams back here either way.
+                  </p>
+                </div>
+              )}
 
               <div className="pt-4 border-t border-border">
                 <div className="text-sm font-semibold mb-1">Hyperparameters</div>

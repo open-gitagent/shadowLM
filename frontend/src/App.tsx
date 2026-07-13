@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import {
   Box, Cpu, Database, ExternalLink, History, LayoutDashboard, LogOut,
-  MessagesSquare, Zap,
+  MessagesSquare, MonitorSmartphone, Zap,
 } from "lucide-react";
 import {
   apiKey, clearVram, getAuthInfo, getHealth, getMethods, getSettings, getVram,
@@ -16,6 +16,7 @@ import Models from "./pages/Models";
 import Train from "./pages/Train";
 import Runs from "./pages/Runs";
 import Playground from "./pages/Playground";
+import Machines from "./pages/Machines";
 
 function useHash(): string {
   const [h, setH] = useState(window.location.hash);
@@ -34,6 +35,7 @@ const NAV = [
   { hash: "models", label: "Models", icon: Box },
   { hash: "train", label: "Train", icon: Cpu },
   { hash: "runs", label: "Runs", icon: History },
+  { hash: "machines", label: "Machines", icon: MonitorSmartphone },
 ] as const;
 
 // ---- the login gate ---------------------------------------------------------
@@ -177,6 +179,7 @@ function Studio({ authEnabled, onSignOut }: { authEnabled: boolean; onSignOut: (
     section === "train" ? <Train methods={methods} /> :
     section === "playground" ? <Playground /> :
     section === "runs" ? <Runs initialId={arg} /> :
+    section === "machines" ? <Machines /> :
     <Dashboard />;
 
   return (
