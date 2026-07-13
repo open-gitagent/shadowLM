@@ -418,7 +418,9 @@ class Server:
         self._downloads: dict[str, dict] = {}  # model id → prefetch status
         self._settings_path = work_root / "settings.json"
         self._custom_path = work_root / "custom_models.json"
+        self._tokens_path = work_root / "tokens.json"
         self._custom_models = self._load_custom_models()  # user-added HF repos
+        self._machine_tokens = self._load_tokens()  # name → {hash, created}
         self._load_settings()
         self._load_jobs()
         threading.Thread(target=self._worker, daemon=True).start()
@@ -456,6 +458,56 @@ class Server:
             self._settings_path.write_text(json.dumps({"hf_token": token or ""}))
         except OSError:
             pass  # in-memory still works for this process
+
+    # ---- machine tokens: long-lived credentials for `shadowlm worker` --------
+    # Named + individually revocable, hashed at rest in tokens.json — the same
+    # single-box persistence every other piece of hub state uses.
+    # ponytail: a JSON file, not a database — swap the store when a hub outgrows
+    # one box, which is also when this whole tier hands off to Studio.
+    def _load_tokens(self) -> dict:
+        try:
+            data = json.loads(self._tokens_path.read_text())
+            return data if isinstance(data, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def _save_tokens(self) -> None:
+        try:
+            self._tokens_path.write_text(json.dumps(self._machine_tokens, indent=1))
+        except OSError:
+            pass  # in-memory still works for this process
+
+    def mint_machine_token(self, name: str) -> str:
+        """A long-lived worker credential; the raw value is shown exactly once."""
+        import secrets  # noqa: PLC0415
+
+        raw = "slmk_" + secrets.token_urlsafe(32)
+        with self._lock:
+            self._machine_tokens[name] = {
+                "hash": hashlib.sha256(raw.encode()).hexdigest(),
+                "created": int(time.time())}
+            self._save_tokens()
+        return raw
+
+    def revoke_machine_token(self, name: str) -> bool:
+        with self._lock:
+            if name not in self._machine_tokens:
+                return False
+            del self._machine_tokens[name]
+            self._save_tokens()
+        return True
+
+    def valid_machine_token(self, raw: str) -> bool:
+        if not raw.startswith("slmk_"):
+            return False
+        digest = hashlib.sha256(raw.encode()).hexdigest()
+        return any(hmac.compare_digest(digest, t.get("hash", ""))
+                   for t in self._machine_tokens.values())
+
+    def machine_tokens(self) -> list[dict]:
+        with self._lock:
+            return [{"name": n, "created": t.get("created", 0)}
+                    for n, t in sorted(self._machine_tokens.items())]
 
     # ---- custom models: user-added HF repos beyond the curated catalog -------
     def _load_custom_models(self) -> list:
@@ -981,7 +1033,9 @@ def make_handler(server: Server, auth: "Auth"):
             if not auth.enabled:
                 return True
             got = self.headers.get("Authorization", "")
-            if got.startswith("Bearer ") and auth.valid_bearer(got[7:]):
+            if got.startswith("Bearer ") and (
+                    auth.valid_bearer(got[7:])
+                    or server.valid_machine_token(got[7:])):
                 return True
             self._error(401, "authentication required")
             return False
@@ -1093,6 +1147,8 @@ def make_handler(server: Server, auth: "Auth"):
                 with server._lock:
                     infos = [w.info() for w in server.workers.values()]
                 self._send(200, {"workers": sorted(infos, key=lambda w: w["name"])})
+            elif parts == ["v1", "tokens"]:
+                self._send(200, {"tokens": server.machine_tokens()})
             elif len(parts) == 4 and parts[:2] == ["v1", "workers"] \
                     and parts[3] == "socket":
                 from . import ws  # noqa: PLC0415
@@ -1209,6 +1265,13 @@ def make_handler(server: Server, auth: "Auth"):
                         job.cancel.set()
                         server.push_cancel(job)  # instant over the socket
                         self._send(200, {"ok": True})
+                elif parts == ["v1", "tokens"]:
+                    b = self._body()
+                    tname = (b.get("name") or "").strip()
+                    if not tname:
+                        return self._error(422, "provide a token 'name'")
+                    self._send(201, {"name": tname,
+                                     "token": server.mint_machine_token(tname)})
                 elif len(parts) == 6 and parts[:2] == ["v1", "workers"] \
                         and parts[3] == "jobs" and parts[5] == "artifact":
                     if (job := self._job_or_404(parts[4])):
@@ -1249,6 +1312,11 @@ def make_handler(server: Server, auth: "Auth"):
                     self._send(200, {"ok": True})
                 else:
                     self._error(404, f"unknown dataset {parts[2]!r}")
+            elif len(parts) == 3 and parts[:2] == ["v1", "tokens"]:
+                if server.revoke_machine_token(parts[2]):
+                    self._send(200, {"ok": True})
+                else:
+                    self._error(404, f"unknown token {parts[2]!r}")
             else:
                 self._error(404, f"no route: DELETE {self.path}")
 

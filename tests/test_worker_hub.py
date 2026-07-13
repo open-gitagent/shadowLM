@@ -209,6 +209,47 @@ def test_worker_failure_is_reported_not_swallowed(hub, tmp_path):
     assert j.status == "failed" and "no such model" in j.error
 
 
+def test_machine_tokens_mint_authenticate_revoke(tmp_path):
+    """Against an auth-enabled hub: a minted machine token opens the worker
+    socket, survives a hub restart (tokens.json), and dies on revoke."""
+    server = Server(backend="auto", accelerator="auto", device="auto",
+                    work_root=tmp_path)
+    auth = Auth(user="admin", password=None, api_key="ADMIN_KEY")
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(server, auth))
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{httpd.server_address[1]}"
+    try:
+        admin = RemoteClient(url, "ADMIN_KEY")
+        with pytest.raises(Exception, match="401|auth"):
+            RemoteClient(url, "slmk_forged").health()  # unknown token: rejected
+
+        out = admin._request("POST", "/v1/tokens", {"name": "macbook"})
+        token = out["token"]
+        assert token.startswith("slmk_")
+        assert RemoteClient(url, token).health()["ok"]  # HTTP accepts it
+
+        conn = ws.connect(url, "/v1/workers/macbook/socket", api_key=token)
+        conn.send_json({"type": "register", "backend": "mlx",
+                        "device": "t", "gpus": 0})  # socket accepts it
+        deadline = time.time() + 5
+        while not admin.workers() and time.time() < deadline:
+            time.sleep(0.05)
+        assert admin.workers()[0]["name"] == "macbook"
+        conn.close()
+
+        # raw value is never stored — only the hash is on disk
+        assert token not in (tmp_path / "tokens.json").read_text()
+        # a fresh Server over the same work_root still honors it (persistence)
+        assert Server(backend="auto", accelerator="auto", device="auto",
+                      work_root=tmp_path).valid_machine_token(token)
+
+        admin._request("DELETE", "/v1/tokens/macbook")
+        with pytest.raises(Exception, match="401|auth"):
+            RemoteClient(url, token).health()  # revoked: rejected
+    finally:
+        httpd.shutdown()
+
+
 def test_cancelled_before_pickup_never_dispatches(hub):
     server, client, url = hub
     job_id = _submit(client, worker="ghost")  # no such worker connected

@@ -175,6 +175,13 @@ export interface WorkerInfo {
   last_seen: number; online: boolean; queued: number;
 }
 export const getWorkers = () => api<{ workers: WorkerInfo[] }>("/v1/workers");
+export interface MachineToken { name: string; created: number }
+export const getTokens = () => api<{ tokens: MachineToken[] }>("/v1/tokens");
+export const createToken = (name: string) =>
+  api<{ name: string; token: string }>("/v1/tokens", {
+    method: "POST", body: JSON.stringify({ name }) });
+export const revokeToken = (name: string) =>
+  api<{ ok: boolean }>(`/v1/tokens/${encodeURIComponent(name)}`, { method: "DELETE" });
 export const getJobs = () => api<{ jobs: JobSummary[] }>("/v1/finetunes");
 export const getJob = (id: string) => api<JobDetail>(`/v1/finetunes/${id}`);
 export const getMetrics = (id: string) =>

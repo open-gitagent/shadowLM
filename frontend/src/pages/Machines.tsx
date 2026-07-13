@@ -1,38 +1,92 @@
 // Machines — every device serving this hub via `shadowlm worker`.
 import { useEffect, useState } from "react";
-import { Check, Copy, MonitorSmartphone } from "lucide-react";
-import { apiKey, getWorkers } from "../api";
-import type { WorkerInfo } from "../api";
+import { Check, Copy, KeyRound, MonitorSmartphone, Trash2 } from "lucide-react";
+import { createToken, getTokens, getWorkers, revokeToken } from "../api";
+import type { MachineToken, WorkerInfo } from "../api";
 import { PageHeader } from "../ui";
 
-function ConnectCmd() {
+function CopyBtn({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
-  const token = apiKey.get();
-  // your own studio session token — same credential, ~12h validity; reconnects
-  // after expiry need a fresh one from a new login
-  const cmd = `shadowlm worker --hub ${window.location.origin} --name my-machine` +
-    (token ? ` --api-key ${token}` : "");
-  const copy = () => {
-    navigator.clipboard.writeText(cmd).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    });
-  };
   return (
-    <div className="space-y-1.5">
-      <div className="flex items-start gap-2">
-        <pre className="flex-1 overflow-x-auto text-left text-xs font-mono bg-accent/40 border border-border rounded-md px-4 py-2.5">
-          {cmd}
-        </pre>
-        <button onClick={copy} title="copy"
-                className="shrink-0 p-2 rounded-md border border-border text-muted-foreground hover:text-foreground hover:bg-accent/40">
-          {copied ? <Check className="size-3.5 text-emerald-500" /> : <Copy className="size-3.5" />}
+    <button title="copy"
+      onClick={() => navigator.clipboard.writeText(text).then(() => {
+        setCopied(true); setTimeout(() => setCopied(false), 1500);
+      })}
+      className="shrink-0 p-2 rounded-md border border-border text-muted-foreground hover:text-foreground hover:bg-accent/40">
+      {copied ? <Check className="size-3.5 text-emerald-500" /> : <Copy className="size-3.5" />}
+    </button>
+  );
+}
+
+/** Mint + manage long-lived machine tokens; the raw token is shown exactly once. */
+function ConnectCmd() {
+  const [tokens, setTokens] = useState<MachineToken[]>([]);
+  const [name, setName] = useState("");
+  const [minted, setMinted] = useState<{ name: string; token: string } | null>(null);
+  const [err, setErr] = useState("");
+
+  const refresh = () => { getTokens().then((t) => setTokens(t.tokens)).catch(() => {}); };
+  useEffect(refresh, []);
+
+  async function mint() {
+    const n = name.trim() || "my-machine";
+    setErr("");
+    try {
+      setMinted(await createToken(n));
+      setName("");
+      refresh();
+    } catch (ex) { setErr((ex as Error).message); }
+  }
+
+  const cmd = minted
+    ? `shadowlm worker --hub ${window.location.origin} --name ${minted.name} --api-key ${minted.token}`
+    : null;
+
+  return (
+    <div className="space-y-3 text-left">
+      <div className="flex items-center gap-2">
+        <input value={name} onChange={(e) => setName(e.target.value)}
+               onKeyDown={(e) => e.key === "Enter" && mint()}
+               placeholder="machine name — e.g. macbook"
+               className="flex-1 font-mono text-sm" />
+        <button onClick={mint}
+                className="shrink-0 inline-flex items-center gap-1.5 text-xs px-3 py-2 rounded-md border border-border hover:bg-accent/40">
+          <KeyRound className="size-3.5" /> Create machine token
         </button>
       </div>
-      {token && (
-        <p className="text-[11px] text-muted-foreground">
-          includes your session token (valid ~12h) — the machine connects with the same access you have here.
-        </p>
+      {err && <p className="text-xs text-red-500">{err}</p>}
+
+      {cmd && (
+        <div className="space-y-1.5">
+          <div className="flex items-start gap-2">
+            <pre className="flex-1 overflow-x-auto text-xs font-mono bg-accent/40 border border-border rounded-md px-4 py-2.5">
+              {cmd}
+            </pre>
+            <CopyBtn text={cmd} />
+          </div>
+          <p className="text-[11px] text-muted-foreground">
+            long-lived token, shown once — copy it now. Revoke it here any time.
+          </p>
+        </div>
+      )}
+
+      {tokens.length > 0 && (
+        <div className="divide-y divide-border border border-border rounded-md">
+          {tokens.map((t) => (
+            <div key={t.name} className="px-3 py-2 flex items-center gap-2 text-xs">
+              <KeyRound className="size-3 text-muted-foreground" />
+              <span className="font-mono font-medium">{t.name}</span>
+              <span className="text-muted-foreground font-mono ml-auto">
+                created {new Date(t.created * 1000).toLocaleDateString()}
+              </span>
+              <button title="revoke"
+                onClick={() => revokeToken(t.name).then(refresh)}
+                className="p-1 rounded text-muted-foreground hover:text-red-500">
+                <Trash2 className="size-3.5" />
+              </button>
+            </div>
+          ))}
+        </div>
       )}
     </div>
   );
