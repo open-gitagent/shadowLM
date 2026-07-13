@@ -15,7 +15,7 @@ datasets → finetune → inference. mlx on Apple Silicon, torch on CUDA (or CPU
 — accelerated by the shadow layer.
 """
 
-from . import checkpoints, hub, methods, runs
+from . import checkpoints, hub, methods, runs, traces
 from .apo import APORun, optimize_prompt
 from .capture import CaptureProxy, capture
 from .checkpoints import Checkpoint
@@ -43,6 +43,7 @@ __all__ = [
     "load",
     "methods",
     "runs",
+    "traces",
     "Metric",
     "TrainConfig",
     "TrainingRun",

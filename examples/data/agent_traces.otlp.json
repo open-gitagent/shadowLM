@@ -1,0 +1,189 @@
+{
+  "resourceSpans": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "support-agent"
+            }
+          }
+        ]
+      },
+      "scopeSpans": [
+        {
+          "scope": {
+            "name": "tracekit"
+          },
+          "spans": [
+            {
+              "traceId": "11111111111111111111111111111111",
+              "spanId": "0000000000000001",
+              "name": "chat gpt-4o",
+              "startTimeUnixNano": "1000000001",
+              "attributes": [
+                {
+                  "key": "gen_ai.provider.name",
+                  "value": {
+                    "stringValue": "openai"
+                  }
+                },
+                {
+                  "key": "gen_ai.request.model",
+                  "value": {
+                    "stringValue": "gpt-4o"
+                  }
+                },
+                {
+                  "key": "gen_ai.response.model",
+                  "value": {
+                    "stringValue": "gpt-4o"
+                  }
+                },
+                {
+                  "key": "gen_ai.input.messages",
+                  "value": {
+                    "stringValue": "[{\"role\": \"system\", \"parts\": [{\"type\": \"text\", \"content\": \"You are Acme's customer-support assistant. Look up the docs with the lookup_doc tool before answering.\"}]}, {\"role\": \"user\", \"parts\": [{\"type\": \"text\", \"content\": \"How do I reset my password?\"}]}]"
+                  }
+                },
+                {
+                  "key": "gen_ai.output.messages",
+                  "value": {
+                    "stringValue": "[{\"role\": \"assistant\", \"finish_reason\": \"tool_calls\", \"parts\": [{\"type\": \"tool_call\", \"id\": \"call_a1\", \"name\": \"lookup_doc\", \"arguments\": \"{\\\"topic\\\": \\\"password reset\\\"}\"}]}]"
+                  }
+                }
+              ]
+            },
+            {
+              "traceId": "11111111111111111111111111111111",
+              "spanId": "0000000000000002",
+              "name": "chat gpt-4o",
+              "startTimeUnixNano": "1000000002",
+              "attributes": [
+                {
+                  "key": "gen_ai.provider.name",
+                  "value": {
+                    "stringValue": "openai"
+                  }
+                },
+                {
+                  "key": "gen_ai.request.model",
+                  "value": {
+                    "stringValue": "gpt-4o"
+                  }
+                },
+                {
+                  "key": "gen_ai.response.model",
+                  "value": {
+                    "stringValue": "gpt-4o"
+                  }
+                },
+                {
+                  "key": "gen_ai.input.messages",
+                  "value": {
+                    "stringValue": "[{\"role\": \"system\", \"parts\": [{\"type\": \"text\", \"content\": \"You are Acme's customer-support assistant. Look up the docs with the lookup_doc tool before answering.\"}]}, {\"role\": \"user\", \"parts\": [{\"type\": \"text\", \"content\": \"How do I reset my password?\"}]}, {\"role\": \"assistant\", \"finish_reason\": \"tool_calls\", \"parts\": [{\"type\": \"tool_call\", \"id\": \"call_a1\", \"name\": \"lookup_doc\", \"arguments\": \"{\\\"topic\\\": \\\"password reset\\\"}\"}]}, {\"role\": \"tool\", \"parts\": [{\"type\": \"tool_call_response\", \"id\": \"call_a1\", \"response\": \"Doc: Settings > Security > Reset Password. A reset link is emailed to the account address.\"}]}]"
+                  }
+                },
+                {
+                  "key": "gen_ai.output.messages",
+                  "value": {
+                    "stringValue": "[{\"role\": \"assistant\", \"parts\": [{\"type\": \"text\", \"content\": \"Go to Settings -> Security -> Reset Password. We'll email a reset link to your account address; open it to set a new password.\"}], \"finish_reason\": \"stop\"}]"
+                  }
+                },
+                {
+                  "key": "eval.score",
+                  "value": {
+                    "doubleValue": 1.0
+                  }
+                }
+              ]
+            },
+            {
+              "traceId": "22222222222222222222222222222222",
+              "spanId": "0000000000000003",
+              "name": "chat gpt-4o",
+              "startTimeUnixNano": "2000000001",
+              "attributes": [
+                {
+                  "key": "gen_ai.provider.name",
+                  "value": {
+                    "stringValue": "openai"
+                  }
+                },
+                {
+                  "key": "gen_ai.request.model",
+                  "value": {
+                    "stringValue": "gpt-4o"
+                  }
+                },
+                {
+                  "key": "gen_ai.response.model",
+                  "value": {
+                    "stringValue": "gpt-4o"
+                  }
+                },
+                {
+                  "key": "gen_ai.input.messages",
+                  "value": {
+                    "stringValue": "[{\"role\": \"system\", \"parts\": [{\"type\": \"text\", \"content\": \"You are Acme's customer-support assistant. Look up the docs with the lookup_doc tool before answering.\"}]}, {\"role\": \"user\", \"parts\": [{\"type\": \"text\", \"content\": \"Can I export my invoices as PDF?\"}]}]"
+                  }
+                },
+                {
+                  "key": "gen_ai.output.messages",
+                  "value": {
+                    "stringValue": "[{\"role\": \"assistant\", \"finish_reason\": \"tool_calls\", \"parts\": [{\"type\": \"tool_call\", \"id\": \"call_b1\", \"name\": \"lookup_doc\", \"arguments\": \"{\\\"topic\\\": \\\"invoice export\\\"}\"}]}]"
+                  }
+                }
+              ]
+            },
+            {
+              "traceId": "22222222222222222222222222222222",
+              "spanId": "0000000000000004",
+              "name": "chat gpt-4o",
+              "startTimeUnixNano": "2000000002",
+              "attributes": [
+                {
+                  "key": "gen_ai.provider.name",
+                  "value": {
+                    "stringValue": "openai"
+                  }
+                },
+                {
+                  "key": "gen_ai.request.model",
+                  "value": {
+                    "stringValue": "gpt-4o"
+                  }
+                },
+                {
+                  "key": "gen_ai.response.model",
+                  "value": {
+                    "stringValue": "gpt-4o"
+                  }
+                },
+                {
+                  "key": "gen_ai.input.messages",
+                  "value": {
+                    "stringValue": "[{\"role\": \"system\", \"parts\": [{\"type\": \"text\", \"content\": \"You are Acme's customer-support assistant. Look up the docs with the lookup_doc tool before answering.\"}]}, {\"role\": \"user\", \"parts\": [{\"type\": \"text\", \"content\": \"Can I export my invoices as PDF?\"}]}, {\"role\": \"assistant\", \"finish_reason\": \"tool_calls\", \"parts\": [{\"type\": \"tool_call\", \"id\": \"call_b1\", \"name\": \"lookup_doc\", \"arguments\": \"{\\\"topic\\\": \\\"invoice export\\\"}\"}]}, {\"role\": \"tool\", \"parts\": [{\"type\": \"tool_call_response\", \"id\": \"call_b1\", \"response\": \"Doc: Billing > Invoices > Export. Choose the PDF format.\"}]}]"
+                  }
+                },
+                {
+                  "key": "gen_ai.output.messages",
+                  "value": {
+                    "stringValue": "[{\"role\": \"assistant\", \"parts\": [{\"type\": \"text\", \"content\": \"Yes. Open Billing -> Invoices -> Export and pick PDF as the format to download them.\"}], \"finish_reason\": \"stop\"}]"
+                  }
+                },
+                {
+                  "key": "eval.score",
+                  "value": {
+                    "doubleValue": 0.9
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
