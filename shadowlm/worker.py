@@ -61,7 +61,9 @@ class _Link:
                 conn = ws.connect(self._client.api_url,
                                   f"/v1/workers/{self._name}/socket",
                                   api_key=self._client.api_key)
-                conn.send_json({"type": "register", **self._register})
+                # models are rescanned per connect — a reconnect refreshes them
+                conn.send_json({"type": "register", **self._register,
+                                "models": _local_models()})
                 self._conn = conn
                 print(f"[worker:{self._name}] connected to "
                       f"{self._client.api_url} — waiting for jobs", flush=True)
@@ -237,6 +239,19 @@ def _hardware() -> dict:
         except (ValueError, OSError, AttributeError):
             pass
     return hw
+
+
+def _local_models() -> list[dict]:
+    """Base models already on this machine (the HF cache) — the studio shows
+    them per-machine so you know what a device can train without downloading."""
+    try:
+        from huggingface_hub import scan_cache_dir  # noqa: PLC0415
+
+        repos = [{"id": r.repo_id, "size_gb": round(r.size_on_disk / 2**30, 1)}
+                 for r in scan_cache_dir().repos if r.repo_type == "model"]
+        return sorted(repos, key=lambda m: -m["size_gb"])[:50]
+    except Exception:  # noqa: BLE001 — no hub lib / no cache: just report none
+        return []
 
 
 def _tar_dir(root: str | Path) -> bytes:

@@ -115,6 +115,7 @@ function ago(ts: number): string {
 export default function Machines() {
   const [workers, setWorkers] = useState<WorkerInfo[]>([]);
   const [loaded, setLoaded] = useState(false);
+  const [open, setOpen] = useState<string | null>(null);
 
   useEffect(() => {
     const tick = () =>
@@ -164,22 +165,48 @@ export default function Machines() {
               </thead>
               <tbody className="divide-y divide-border">
                 {workers.map((w) => (
-                  <tr key={w.name} className="hover:bg-accent/30">
-                    <td className="px-5 py-3">
-                      <span className="inline-flex items-center gap-2 font-mono font-medium">
-                        <span className={`size-2 rounded-full ${
-                          w.online ? "bg-emerald-500" : "bg-muted-foreground/40"}`} />
-                        {w.name}
-                      </span>
-                    </td>
-                    <td className="px-3 py-3 font-mono text-xs uppercase">{w.backend}</td>
-                    <td className="px-3 py-3 font-mono text-xs">{w.device}</td>
-                    <td className="px-3 py-3 font-mono text-xs">{compute(w)}</td>
-                    <td className="px-3 py-3 text-right font-mono">{w.queued || "—"}</td>
-                    <td className="px-5 py-3 text-right text-xs text-muted-foreground font-mono">
-                      {w.online ? (w.queued ? "busy" : "idle") : `last seen ${ago(w.last_seen)}`}
-                    </td>
-                  </tr>
+                  <>
+                    <tr key={w.name} className="hover:bg-accent/30 cursor-pointer"
+                        onClick={() => setOpen(open === w.name ? null : w.name)}>
+                      <td className="px-5 py-3">
+                        <span className="inline-flex items-center gap-2 font-mono font-medium">
+                          <span className={`size-2 rounded-full ${
+                            w.online ? "bg-emerald-500" : "bg-muted-foreground/40"}`} />
+                          {w.name}
+                          {w.models.length > 0 && (
+                            <span className="text-[10px] text-muted-foreground font-normal">
+                              {open === w.name ? "▾" : "▸"} {w.models.length} models
+                            </span>
+                          )}
+                        </span>
+                      </td>
+                      <td className="px-3 py-3 font-mono text-xs uppercase">{w.backend}</td>
+                      <td className="px-3 py-3 font-mono text-xs">{w.device}</td>
+                      <td className="px-3 py-3 font-mono text-xs">{compute(w)}</td>
+                      <td className="px-3 py-3 text-right font-mono">{w.queued || "—"}</td>
+                      <td className="px-5 py-3 text-right text-xs text-muted-foreground font-mono">
+                        {w.online ? (w.queued ? "busy" : "idle") : `last seen ${ago(w.last_seen)}`}
+                      </td>
+                    </tr>
+                    {open === w.name && w.models.length > 0 && (
+                      <tr key={`${w.name}-models`}>
+                        <td colSpan={6} className="px-5 pb-3 pt-0 bg-accent/10">
+                          <div className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground pt-2 pb-1.5">
+                            models on {w.name}
+                          </div>
+                          <div className="flex flex-wrap gap-1.5">
+                            {w.models.map((m) => (
+                              <span key={m.id}
+                                    className="text-xs font-mono px-2 py-1 rounded border border-border bg-card">
+                                {m.id}
+                                <span className="text-muted-foreground"> · {m.size_gb} GB</span>
+                              </span>
+                            ))}
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </>
                 ))}
               </tbody>
             </table>

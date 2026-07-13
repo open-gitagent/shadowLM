@@ -376,6 +376,7 @@ class _Worker:
     vram_gb: float = 0.0
     ram_gb: float = 0.0
     cores: int = 0
+    models: list = field(default_factory=list)  # [{id, size_gb}] on that machine
     last_seen: float = 0.0
     inbox: "queue.Queue[str]" = field(default_factory=queue.Queue)
 
@@ -383,7 +384,8 @@ class _Worker:
         return {"name": self.name, "backend": self.backend, "device": self.device,
                 "gpus": self.gpus, "gpu_name": self.gpu_name,
                 "vram_gb": self.vram_gb, "ram_gb": self.ram_gb,
-                "cores": self.cores, "last_seen": int(self.last_seen),
+                "cores": self.cores, "models": self.models,
+                "last_seen": int(self.last_seen),
                 "online": (time.time() - self.last_seen) < 90,
                 "queued": self.inbox.qsize()}
 
@@ -805,6 +807,8 @@ class Server:
         w.vram_gb = float(body.get("vram_gb") or 0)
         w.ram_gb = float(body.get("ram_gb") or 0)
         w.cores = int(body.get("cores") or 0)
+        if isinstance(body.get("models"), list):
+            w.models = body["models"][:50]
         w.last_seen = time.time()
         return w
 
