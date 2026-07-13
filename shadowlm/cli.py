@@ -517,6 +517,28 @@ def serve(
     raise typer.Exit(serve_main(argv))
 
 
+@app.command(rich_help_panel="Server")
+def worker(
+    hub: Annotated[Optional[str], typer.Option(
+        help="hub URL (defaults to SHADOWLM_API_URL)")] = None,
+    name: Annotated[Optional[str], typer.Option(
+        help="how this machine appears in the studio (default: hostname)")] = None,
+    api_key: Annotated[Optional[str], typer.Option(
+        "--api-key", envvar="SHADOWLM_API_KEY",
+        help="hub credential (or a token from /v1/login)")] = None,
+    once: Annotated[bool, typer.Option("--once",
+        help="process a single job, then exit")] = False,
+):
+    """Hire this machine out to a ShadowLM hub — it dials out, shows up as a
+    device in the studio, and trains the jobs the hub routes to it."""
+    from .worker import run_worker  # noqa: PLC0415
+
+    try:
+        run_worker(hub, name=name, api_key=api_key, once=once)
+    except KeyboardInterrupt:
+        console.print("\nworker stopped")
+
+
 # ---- info -------------------------------------------------------------------
 def _methods_cmd():
     """List the registered training methods."""

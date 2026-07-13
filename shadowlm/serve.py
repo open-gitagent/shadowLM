@@ -357,6 +357,46 @@ class DatasetStore:
         return found
 
 
+@dataclass
+class _Worker:
+    """A machine that dialed in with `shadowlm worker` and takes jobs from us.
+
+    Workers are keyed by name and live in memory only — a worker that never
+    polls again is just stale (see `online`), and jobs assigned to it wait in
+    its inbox until it comes back. ponytail: no offline eviction/reassignment —
+    add when a worker dying mid-queue actually strands someone.
+    """
+
+    name: str
+    backend: str = "?"
+    device: str = "?"
+    gpus: int = 0
+    last_seen: float = 0.0
+    inbox: "queue.Queue[str]" = field(default_factory=queue.Queue)
+
+    def info(self) -> dict:
+        return {"name": self.name, "backend": self.backend, "device": self.device,
+                "gpus": self.gpus, "last_seen": int(self.last_seen),
+                "online": (time.time() - self.last_seen) < 90,
+                "queued": self.inbox.qsize()}
+
+
+def _gpu_count() -> int:
+    """How many CUDA GPUs this box has (0 on mlx/CPU). Advertised in /v1/health.
+
+    One job already spans all of them — the torch backend loads with
+    device_map="auto" — so this is a capacity signal for clients choosing between
+    servers, not a knob. Running one job *per* GPU would need cuda:N placement,
+    which device_map deliberately does not do.
+    """
+    try:
+        import torch  # noqa: PLC0415  (optional: mlx boxes have no torch)
+
+        return torch.cuda.device_count()
+    except Exception:  # noqa: BLE001 — no torch, no driver, no CUDA: all "0 GPUs"
+        return 0
+
+
 class Server:
     """Job store + the single training worker + an inference slot."""
 
@@ -367,6 +407,8 @@ class Server:
         self.device = device
         self.work_root = work_root
         self.jobs: dict[str, _Job] = {}
+        self.workers: dict[str, _Worker] = {}  # remote executors, keyed by name
+        self.worker_socks: dict[str, object] = {}  # name → live WSConn
         self.datasets = DatasetStore(work_root / "datasets")
         self.queue: "queue.Queue[str]" = queue.Queue()
         self._lock = threading.Lock()          # job-store mutations
@@ -380,6 +422,19 @@ class Server:
         self._load_settings()
         self._load_jobs()
         threading.Thread(target=self._worker, daemon=True).start()
+
+    def capacity(self) -> dict:
+        """What this box is and how busy it is — clients route on this."""
+        with self._lock:
+            jobs = list(self.jobs.values())
+        with self._lock:
+            workers = [w.info() for w in self.workers.values()]
+        return {
+            "gpus": _gpu_count(),
+            "running": sum(j.status == "running" for j in jobs),
+            "pending": sum(j.status == "pending" for j in jobs),
+            "workers": sum(w["online"] for w in workers),
+        }
 
     # ---- settings: HF token for gated/private models --------------------------
     def _load_settings(self) -> None:
@@ -666,12 +721,179 @@ class Server:
         with self._lock:
             self.jobs[job_id] = job
         self._persist(job)  # visible (as pending) the instant it's queued
-        self.queue.put(job_id)
+        # target="<worker name>" routes the job to that machine's inbox instead
+        # of this box's own training queue. Submitting ahead of the worker
+        # connecting is fine — the inbox waits.
+        if payload.get("worker"):
+            self.worker_named(payload["worker"]).inbox.put(job_id)
+        else:
+            self.queue.put(job_id)
         return job_id
 
+    # ---- remote workers --------------------------------------------------------
+    def worker_named(self, name: str) -> _Worker:
+        with self._lock:
+            return self.workers.setdefault(name, _Worker(name=name))
+
+    def register_worker(self, body: dict) -> _Worker:
+        w = self.worker_named(body["name"])
+        w.backend = body.get("backend", w.backend)
+        w.device = body.get("device", w.device)
+        w.gpus = int(body.get("gpus") or 0)
+        w.last_seen = time.time()
+        return w
+
+    def next_job_for(self, name: str, *, wait_s: float = 20.0) -> _Job | None:
+        """Long-poll pickup: the next runnable job in this worker's inbox."""
+        w = self.worker_named(name)
+        deadline = time.monotonic() + wait_s
+        while True:
+            w.last_seen = time.time()
+            try:
+                job_id = w.inbox.get(timeout=max(0.0, deadline - time.monotonic()))
+            except queue.Empty:
+                return None
+            job = self.jobs.get(job_id)
+            if job is None:
+                continue
+            if job.cancel.is_set():  # cancelled while waiting for pickup
+                job.status = "stopped"
+                self._persist(job)
+                continue
+            job.status = "running"
+            job.logs = []
+            self._persist(job)
+            return job
+
+    def serve_worker_socket(self, name: str, conn) -> None:
+        """One worker's whole session, run on its connection's handler thread.
+
+        Uplink: the worker streams `events` messages in. Downlink: a sender
+        thread pushes `job` messages the moment something lands in the inbox,
+        and `cancel` the moment the studio asks — that's the bidirectional wire.
+        """
+        first = conn.recv_json(timeout=30.0)
+        if not isinstance(first, dict) or first.get("type") != "register":
+            conn.close()
+            return
+        self.register_worker({**first, "name": name})
+        with self._lock:
+            self.worker_socks[name] = conn
+        print(f"[hub] worker '{name}' connected "
+              f"({first.get('backend', '?')} · {first.get('device', '?')})",
+              flush=True)
+
+        dead = threading.Event()
+
+        def sender() -> None:
+            while not dead.is_set():
+                job = self.next_job_for(name, wait_s=1.0)
+                if job is None:
+                    continue
+                # a send into a just-closed socket can "succeed" into the TCP
+                # buffer — so re-check liveness after popping, and requeue
+                # instead of dispatching into the void
+                if dead.is_set():
+                    requeue = True
+                else:
+                    try:
+                        conn.send_json({"type": "job", "job": {
+                            "job_id": job.job_id, **self.wire_payload(job)}})
+                        requeue = False
+                    except OSError:
+                        requeue = True
+                if requeue:
+                    job.status = "pending"
+                    self._persist(job)
+                    self.worker_named(name).inbox.put(job.job_id)
+                    return
+
+        threading.Thread(target=sender, daemon=True).start()
+        try:
+            while True:
+                try:
+                    msg = conn.recv_json(timeout=90.0)  # workers ping every 45s
+                except TimeoutError:
+                    break  # silent too long: presume gone; it will reconnect
+                if msg is None:
+                    break
+                self.worker_named(name).last_seen = time.time()
+                if msg.get("type") == "events":
+                    if (job := self.jobs.get(msg.get("job_id"))) is not None:
+                        if self.ingest_events(job, msg)["cancel"]:
+                            conn.send_json({"type": "cancel",
+                                            "job_id": job.job_id})
+        except (ConnectionError, OSError, json.JSONDecodeError):
+            pass  # a dropped worker is normal — the studio just shows offline
+        finally:
+            dead.set()
+            with self._lock:
+                if self.worker_socks.get(name) is conn:
+                    del self.worker_socks[name]
+            conn.close()
+            print(f"[hub] worker '{name}' disconnected", flush=True)
+
+    def push_cancel(self, job: _Job) -> None:
+        """Tell the executing worker to stop, right now, over its socket."""
+        name = (getattr(job, "_payload", None) or {}).get("worker")
+        if not name:
+            return  # hub-local job: its own training loop watches the flag
+        conn = self.worker_socks.get(name)
+        if conn is not None:
+            try:
+                conn.send_json({"type": "cancel", "job_id": job.job_id})
+                return
+            except OSError:
+                pass  # fall through: the socket just died
+        # no live socket to deliver to — terminalize here so the studio isn't
+        # stuck showing "running" for a machine that's gone
+        if job.status in ("pending", "running"):
+            job.status = "stopped"
+            self._persist(job)
+
+    def wire_payload(self, job: _Job) -> dict:
+        """The job as shipped to a worker: dataset refs resolved to inline rows
+        (the worker has no access to this hub's dataset store)."""
+        from .models import _eval_holdout  # noqa: PLC0415
+
+        payload = dict(job._payload)
+        if payload.get("dataset_id"):
+            ds = self.datasets.resolve(payload["dataset_id"])
+            payload["dataset"] = {"rows": ds.rows, "format": ds.format}
+            if _eval_holdout(payload.get("eval_dataset")) is None:
+                ev = self.datasets.resolve_eval(payload["dataset_id"])
+                if ev is not None:
+                    payload["eval_dataset"] = {"rows": ev.rows, "format": ev.format}
+        return payload
+
+    def ingest_events(self, job: _Job, body: dict) -> dict:
+        """Fold a worker's pushed progress into the job record the studio reads."""
+        job.steps.extend(body.get("steps") or [])
+        job.evals.extend(body.get("evals") or [])
+        job.logs.extend(body.get("logs") or [])
+        if len(job.logs) > job._LOG_CAP * 2:
+            job.logs = job.logs[-job._LOG_CAP:]
+        if body.get("final_loss") is not None:
+            job.final_loss = body["final_loss"]
+        if body.get("status") in ("succeeded", "failed", "stopped"):
+            job.status = body["status"]
+            job.error = body.get("error")
+            self._persist(job)
+        return {"cancel": job.cancel.is_set()}  # the downlink: hub → worker
+
+    def store_artifact(self, job: _Job, blob: bytes) -> None:
+        """A worker shipped its trained adapter home — the weights live here now."""
+        path = self.work_root / job.job_id / "artifact.tar.gz"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(blob)
+        job.checkpoint = str(path)
+        self._persist(job)
+
     def artifact(self, job: _Job) -> bytes:
-        buf = io.BytesIO()
         root = Path(job.checkpoint)
+        if root.is_file():  # a worker-uploaded tarball: already in wire format
+            return root.read_bytes()
+        buf = io.BytesIO()
         with tarfile.open(fileobj=buf, mode="w:gz") as tar:
             for p in sorted(root.rglob("*")):
                 if p.is_file():
@@ -811,7 +1033,7 @@ def make_handler(server: Server, auth: "Auth"):
                 return
             if parts == ["v1", "health"]:
                 self._send(200, {"ok": True, "backend": server.backend_name,
-                                 "version": __version__})
+                                 "version": __version__, **server.capacity()})
             elif parts == ["v1", "finetunes"]:
                 with server._lock:
                     jobs = sorted(server.jobs.values(), key=lambda j: j.created)
@@ -867,6 +1089,30 @@ def make_handler(server: Server, auth: "Auth"):
                     and parts[3] == "metrics":
                 if (job := self._job_or_404(parts[2])):
                     self._send(200, {"steps": job.steps, "evals": job.evals})
+            elif parts == ["v1", "workers"]:
+                with server._lock:
+                    infos = [w.info() for w in server.workers.values()]
+                self._send(200, {"workers": sorted(infos, key=lambda w: w["name"])})
+            elif len(parts) == 4 and parts[:2] == ["v1", "workers"] \
+                    and parts[3] == "socket":
+                from . import ws  # noqa: PLC0415
+
+                if (self.headers.get("Upgrade") or "").lower() != "websocket":
+                    return self._error(426, "this route speaks websocket only")
+                key = self.headers.get("Sec-WebSocket-Key")
+                if not key:
+                    return self._error(400, "missing Sec-WebSocket-Key")
+                self.send_response_only(101)
+                self.send_header("Upgrade", "websocket")
+                self.send_header("Connection", "Upgrade")
+                self.send_header("Sec-WebSocket-Accept", ws.accept_key(key))
+                self.end_headers()
+                self.close_connection = True
+                # Our client sends nothing until it has read this 101, so no
+                # frames can be stranded in rfile's buffer — the raw socket is
+                # safe to hand over. This handler thread becomes the session.
+                server.serve_worker_socket(
+                    parts[2], ws.WSConn(self.connection, is_client=False))
             elif len(parts) == 4 and parts[:2] == ["v1", "finetunes"] \
                     and parts[3] == "logs":
                 if (job := self._job_or_404(parts[2])):
@@ -961,6 +1207,13 @@ def make_handler(server: Server, auth: "Auth"):
                         and parts[3] == "cancel":
                     if (job := self._job_or_404(parts[2])):
                         job.cancel.set()
+                        server.push_cancel(job)  # instant over the socket
+                        self._send(200, {"ok": True})
+                elif len(parts) == 6 and parts[:2] == ["v1", "workers"] \
+                        and parts[3] == "jobs" and parts[5] == "artifact":
+                    if (job := self._job_or_404(parts[4])):
+                        length = int(self.headers.get("Content-Length") or 0)
+                        server.store_artifact(job, self.rfile.read(length))
                         self._send(200, {"ok": True})
                 elif parts == ["v1", "generate"]:
                     b = self._body()
