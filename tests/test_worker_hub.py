@@ -68,6 +68,16 @@ def _submit(client, worker="mac"):
         load_in_4bit=False, max_seq_length=512, worker=worker)
 
 
+def _wait_terminal(server, job_id, timeout=10.0):
+    """The worker returns before the hub's recv thread ingests its final frame —
+    give the ingest a moment instead of asserting against the race."""
+    deadline = time.time() + timeout
+    while server.jobs[job_id].status in ("pending", "running") \
+            and time.time() < deadline:
+        time.sleep(0.05)
+    return server.jobs[job_id]
+
+
 def _connect(url, name="mac"):
     conn = ws.connect(url, f"/v1/workers/{name}/socket")
     conn.send_json({"type": "register", "backend": "mlx",
@@ -170,7 +180,7 @@ def test_full_worker_loop_with_stub_backend(hub, tmp_path):
     t.join(timeout=15)
     assert not t.is_alive(), "worker never finished the job"
 
-    j = server.jobs[job_id]
+    j = _wait_terminal(server, job_id)
     assert j.status == "succeeded" and j.final_loss == 3.0
     assert any("training away" in ln for ln in j.logs)
     assert j.checkpoint and j.checkpoint.endswith("artifact.tar.gz")
@@ -195,7 +205,7 @@ def test_worker_failure_is_reported_not_swallowed(hub, tmp_path):
         backend_factory=ExplodingBackend))
     t.start()
     t.join(timeout=15)
-    j = server.jobs[job_id]
+    j = _wait_terminal(server, job_id)
     assert j.status == "failed" and "no such model" in j.error
 
 
