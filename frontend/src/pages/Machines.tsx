@@ -92,6 +92,19 @@ function ConnectCmd() {
   );
 }
 
+/** "NVIDIA L40S · 48 GB" / "Apple M3 Pro · 36 GB unified" / "12 cores · 32 GB RAM" */
+function compute(w: WorkerInfo): string {
+  if (w.gpu_name) {
+    const unified = w.backend === "mlx" ? " unified" : "";
+    const count = w.gpus > 1 ? `${w.gpus}× ` : "";
+    return `${count}${w.gpu_name}${w.vram_gb ? ` · ${w.vram_gb} GB${unified}` : ""}`;
+  }
+  const bits = [];
+  if (w.cores) bits.push(`${w.cores} cores`);
+  if (w.ram_gb) bits.push(`${w.ram_gb} GB RAM`);
+  return bits.join(" · ") || "—";
+}
+
 function ago(ts: number): string {
   const s = Math.max(0, Math.floor(Date.now() / 1000 - ts));
   if (s < 90) return `${s}s ago`;
@@ -144,7 +157,7 @@ export default function Machines() {
                   <th className="text-left px-5 py-2.5 font-normal">Machine</th>
                   <th className="text-left px-3 py-2.5 font-normal">Backend</th>
                   <th className="text-left px-3 py-2.5 font-normal">Platform</th>
-                  <th className="text-right px-3 py-2.5 font-normal">GPUs</th>
+                  <th className="text-left px-3 py-2.5 font-normal">Compute</th>
                   <th className="text-right px-3 py-2.5 font-normal">Queue</th>
                   <th className="text-right px-5 py-2.5 font-normal">Status</th>
                 </tr>
@@ -161,7 +174,7 @@ export default function Machines() {
                     </td>
                     <td className="px-3 py-3 font-mono text-xs uppercase">{w.backend}</td>
                     <td className="px-3 py-3 font-mono text-xs">{w.device}</td>
-                    <td className="px-3 py-3 text-right font-mono">{w.gpus || "—"}</td>
+                    <td className="px-3 py-3 font-mono text-xs">{compute(w)}</td>
                     <td className="px-3 py-3 text-right font-mono">{w.queued || "—"}</td>
                     <td className="px-5 py-3 text-right text-xs text-muted-foreground font-mono">
                       {w.online ? (w.queued ? "busy" : "idle") : `last seen ${ago(w.last_seen)}`}

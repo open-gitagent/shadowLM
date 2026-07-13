@@ -89,7 +89,8 @@ export default function Dashboard() {
                     w.online ? "bg-emerald-500" : "bg-muted-foreground/40"}`} />
                   <span className="font-medium font-mono">{w.name}</span>
                   <span className="text-xs text-muted-foreground font-mono">
-                    {w.backend} · {w.device}{w.gpus ? ` · ${w.gpus} gpu` : ""}
+                    {w.backend} · {w.gpu_name || w.device}
+                    {w.vram_gb ? ` · ${w.vram_gb} GB` : ""}
                   </span>
                   <span className="text-xs text-muted-foreground font-mono ml-auto">
                     {w.online

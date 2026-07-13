@@ -81,7 +81,9 @@ def _wait_terminal(server, job_id, timeout=10.0):
 def _connect(url, name="mac"):
     conn = ws.connect(url, f"/v1/workers/{name}/socket")
     conn.send_json({"type": "register", "backend": "mlx",
-                    "device": "Darwin/arm64", "gpus": 0})
+                    "device": "Darwin/arm64", "gpus": 1,
+                    "gpu_name": "Test M-chip", "vram_gb": 48.0,
+                    "ram_gb": 48.0, "cores": 12})
     return conn
 
 
@@ -207,6 +209,42 @@ def test_worker_failure_is_reported_not_swallowed(hub, tmp_path):
     t.join(timeout=15)
     j = _wait_terminal(server, job_id)
     assert j.status == "failed" and "no such model" in j.error
+
+
+def test_playground_chat_routes_to_the_training_machine(hub):
+    """A worker-trained shadow answers on its worker: the hub proxies /v1/chat
+    over the socket instead of loading a foreign-format adapter itself."""
+    server, client, url = hub
+    conn = _connect(url)
+    try:
+        job_id = _submit(client)
+        assert conn.recv_json(timeout=5.0)["type"] == "job"
+
+        def fake_mac_answers():
+            req = conn.recv_json(timeout=10.0)  # the proxied chat arrives
+            assert req["type"] == "chat" and req["job_id"] == job_id
+            assert req["messages"] == [{"role": "user", "content": "hi"}]
+            conn.send_json({"type": "infer_result", "id": req["id"],
+                            "text": "hello from the mac"})
+
+        t = threading.Thread(target=fake_mac_answers, daemon=True)
+        t.start()
+        out = client._request("POST", "/v1/chat", {
+            "model": "tiny/model", "adapter": job_id,
+            "messages": [{"role": "user", "content": "hi"}]})
+        t.join(timeout=5)
+        assert out == {"text": "hello from the mac"}
+    finally:
+        conn.close()
+
+
+def test_chat_with_offline_machine_says_which_machine(hub):
+    server, client, url = hub
+    job_id = _submit(client, worker="gone-mac")  # never connects
+    with pytest.raises(Exception, match="gone-mac.*offline|offline.*gone-mac"):
+        client._request("POST", "/v1/chat", {
+            "model": "tiny/model", "adapter": job_id,
+            "messages": [{"role": "user", "content": "hi"}]})
 
 
 def test_machine_tokens_mint_authenticate_revoke(tmp_path):

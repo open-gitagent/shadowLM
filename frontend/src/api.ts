@@ -172,6 +172,7 @@ export const clearVram = () =>
 export const getMethods = () => api<{ methods: MethodInfo[] }>("/v1/methods");
 export interface WorkerInfo {
   name: string; backend: string; device: string; gpus: number;
+  gpu_name: string; vram_gb: number; ram_gb: number; cores: number;
   last_seen: number; online: boolean; queued: number;
 }
 export const getWorkers = () => api<{ workers: WorkerInfo[] }>("/v1/workers");

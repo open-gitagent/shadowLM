@@ -415,7 +415,8 @@ export default function Train({ methods }: { methods: MethodInfo[] }) {
                     <option value="">this server</option>
                     {workers.map((w) => (
                       <option key={w.name} value={w.name} disabled={!w.online}>
-                        {w.name} — {w.backend} · {w.device}{w.online ? "" : " (offline)"}
+                        {w.name} — {w.backend} · {w.gpu_name || w.device}
+                        {w.vram_gb ? ` · ${w.vram_gb} GB` : ""}{w.online ? "" : " (offline)"}
                       </option>
                     ))}
                   </select>

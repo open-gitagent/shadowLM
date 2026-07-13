@@ -35,11 +35,14 @@ class _Link:
     """The persistent socket to the hub: owns connect/re-connect, fans incoming
     messages out (jobs → queue, cancels → flags), and serializes sends."""
 
-    def __init__(self, client: RemoteClient, name: str, register: dict) -> None:
+    def __init__(self, client: RemoteClient, name: str, register: dict,
+                 work_root: Path) -> None:
         self._client, self._name, self._register = client, name, register
+        self._work_root = work_root
         self.jobs: "queue.Queue[dict]" = queue.Queue()
         self.cancelled: set[str] = set()  # job_ids the hub told us to stop
         self._conn: ws.WSConn | None = None
+        self._infer_cache: dict[tuple, object] = {}  # (model, adapter) → Model
         threading.Thread(target=self._run, daemon=True).start()
 
     def send(self, obj: dict) -> None:
@@ -74,20 +77,68 @@ class _Link:
                         self.jobs.put(msg["job"])
                     elif msg.get("type") == "cancel":
                         self.cancelled.add(msg.get("job_id", ""))
+                    elif msg.get("type") in ("chat", "generate"):
+                        # the hub is proxying playground traffic to the shadow
+                        # trained here — answer off-thread, recv keeps flowing
+                        threading.Thread(target=self._serve_infer,
+                                         args=(msg,), daemon=True).start()
             except (OSError, ConnectionError) as e:
                 print(f"[worker:{self._name}] hub link lost ({e}) — "
                       "reconnecting in 5s", flush=True)
             self._conn = None
             time.sleep(5)
 
+    def _serve_infer(self, msg: dict) -> None:
+        """Answer a hub-proxied chat/generate with the shadow trained here."""
+        out = {"type": "infer_result", "id": msg.get("id", "")}
+        try:
+            from .models import load  # noqa: PLC0415
+
+            adapter = self._work_root / (msg.get("job_id") or "")
+            if not adapter.is_dir():
+                raise FileNotFoundError(
+                    f"adapter for job {msg.get('job_id')} is not on this "
+                    "machine anymore (looked in "
+                    f"{self._work_root})")
+            key = (msg["base_model"], adapter.name)
+            model = self._infer_cache.get(key)
+            if model is None:
+                if len(self._infer_cache) >= 2:  # tiny cache: base ↔ shadow flips
+                    self._infer_cache.clear()
+                model = load(msg["base_model"], adapter=str(adapter))
+                self._infer_cache[key] = model
+            if msg["type"] == "chat":
+                reply = model.chat(msg["messages"],
+                                   max_new_tokens=msg.get("max_new_tokens", 512),
+                                   temperature=msg.get("temperature", 0.7),
+                                   top_p=msg.get("top_p", 0.95))
+                out["text"] = getattr(reply, "raw", None) or str(reply)
+            else:
+                out["text"] = model.generate(
+                    msg["prompt"],
+                    max_new_tokens=msg.get("max_new_tokens", 256),
+                    temperature=msg.get("temperature", 0.7),
+                    top_p=msg.get("top_p", 0.95))
+            print(f"[worker] answered a {msg['type']} for the studio "
+                  f"({len(out['text'])} chars)", flush=True)
+        except Exception as e:  # noqa: BLE001 — report to the hub, keep serving
+            out["error"] = f"{type(e).__name__}: {e}"
+        try:
+            self.send(out)
+        except (OSError, ConnectionError):
+            pass  # link dropped; the hub's waiter times out and says so
+
 
 class _Uplink:
     """Buffers one job's console lines + metrics; pushes over the link about
-    once a second. Send failures buffer and ride the next push — only a
-    terminal status insists (retries until the link is back)."""
+    once a second, and echoes everything to this terminal — the worker's
+    console reads like a local training session, not a black box. Send
+    failures buffer and ride the next push — only a terminal status insists
+    (retries until the link is back)."""
 
     def __init__(self, link: _Link, job_id: str) -> None:
         self._link, self._job = link, job_id
+        self._tag = job_id[:8]
         self._logs: list[str] = []
         self._steps: list[dict] = []
         self._evals: list[dict] = []
@@ -98,14 +149,26 @@ class _Uplink:
         return self._job in self._link.cancelled
 
     def log(self, line: str) -> None:
+        print(line, flush=True)
         self._logs.append(line)
         self._maybe_push()
 
     def step(self, m) -> None:
+        bits = [f"step {m.step}"]
+        if m.loss is not None:
+            bits.append(f"loss {m.loss:.4f}")
+        if m.lr:
+            bits.append(f"lr {m.lr:.2e}")
+        if getattr(m, "tokens_per_s", None):
+            bits.append(f"{m.tokens_per_s:,.0f} tok/s")
+        print(f"[{self._tag}] {' · '.join(bits)}", flush=True)
         self._steps.append(m.to_dict())
         self._maybe_push()
 
     def eval(self, m) -> None:
+        if m.loss is not None:
+            print(f"[{self._tag}] eval · step {m.step} · loss {m.loss:.4f}",
+                  flush=True)
         self._evals.append(m.to_dict())
         self._maybe_push()
 
@@ -133,6 +196,49 @@ class _Uplink:
         raise ConnectionError(f"could not report job {self._job} final status")
 
 
+def _hardware() -> dict:
+    """What this machine brings: GPU name + memory, cores, RAM.
+
+    CUDA reports the card and its VRAM; Apple silicon reports the chip and its
+    unified memory (the GPU addresses all of it); anything else reports cores
+    and RAM. Best-effort — a field we can't read is just its zero value.
+    """
+    import os  # noqa: PLC0415
+    import subprocess  # noqa: PLC0415
+
+    hw = {"gpus": 0, "gpu_name": "", "vram_gb": 0.0, "ram_gb": 0.0,
+          "cores": os.cpu_count() or 0}
+    try:
+        import torch  # noqa: PLC0415
+
+        if torch.cuda.is_available():
+            hw["gpus"] = torch.cuda.device_count()
+            hw["gpu_name"] = torch.cuda.get_device_name(0)
+            hw["vram_gb"] = round(
+                torch.cuda.get_device_properties(0).total_memory / 2**30, 1)
+    except Exception:  # noqa: BLE001 — no torch / no driver: not a GPU box
+        pass
+    if platform.system() == "Darwin":
+        try:
+            hw["ram_gb"] = round(int(subprocess.check_output(
+                ["sysctl", "-n", "hw.memsize"], text=True)) / 2**30)
+            if platform.machine() == "arm64" and not hw["gpu_name"]:
+                hw["gpus"] = 1  # the integrated GPU mlx trains on
+                hw["gpu_name"] = subprocess.check_output(
+                    ["sysctl", "-n", "machdep.cpu.brand_string"],
+                    text=True).strip()
+                hw["vram_gb"] = float(hw["ram_gb"])  # unified memory
+        except (OSError, ValueError, subprocess.SubprocessError):
+            pass
+    else:
+        try:
+            hw["ram_gb"] = round(
+                os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 2**30)
+        except (ValueError, OSError, AttributeError):
+            pass
+    return hw
+
+
 def _tar_dir(root: str | Path) -> bytes:
     buf = io.BytesIO()
     root = Path(root)
@@ -155,6 +261,11 @@ def _run_job(link: _Link, client: RemoteClient, name: str, job: dict,
     if up.cancelled:  # cancelled while queued locally
         up.push(status="stopped")
         return
+    from .ascii import _HEART, _NAME  # noqa: PLC0415
+
+    print(_HEART)
+    print(_NAME)
+    print("Starting training session...\n", flush=True)
     try:
         dataset = _rebuild_dataset(job["dataset"])
         eval_ds = None
@@ -176,6 +287,7 @@ def _run_job(link: _Link, client: RemoteClient, name: str, job: dict,
                       should_stop=lambda: up.cancelled),
             str(out_dir), eval_dataset=eval_ds)
         if up.cancelled:
+            print(f"[{job_id[:8]}] stopped by the studio", flush=True)
             up.push(status="stopped")
             return
         client.upload_artifact(name, job_id, _tar_dir(result.checkpoint))
@@ -183,6 +295,7 @@ def _run_job(link: _Link, client: RemoteClient, name: str, job: dict,
     except KeyboardInterrupt:
         up.push(status="stopped")
     except Exception as e:  # noqa: BLE001 — job isolation: report, keep serving
+        print(f"[{job_id[:8]}] FAILED: {type(e).__name__}: {e}", flush=True)
         up.push(status="failed", error=f"{type(e).__name__}: {e}")
 
 
@@ -194,7 +307,6 @@ def run_worker(hub: str | None = None, *, name: str | None = None,
     `once=True` processes a single job then returns (tests, one-shot runs).
     """
     from .backends import select_backend  # noqa: PLC0415
-    from .serve import _gpu_count  # noqa: PLC0415
 
     client = RemoteClient(hub, api_key)
     name = name or platform.node().split(".")[0] or "worker"
@@ -205,7 +317,7 @@ def run_worker(hub: str | None = None, *, name: str | None = None,
     link = _Link(client, name, {
         "backend": be_name,
         "device": f"{platform.system()}/{platform.machine()}",
-        "gpus": _gpu_count()})
+        **_hardware()}, work_root)
 
     while True:
         job = link.jobs.get()

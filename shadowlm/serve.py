@@ -64,6 +64,7 @@ class _Job:
     checkpoint: str | None = None
     final_loss: float | None = None
     method: str | None = None
+    worker: str | None = None  # trained on this machine; inference routes there
     created: float = 0.0
     logs: list[str] = field(default_factory=list)  # captured console lines
     live: str = ""  # the in-progress (post-\r) line, e.g. the progress bar
@@ -74,7 +75,7 @@ class _Job:
     def record(self) -> dict:
         """The serializable job record persisted to disk (survives restarts)."""
         return {"job_id": self.job_id, "base_model": self.base_model,
-                "name": self.name,
+                "name": self.name, "worker": self.worker,
                 "status": self.status, "method": self.method,
                 "error": self.error, "checkpoint": self.checkpoint,
                 "final_loss": self.final_loss, "created": self.created,
@@ -84,7 +85,7 @@ class _Job:
     @classmethod
     def from_record(cls, d: dict) -> "_Job":
         job = cls(job_id=d["job_id"], base_model=d.get("base_model", "?"),
-                  name=d.get("name", ""),
+                  name=d.get("name", ""), worker=d.get("worker"),
                   status=d.get("status", "succeeded"), method=d.get("method"),
                   error=d.get("error"), checkpoint=d.get("checkpoint"),
                   final_loss=d.get("final_loss"), created=d.get("created", 0.0))
@@ -371,12 +372,18 @@ class _Worker:
     backend: str = "?"
     device: str = "?"
     gpus: int = 0
+    gpu_name: str = ""
+    vram_gb: float = 0.0
+    ram_gb: float = 0.0
+    cores: int = 0
     last_seen: float = 0.0
     inbox: "queue.Queue[str]" = field(default_factory=queue.Queue)
 
     def info(self) -> dict:
         return {"name": self.name, "backend": self.backend, "device": self.device,
-                "gpus": self.gpus, "last_seen": int(self.last_seen),
+                "gpus": self.gpus, "gpu_name": self.gpu_name,
+                "vram_gb": self.vram_gb, "ram_gb": self.ram_gb,
+                "cores": self.cores, "last_seen": int(self.last_seen),
                 "online": (time.time() - self.last_seen) < 90,
                 "queued": self.inbox.qsize()}
 
@@ -409,6 +416,7 @@ class Server:
         self.jobs: dict[str, _Job] = {}
         self.workers: dict[str, _Worker] = {}  # remote executors, keyed by name
         self.worker_socks: dict[str, object] = {}  # name → live WSConn
+        self._infer_waiters: dict[str, "queue.Queue[dict]"] = {}  # req id → reply
         self.datasets = DatasetStore(work_root / "datasets")
         self.queue: "queue.Queue[str]" = queue.Queue()
         self._lock = threading.Lock()          # job-store mutations
@@ -768,6 +776,7 @@ class Server:
         job = _Job(job_id=job_id, base_model=payload["base_model"],
                    name=(payload.get("name") or "").strip(),
                    method=(payload.get("config") or {}).get("method"),
+                   worker=(payload.get("worker") or None),
                    created=int(time.time()))
         job._payload = payload
         with self._lock:
@@ -792,6 +801,10 @@ class Server:
         w.backend = body.get("backend", w.backend)
         w.device = body.get("device", w.device)
         w.gpus = int(body.get("gpus") or 0)
+        w.gpu_name = str(body.get("gpu_name") or "")
+        w.vram_gb = float(body.get("vram_gb") or 0)
+        w.ram_gb = float(body.get("ram_gb") or 0)
+        w.cores = int(body.get("cores") or 0)
         w.last_seen = time.time()
         return w
 
@@ -875,6 +888,9 @@ class Server:
                         if self.ingest_events(job, msg)["cancel"]:
                             conn.send_json({"type": "cancel",
                                             "job_id": job.job_id})
+                elif msg.get("type") == "infer_result":
+                    if (q := self._infer_waiters.pop(msg.get("id", ""), None)):
+                        q.put(msg)
         except (ConnectionError, OSError, json.JSONDecodeError):
             pass  # a dropped worker is normal — the studio just shows offline
         finally:
@@ -884,6 +900,38 @@ class Server:
                     del self.worker_socks[name]
             conn.close()
             print(f"[hub] worker '{name}' disconnected", flush=True)
+
+    def worker_infer(self, job: _Job, req: dict, *, timeout: float = 240.0) -> str:
+        """Run generate/chat on the machine that trained `job`, over its socket.
+
+        An mlx-trained adapter can't load into this box's torch stack (and vice
+        versa) — the weights live where they trained, so inference goes there.
+        """
+        conn = self.worker_socks.get(job.worker)
+        if conn is None:
+            raise RuntimeError(
+                f"this shadow was trained on machine '{job.worker}', which is "
+                f"offline — start `shadowlm worker` there to chat with it")
+        rid = uuid.uuid4().hex
+        q: "queue.Queue[dict]" = queue.Queue()
+        self._infer_waiters[rid] = q
+        try:
+            conn.send_json({**req, "id": rid, "job_id": job.job_id,
+                            "base_model": job.base_model})
+            reply = q.get(timeout=timeout)
+        except queue.Empty:
+            raise RuntimeError(
+                f"machine '{job.worker}' didn't answer within {timeout:.0f}s"
+            ) from None
+        except OSError as e:
+            raise RuntimeError(
+                f"machine '{job.worker}' dropped its link mid-request ({e})"
+            ) from None
+        finally:
+            self._infer_waiters.pop(rid, None)
+        if reply.get("error"):
+            raise RuntimeError(f"machine '{job.worker}': {reply['error']}")
+        return reply.get("text", "")
 
     def push_cancel(self, job: _Job) -> None:
         """Tell the executing worker to stop, right now, over its socket."""
@@ -1280,6 +1328,16 @@ def make_handler(server: Server, auth: "Auth"):
                         self._send(200, {"ok": True})
                 elif parts == ["v1", "generate"]:
                     b = self._body()
+                    # a worker-trained shadow answers on its own machine — the
+                    # adapter format matches that backend, not necessarily ours
+                    wjob = server.jobs.get(b.get("adapter") or "")
+                    if wjob is not None and wjob.worker:
+                        self._send(200, {"text": server.worker_infer(wjob, {
+                            "type": "generate", "prompt": b["prompt"],
+                            "max_new_tokens": b.get("max_new_tokens", 256),
+                            "temperature": b.get("temperature", 0.7),
+                            "top_p": b.get("top_p", 0.95)})})
+                        return
                     with server._model_lock:
                         m = server._infer_model(b["model"], b.get("adapter"), b.get("checkpoint"))
                         text = m.generate(
@@ -1290,6 +1348,14 @@ def make_handler(server: Server, auth: "Auth"):
                     self._send(200, {"text": text})
                 elif parts == ["v1", "chat"]:
                     b = self._body()
+                    wjob = server.jobs.get(b.get("adapter") or "")
+                    if wjob is not None and wjob.worker:
+                        self._send(200, {"text": server.worker_infer(wjob, {
+                            "type": "chat", "messages": b["messages"],
+                            "max_new_tokens": b.get("max_new_tokens", 512),
+                            "temperature": b.get("temperature", 0.7),
+                            "top_p": b.get("top_p", 0.95)})})
+                        return
                     with server._model_lock:
                         m = server._infer_model(b["model"], b.get("adapter"), b.get("checkpoint"))
                         reply = m.chat(
