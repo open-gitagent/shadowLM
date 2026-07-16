@@ -427,6 +427,7 @@ class Server:
         self.worker_socks: dict[str, object] = {}  # name → live WSConn
         self._infer_waiters: dict[str, "queue.Queue[dict]"] = {}  # req id → reply
         self._prewarming: set = set()  # (model, adapter) loads in flight
+        self._prewarm_errors: dict = {}  # key → (when, message) of a failed load
         self.datasets = DatasetStore(work_root / "datasets")
         self.queue: "queue.Queue[str]" = queue.Queue()
         self._lock = threading.Lock()          # job-store mutations
@@ -756,8 +757,37 @@ class Server:
         adapter_path = key[1]
         if key in self._infer_cache:
             return self._infer_cache[key]
-        m = load(model, backend=self.backend_name, accelerator=self.accelerator,
-                 device=self.device, adapter=adapter_path, verbose=False)
+
+        def _load():
+            return load(model, backend=self.backend_name,
+                        accelerator=self.accelerator, device=self.device,
+                        adapter=adapter_path, verbose=False)
+
+        try:
+            m = _load()
+        except Exception as e:
+            s = str(e).lower()
+            if not any(x in s for x in ("meta tensor", "out of memory")):
+                raise
+            # the GPU is full of previously cached models — accelerate starts
+            # offloading to meta and adapter loads blow up. Evict everything,
+            # free the allocator, and try once more with a clean card.
+            print(f"[infer] VRAM pressure loading {model} "
+                  f"({type(e).__name__}) — evicting "
+                  f"{len(self._infer_cache)} cached models and retrying",
+                  flush=True)
+            import gc  # noqa: PLC0415
+
+            self._infer_cache.clear()
+            gc.collect()
+            try:
+                import torch  # noqa: PLC0415
+
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:  # noqa: BLE001
+                pass
+            m = _load()
         if len(self._infer_cache) >= self._infer_cache_cap:
             self._infer_cache.pop(next(iter(self._infer_cache)))  # oldest out
         self._infer_cache[key] = m
@@ -946,14 +976,23 @@ class Server:
                 return {"ready": True}
             if key in self._prewarming:
                 return {"ready": False}
+            # a load that just failed will fail again — report it instead of
+            # respawning the same doomed load on every 3s poll
+            when, msg = self._prewarm_errors.get(key, (0, ""))
+            if msg and time.time() - when < 120:
+                return {"ready": False, "error": msg}
+            self._prewarm_errors.pop(key, None)
             self._prewarming.add(key)
 
         def load() -> None:
             try:
                 with self._model_lock:
                     self._infer_model(model, adapter, checkpoint)
-            except Exception as e:  # noqa: BLE001 — surfaced on the chat itself
+            except Exception as e:  # noqa: BLE001 — reported on the next poll
                 print(f"[prewarm] {model} failed: {e}", flush=True)
+                with self._lock:
+                    self._prewarm_errors[key] = (time.time(),
+                                                 f"{type(e).__name__}: {e}")
             finally:
                 with self._lock:
                     self._prewarming.discard(key)

@@ -24,6 +24,7 @@ export default function Playground() {
   const [base, setBase] = useState<Msg[]>([]);  // base-model replies in compare mode
   const [busy, setBusy] = useState(false);
   const [warming, setWarming] = useState(false);
+  const [warmErr, setWarmErr] = useState("");
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const logRef = useRef<HTMLDivElement>(null);
 
@@ -31,6 +32,7 @@ export default function Playground() {
   // proxies (Cloudflare) cut requests around 100s, and a cold 8B takes longer.
   useEffect(() => {
     let stop = false;
+    setWarmErr("");
     const targets: (string | null)[] = compare && adapter ? [adapter, null]
       : [adapter];
     const poll = async () => {
@@ -38,6 +40,8 @@ export default function Playground() {
         const states = await Promise.all(
           targets.map((ad) => prewarm(model, ad, ad ? ckptStep : null)));
         if (stop) return;
+        const failed = states.find((s) => s.error);
+        if (failed) { setWarming(false); setWarmErr(failed.error!); return; }
         if (states.every((s) => s.ready)) { setWarming(false); return; }
         setWarming(true);
         setTimeout(poll, 3000);
@@ -51,6 +55,11 @@ export default function Playground() {
     getModels().then((m) => {
       const ids = [...m.recent, ...m.catalog.map((c) => c.id)];
       setModels([...new Set(ids)].map((id) => m.catalog.find((c) => c.id === id) ?? { id }));
+      // the built-in default is an mlx model — wrong on a torch/CUDA server
+      if (m.server_backend !== "mlx" && !sessionStorage.getItem("pick.model")) {
+        const fit = ids.find((id) => !id.startsWith("mlx-community/"));
+        if (fit) setModel((cur) => cur.startsWith("mlx-community/") ? fit : cur);
+      }
     }).catch(() => {});
     getJobs().then(({ jobs }) => {
       setJobs(jobs);
@@ -308,8 +317,9 @@ export default function Playground() {
           </button>
         </div>
         <div className="mx-auto mt-1.5 max-w-3xl text-center text-[10px] text-muted-foreground/70">
-          {warming ? <span className="text-primary">⏳ loading weights onto the GPU — send unlocks when it's hot</span>
-                   : "runs shadow"}
+          {warmErr ? <span className="text-red-500">⚠ can't load this model here: {warmErr}</span>
+            : warming ? <span className="text-primary">⏳ loading weights onto the GPU — send unlocks when it's hot</span>
+            : "runs shadow"}
         </div>
       </div>
     </div>
