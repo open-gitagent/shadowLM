@@ -3,7 +3,7 @@
 // quiet "shadow mode" toggle appears — the shadow answers next to its base.
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowUp, ChevronDown } from "lucide-react";
-import { chat, getCheckpoints, getJobs, getModels } from "../api";
+import { chat, getCheckpoints, getJobs, getModels, prewarm } from "../api";
 import type { CatalogModel, Checkpoint, JobSummary } from "../api";
 import { Dots } from "../ui";
 
@@ -23,8 +23,29 @@ export default function Playground() {
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [base, setBase] = useState<Msg[]>([]);  // base-model replies in compare mode
   const [busy, setBusy] = useState(false);
+  const [warming, setWarming] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const logRef = useRef<HTMLDivElement>(null);
+
+  // Prewarm the picked model(s) so no chat request ever hits a cold load —
+  // proxies (Cloudflare) cut requests around 100s, and a cold 8B takes longer.
+  useEffect(() => {
+    let stop = false;
+    const targets: (string | null)[] = compare && adapter ? [adapter, null]
+      : [adapter];
+    const poll = async () => {
+      try {
+        const states = await Promise.all(
+          targets.map((ad) => prewarm(model, ad, ad ? ckptStep : null)));
+        if (stop) return;
+        if (states.every((s) => s.ready)) { setWarming(false); return; }
+        setWarming(true);
+        setTimeout(poll, 3000);
+      } catch { if (!stop) setWarming(false); }  // old server: no endpoint, no state
+    };
+    poll();
+    return () => { stop = true; };
+  }, [model, adapter, ckptStep, compare]);
 
   useEffect(() => {
     getModels().then((m) => {
@@ -272,15 +293,17 @@ export default function Playground() {
           <textarea ref={inputRef} value={input} rows={1}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
-            placeholder="say something to the shadow…"
+            placeholder={warming ? "warming up the model — first load can take a couple of minutes…"
+                                 : "say something to the shadow…"}
             className="flex-1 resize-none border-0 bg-transparent py-1.5 text-sm focus:outline-none max-h-40" />
-          <button onClick={send} disabled={!input.trim() || busy}
+          <button onClick={send} disabled={!input.trim() || busy || warming}
             className="grid size-9 shrink-0 place-items-center rounded-full bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-40 transition-colors">
             <ArrowUp className="size-4" />
           </button>
         </div>
         <div className="mx-auto mt-1.5 max-w-3xl text-center text-[10px] text-muted-foreground/70">
-          runs shadow
+          {warming ? <span className="text-primary">⏳ loading weights onto the GPU — send unlocks when it's hot</span>
+                   : "runs shadow"}
         </div>
       </div>
     </div>

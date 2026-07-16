@@ -196,5 +196,8 @@ export const cancelJob = (id: string) =>
   api<{ ok: boolean }>(`/v1/finetunes/${id}/cancel`, { method: "POST" });
 export const submitFinetune = (body: object) =>
   api<{ job_id: string }>("/v1/finetunes", { method: "POST", body: JSON.stringify(body) });
+export const prewarm = (model: string, adapter: string | null, checkpoint: number | null = null) =>
+  api<{ ready: boolean }>("/v1/prewarm", {
+    method: "POST", body: JSON.stringify({ model, adapter, checkpoint }) });
 export const chat = (body: object) =>
   api<{ text: string }>("/v1/chat", { method: "POST", body: JSON.stringify(body) });

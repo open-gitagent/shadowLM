@@ -426,6 +426,7 @@ class Server:
         self.workers: dict[str, _Worker] = {}  # remote executors, keyed by name
         self.worker_socks: dict[str, object] = {}  # name → live WSConn
         self._infer_waiters: dict[str, "queue.Queue[dict]"] = {}  # req id → reply
+        self._prewarming: set = set()  # (model, adapter) loads in flight
         self.datasets = DatasetStore(work_root / "datasets")
         self.queue: "queue.Queue[str]" = queue.Queue()
         self._lock = threading.Lock()          # job-store mutations
@@ -718,15 +719,10 @@ class Server:
             self._persist(job)  # terminal state + final metrics + logs → disk
 
     # ---- inference -------------------------------------------------------------
-    def _infer_model(self, model: str, adapter: str | None, checkpoint: int | None = None):
-        """Load (and cache) a model for /generate and /chat.
-
-        ``adapter`` is a run id (or a server-local adapter path the caller knows);
-        ``checkpoint`` optionally picks a mid-run step saved via ``save_steps`` —
-        the SDK resolves either backend's layout to a loadable path.
-        """
+    def _infer_key(self, model: str, adapter: str | None,
+                   checkpoint: int | None = None) -> tuple:
+        """The inference-cache key: (model, resolved adapter path)."""
         from . import checkpoints as _ck  # noqa: PLC0415
-        from .models import load  # noqa: PLC0415
 
         adapter_path = None
         if adapter:
@@ -744,7 +740,20 @@ class Server:
                                 if checkpoint is not None else job.checkpoint)
             else:
                 adapter_path = adapter  # a server-local path the caller knows
-        key = (model, adapter_path)
+        return (model, adapter_path)
+
+    def _infer_model(self, model: str, adapter: str | None, checkpoint: int | None = None):
+        """Load (and cache) a model for /generate and /chat.
+
+        ``adapter`` is a run id (or a server-local adapter path the caller knows);
+        ``checkpoint`` optionally picks a mid-run step saved via ``save_steps`` —
+        the SDK resolves either backend's layout to a loadable path.
+        """
+        from . import checkpoints as _ck  # noqa: PLC0415
+        from .models import load  # noqa: PLC0415
+
+        key = self._infer_key(model, adapter, checkpoint)
+        adapter_path = key[1]
         if key in self._infer_cache:
             return self._infer_cache[key]
         m = load(model, backend=self.backend_name, accelerator=self.accelerator,
@@ -919,6 +928,38 @@ class Server:
                     del self.worker_socks[name]
             conn.close()
             print(f"[hub] worker '{name}' disconnected", flush=True)
+
+    def prewarm(self, model: str, adapter: str | None,
+                checkpoint: int | None = None) -> dict:
+        """Start loading a model for inference in the background; report state.
+
+        Proxies (Cloudflare) cut requests around 100s, and a cold 8B load takes
+        longer — so the UI fires this when a shadow is picked and polls until
+        {ready: true}, keeping every chat request warm-fast.
+        """
+        job = self.jobs.get(adapter or "")
+        if job is not None and job.worker:
+            return {"ready": True}  # answers on its worker; nothing to load here
+        key = self._infer_key(model, adapter, checkpoint)
+        with self._lock:
+            if key in self._infer_cache:
+                return {"ready": True}
+            if key in self._prewarming:
+                return {"ready": False}
+            self._prewarming.add(key)
+
+        def load() -> None:
+            try:
+                with self._model_lock:
+                    self._infer_model(model, adapter, checkpoint)
+            except Exception as e:  # noqa: BLE001 — surfaced on the chat itself
+                print(f"[prewarm] {model} failed: {e}", flush=True)
+            finally:
+                with self._lock:
+                    self._prewarming.discard(key)
+
+        threading.Thread(target=load, daemon=True).start()
+        return {"ready": False}
 
     def worker_infer(self, job: _Job, req: dict, *, timeout: float = 240.0) -> str:
         """Run generate/chat on the machine that trained `job`, over its socket.
@@ -1346,6 +1387,10 @@ def make_handler(server: Server, auth: "Auth"):
                         length = int(self.headers.get("Content-Length") or 0)
                         server.store_artifact(job, self.rfile.read(length))
                         self._send(200, {"ok": True})
+                elif parts == ["v1", "prewarm"]:
+                    b = self._body()
+                    self._send(200, server.prewarm(
+                        b["model"], b.get("adapter"), b.get("checkpoint")))
                 elif parts == ["v1", "generate"]:
                     b = self._body()
                     # a worker-trained shadow answers on its own machine — the
