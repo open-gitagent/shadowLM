@@ -107,10 +107,16 @@ export default function Playground() {
     const duet = compare && adapter;
     if (duet) setBase((b) => [...b, { role: "user", content: text }]);
     setBusy(true);
+    // hide reasoning blocks (Qwen3 & co) — and keep them out of the history we
+    // send back, which thinking models don't expect to see again
+    const clean = (t: string) => {
+      const s = t.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+      return s || t.trim();  // reply was all think-block: show it rather than nothing
+    };
     const ask = (ad: string | null, h: Msg[]) =>
       chat({ model, adapter: ad, checkpoint: ad ? ckptStep : null,
              messages: h, max_new_tokens: 256, temperature: 0.7, top_p: 0.95 })
-        .then((o) => o.text).catch((e: Error) => `⚠ ${e.message}`);
+        .then((o) => clean(o.text)).catch((e: Error) => `⚠ ${e.message}`);
     try {
       // fire shadow + base together; each pane fills in as its reply lands
       const shadowTurn = ask(adapter, history)
