@@ -905,7 +905,7 @@ class Server:
         with self._lock:
             self.jobs[job_id] = job
         self._persist(job)  # visible (as pending) the instant it's queued
-        # target="<worker name>" routes the job to that machine's inbox instead
+        # worker="<worker name>" routes the job to that machine's inbox instead
         # of this box's own training queue. Submitting ahead of the worker
         # connecting is fine — the inbox waits.
         if payload.get("worker"):

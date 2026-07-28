@@ -102,6 +102,8 @@ class RemoteBackend(Backend):
             eval_dataset=_serialize(eval_dataset),
             load_in_4bit=self.load_in_4bit,
             max_seq_length=self.max_seq_length,
+            # so an SDK-submitted run isn't nameless in the studio's run list
+            name=f"{self.model_name} · {config.method}",
         )
         self._last_job = job_id
         gpus = f", {self._server_gpus} gpu" if self._server_gpus else ""
