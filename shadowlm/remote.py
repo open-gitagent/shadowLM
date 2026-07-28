@@ -55,6 +55,26 @@ class RemoteError(RuntimeError):
     """An error returned by (or while reaching) a ShadowLM server."""
 
 
+def _check_members(tar: tarfile.TarFile, dest: Path) -> None:
+    """Refuse any member that would land outside `dest` (or isn't a plain
+    file/dir/symlink). An adapter tarball needs nothing fancier, and the server
+    is just a URL somebody typed — treat the archive as hostile. This is the
+    only guard on Python < 3.12, where extractall has no `filter=` kwarg."""
+    base = dest.resolve()
+    for m in tar.getmembers():
+        target = (base / m.name).resolve()
+        if not target.is_relative_to(base):
+            raise RemoteError(f"artifact refused: member {m.name!r} escapes {dest}")
+        if m.issym() or m.islnk():
+            anchor = target.parent if m.issym() else base
+            if not (anchor / m.linkname).resolve().is_relative_to(base):
+                raise RemoteError(
+                    f"artifact refused: link {m.name!r} → {m.linkname!r} escapes {dest}")
+        elif not (m.isfile() or m.isdir()):
+            raise RemoteError(
+                f"artifact refused: member {m.name!r} is not a regular file or directory")
+
+
 class RemoteClient:
     """Stdlib HTTP client for the ShadowLM remote protocol."""
 
@@ -169,10 +189,11 @@ class RemoteClient:
         dest = Path(dest)
         dest.mkdir(parents=True, exist_ok=True)
         with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tar:
+            _check_members(tar, dest)  # the server is untrusted network input
             try:
                 tar.extractall(dest, filter="data")
             except TypeError:  # Python < 3.12 has no filter= kwarg
-                tar.extractall(dest)  # noqa: S202 — archive comes from our server
+                tar.extractall(dest)  # noqa: S202 — members vetted above
         return str(dest)
 
     # ---- worker side: a machine that executes the hub's jobs -----------------
