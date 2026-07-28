@@ -45,6 +45,14 @@ _MAX_BODY = 512 << 20
 class _PayloadTooLarge(Exception):
     """A request body over `_MAX_BODY` — answered with a 413, never read."""
 
+
+def _write_private(path: Path, text: str) -> None:
+    """write_text, but owner-only — for files that hold credentials."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(text)
+    os.chmod(path, 0o600)  # a pre-existing file keeps its old mode otherwise
+
 # Shown only when running from a source checkout where the React app hasn't been
 # built. Every pip install ships the compiled UI in _static, so users never see
 # this — it's a hint for contributors, not a fallback UI.
@@ -483,7 +491,7 @@ class Server:
 
         hub.set_token(token)
         try:
-            self._settings_path.write_text(json.dumps({"hf_token": token or ""}))
+            _write_private(self._settings_path, json.dumps({"hf_token": token or ""}))
         except OSError:
             pass  # in-memory still works for this process
 
@@ -501,7 +509,7 @@ class Server:
 
     def _save_tokens(self) -> None:
         try:
-            self._tokens_path.write_text(json.dumps(self._machine_tokens, indent=1))
+            _write_private(self._tokens_path, json.dumps(self._machine_tokens, indent=1))
         except OSError:
             pass  # in-memory still works for this process
 
