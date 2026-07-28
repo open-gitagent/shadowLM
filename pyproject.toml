@@ -55,6 +55,9 @@ dependencies = [
     # mixture of retrieval experts (method="more") — embeddings + faiss index
     "sentence-transformers>=3.0",
     "faiss-cpu>=1.8",
+    # more.py / more_plus.py use it directly (index math, routing scores) rather
+    # than relying on it arriving via torch/faiss
+    "numpy>=1.24",
     # the shadowlm CLI (Typer + Rich)
     "typer>=0.12",
     "rich>=13",
