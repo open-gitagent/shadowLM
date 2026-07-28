@@ -22,6 +22,7 @@ import io
 import json
 import os
 import queue
+import re
 import tarfile
 import threading
 import time
@@ -52,6 +53,41 @@ def _write_private(path: Path, text: str) -> None:
     with os.fdopen(fd, "w") as f:
         f.write(text)
     os.chmod(path, 0o600)  # a pre-existing file keeps its old mode otherwise
+
+
+# Ids that may appear in a filesystem path (dataset ids, job ids): one plain
+# segment, nothing the path layer could interpret.
+_PLAIN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
+
+
+class LoginThrottle:
+    """After `limit` consecutive failures from one address, /v1/login answers
+    429 for `window` seconds — enough to make online password guessing
+    pointless without ever locking out the console user for long."""
+
+    def __init__(self, limit: int = 5, window: float = 60.0,
+                 clock=time.monotonic) -> None:
+        self._limit, self._window, self._clock = limit, window, clock
+        self._strikes: dict[str, tuple[int, float]] = {}  # addr → (fails, last)
+        self._lock = threading.Lock()
+
+    def allowed(self, addr: str) -> bool:
+        with self._lock:
+            fails, last = self._strikes.get(addr, (0, 0.0))
+            if fails < self._limit:
+                return True
+            if self._clock() - last >= self._window:
+                self._strikes.pop(addr, None)  # lock expired
+                return True
+            return False
+
+    def record(self, addr: str, *, ok: bool) -> None:
+        with self._lock:
+            if ok:
+                self._strikes.pop(addr, None)
+            else:
+                fails, _ = self._strikes.get(addr, (0, 0.0))
+                self._strikes[addr] = (fails + 1, self._clock())
 
 # Shown only when running from a source checkout where the React app hasn't been
 # built. Every pip install ships the compiled UI in _static, so users never see
@@ -344,12 +380,16 @@ class DatasetStore:
         return sorted(metas, key=lambda m: m.get("created", 0), reverse=True)
 
     def rows(self, ds_id: str) -> list[dict] | None:
+        if not _PLAIN_ID.fullmatch(ds_id or ""):
+            return None  # ids come off the URL — never let one shape a path
         p = self.root / f"{ds_id}.jsonl"
         if not p.exists():
             return None
         return [json.loads(line) for line in p.read_text().splitlines() if line.strip()]
 
     def meta(self, ds_id: str) -> dict | None:
+        if not _PLAIN_ID.fullmatch(ds_id or ""):
+            return None
         p = self.root / f"{ds_id}.json"
         return json.loads(p.read_text()) if p.exists() else None
 
@@ -373,6 +413,8 @@ class DatasetStore:
         return Dataset.from_hf(meta["repo"], subset=sub, split=meta["eval_split"])
 
     def delete(self, ds_id: str) -> bool:
+        if not _PLAIN_ID.fullmatch(ds_id or ""):
+            return False
         found = False
         for suffix in (".json", ".jsonl"):
             p = self.root / f"{ds_id}{suffix}"
@@ -1175,6 +1217,8 @@ class Auth:
 
 
 def make_handler(server: Server, auth: "Auth"):
+    throttle = LoginThrottle()
+
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt, *args):  # quiet; job logs print directly
             pass
@@ -1236,9 +1280,10 @@ def make_handler(server: Server, auth: "Auth"):
                     self._send(200, _NO_BUILD_PAGE.encode(),
                                ctype="text/html; charset=utf-8")
                 return
-            if parts[0] == "assets" and len(parts) == 2 and ".." not in parts[1]:
-                asset = Path(__file__).parent / "_static" / "assets" / parts[1]
-                if asset.is_file():
+            if parts[0] == "assets" and len(parts) == 2:
+                root = (Path(__file__).parent / "_static" / "assets").resolve()
+                asset = (root / parts[1]).resolve()
+                if asset.is_relative_to(root) and asset.is_file():
                     ctype = ("text/javascript" if asset.suffix == ".js"
                              else "text/css" if asset.suffix == ".css"
                              else "application/octet-stream")
@@ -1246,7 +1291,8 @@ def make_handler(server: Server, auth: "Auth"):
                 else:
                     self._error(404, "no such asset")
                 return
-            if len(parts) == 1 and parts[0].endswith(".png") and ".." not in parts[0]:
+            if len(parts) == 1 and parts[0].endswith(".png") and "/" not in parts[0] \
+                    and not parts[0].startswith("."):
                 try:
                     from importlib import resources  # noqa: PLC0415
                     blob = (resources.files("shadowlm") / "_assets" / parts[0]).read_bytes()
@@ -1373,7 +1419,12 @@ def make_handler(server: Server, auth: "Auth"):
                     b = self._body()
                 except _PayloadTooLarge as e:
                     return self._error(413, str(e))
-                if auth.check_login(b.get("username", ""), b.get("password", "")):
+                addr = self.client_address[0]
+                if not throttle.allowed(addr):
+                    return self._error(429, "too many failed logins; wait a minute")
+                ok = auth.check_login(b.get("username", ""), b.get("password", ""))
+                throttle.record(addr, ok=ok)
+                if ok:
                     token, exp = auth.issue_token()
                     self._send(200, {"token": token, "user": auth.user, "expires": exp})
                 else:
