@@ -83,6 +83,10 @@ kernels = [
 verl = [
     "verl>=0.4",
 ]
+# Everything `make test` / the CI test job needs on top of the base install.
+dev = [
+    "pytest>=8",
+]
 # Back-compat aliases — the training stack now ships in the base install, so
 # these resolve to nothing but keep older `shadowlm[all]` / `[torch]` commands working.
 all = []

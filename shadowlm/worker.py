@@ -341,7 +341,9 @@ def run_worker(hub: str | None = None, *, name: str | None = None,
     work_root = Path(work_root or Path.home() / ".shadowlm" / "worker")
     work_root.mkdir(parents=True, exist_ok=True)
 
-    be_name = select_backend("auto").name  # what this machine trains with
+    # what this machine trains with — an injected factory (tests, custom
+    # backends) is the answer too, so don't probe past it
+    be_name = (backend_factory or (lambda: select_backend("auto")))().name
     link = _Link(client, name, {
         "backend": be_name,
         "device": f"{platform.system()}/{platform.machine()}",
