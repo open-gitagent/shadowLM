@@ -844,8 +844,11 @@ class Server:
 
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as e:  # noqa: BLE001 — the retry below is the real
+                # recovery; but if the cache never cleared, the retry's OOM is a
+                # consequence of this, so leave a trail.
+                print(f"[serve] VRAM release failed ({type(e).__name__}: {e}) — "
+                      "retrying the load anyway", flush=True)
             m = _load()
         if len(self._infer_cache) >= self._infer_cache_cap:
             self._infer_cache.pop(next(iter(self._infer_cache)))  # oldest out
@@ -871,6 +874,7 @@ class Server:
         import gc  # noqa: PLC0415
 
         before = self._gpu_used_mb()
+        freed_error: str | None = None
         with self._model_lock:
             n = len(self._infer_cache)
             self._infer_cache.clear()
@@ -880,10 +884,14 @@ class Server:
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
                 torch.cuda.synchronize()
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as e:  # noqa: BLE001 — report, don't fail the request
+            freed_error = f"{type(e).__name__}: {e}"
+            print(f"[serve] VRAM release failed ({freed_error})", flush=True)
         gc.collect()
-        return {"unloaded": n, "before_mb": before, "after_mb": self._gpu_used_mb()}
+        out = {"unloaded": n, "before_mb": before, "after_mb": self._gpu_used_mb()}
+        if freed_error:  # don't report a clean sweep when the allocator threw
+            out["error"] = freed_error
+        return out
 
     # ---- operations ------------------------------------------------------------
     def submit(self, payload: dict) -> str:
@@ -1262,6 +1270,15 @@ def make_handler(server: Server, auth: "Auth"):
                     f"request body of {length} bytes exceeds the {_MAX_BODY} cap")
             return self.rfile.read(length)
 
+        def _require(self, body: dict, *fields: str) -> bool:
+            """422 naming the first missing/empty field. Without this the route
+            table's blanket except turns a client typo into `500 KeyError`."""
+            for f in fields:
+                if not body.get(f):
+                    self._error(422, f"missing field {f!r}")
+                    return False
+            return True
+
         def _job_or_404(self, job_id: str):
             job = server.jobs.get(job_id)
             if job is None:
@@ -1508,10 +1525,14 @@ def make_handler(server: Server, auth: "Auth"):
                         self._send(200, {"ok": True})
                 elif parts == ["v1", "prewarm"]:
                     b = self._body()
+                    if not self._require(b, "model"):
+                        return
                     self._send(200, server.prewarm(
                         b["model"], b.get("adapter"), b.get("checkpoint")))
                 elif parts == ["v1", "generate"]:
                     b = self._body()
+                    if not self._require(b, "prompt", "model"):
+                        return
                     # a worker-trained shadow answers on its own machine — the
                     # adapter format matches that backend, not necessarily ours
                     wjob = server.jobs.get(b.get("adapter") or "")
@@ -1532,6 +1553,10 @@ def make_handler(server: Server, auth: "Auth"):
                     self._send(200, {"text": text})
                 elif parts == ["v1", "chat"]:
                     b = self._body()
+                    if not self._require(b, "messages", "model"):
+                        return
+                    if not isinstance(b["messages"], list):
+                        return self._error(422, "field 'messages' must be a list")
                     wjob = server.jobs.get(b.get("adapter") or "")
                     if wjob is not None and wjob.worker:
                         self._send(200, {"text": server.worker_infer(wjob, {

@@ -71,7 +71,11 @@ class TorchBackend(Backend):
         try:
             import torch  # noqa: PLC0415
             return torch.cuda.is_available()
-        except Exception:
+        except Exception as e:  # noqa: BLE001 — a broken CUDA install must not
+            # abort backend selection, but falling back to CPU in silence is how
+            # a "why is this so slow" afternoon starts. Say what happened.
+            print(f"[torch] CUDA probe failed ({type(e).__name__}: {e}) — "
+                  "treating this box as CPU-only", flush=True)
             return False
 
     def load(self, name, *, load_in_4bit=False, max_seq_length=2048, adapter=None, **kwargs) -> None:
