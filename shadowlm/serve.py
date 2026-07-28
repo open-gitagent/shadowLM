@@ -36,6 +36,15 @@ from .training import Metric, TrainConfig
 
 DEFAULT_PORT = 8329
 
+# Request bodies land in memory whole (datasets, adapter tarballs), so the
+# Content-Length header is a promise to allocate — cap it. Generous: the
+# biggest legitimate body is a worker shipping an adapter home.
+_MAX_BODY = 512 << 20
+
+
+class _PayloadTooLarge(Exception):
+    """A request body over `_MAX_BODY` — answered with a 413, never read."""
+
 # Shown only when running from a source checkout where the React app hasn't been
 # built. Every pip install ships the compiled UI in _static, so users never see
 # this — it's a hint for contributors, not a fallback UI.
@@ -1188,8 +1197,18 @@ def make_handler(server: Server, auth: "Auth"):
             return False
 
         def _body(self) -> dict:
+            return json.loads(self._read_body() or b"{}")
+
+        def _read_body(self) -> bytes:
+            """The request body, refused up front when the client claims more
+            than `_MAX_BODY` — we read into memory, so the header is a promise
+            we'd otherwise allocate sight unseen."""
             length = int(self.headers.get("Content-Length") or 0)
-            return json.loads(self.rfile.read(length) or b"{}")
+            if length > _MAX_BODY:
+                self.close_connection = True  # unread body would poison keep-alive
+                raise _PayloadTooLarge(
+                    f"request body of {length} bytes exceeds the {_MAX_BODY} cap")
+            return self.rfile.read(length)
 
         def _job_or_404(self, job_id: str):
             job = server.jobs.get(job_id)
@@ -1342,7 +1361,10 @@ def make_handler(server: Server, auth: "Auth"):
         def do_POST(self):  # noqa: N802
             parts = self.path.split("?")[0].strip("/").split("/")
             if parts == ["v1", "login"]:  # public: exchange credentials for a token
-                b = self._body()
+                try:
+                    b = self._body()
+                except _PayloadTooLarge as e:
+                    return self._error(413, str(e))
                 if auth.check_login(b.get("username", ""), b.get("password", "")):
                     token, exp = auth.issue_token()
                     self._send(200, {"token": token, "user": auth.user, "expires": exp})
@@ -1423,8 +1445,7 @@ def make_handler(server: Server, auth: "Auth"):
                 elif len(parts) == 6 and parts[:2] == ["v1", "workers"] \
                         and parts[3] == "jobs" and parts[5] == "artifact":
                     if (job := self._job_or_404(parts[4])):
-                        length = int(self.headers.get("Content-Length") or 0)
-                        server.store_artifact(job, self.rfile.read(length))
+                        server.store_artifact(job, self._read_body())
                         self._send(200, {"ok": True})
                 elif parts == ["v1", "prewarm"]:
                     b = self._body()
@@ -1470,6 +1491,8 @@ def make_handler(server: Server, auth: "Auth"):
                     self._send(200, {"text": reply.raw or reply.content})
                 else:
                     self._error(404, f"no route: POST {self.path}")
+            except _PayloadTooLarge as e:
+                self._error(413, str(e))
             except Exception as e:  # noqa: BLE001 — report, keep serving
                 self._error(500, f"{type(e).__name__}: {e}")
 

@@ -18,6 +18,7 @@ from __future__ import annotations
 import io
 import platform
 import queue
+import re
 import tarfile
 import threading
 import time
@@ -29,6 +30,17 @@ from .remote import RemoteClient
 _PUSH_EVERY_S = 1.0
 _PING_EVERY_S = 45.0  # keeps NAT mappings warm; hub gives up at 90s of silence
 _FINAL_PUSH_TRIES = 150  # ~5 min of retries — a terminal status must land
+
+_JOB_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
+
+
+def _job_dir(work_root: Path, job_id: str) -> Path:
+    """`work_root / job_id`, refusing any id that isn't a plain path segment.
+    The id arrives over the hub's websocket — the worker trusts the hub to
+    schedule work, not to name paths on this machine."""
+    if not _JOB_ID.fullmatch(job_id or ""):
+        raise ValueError(f"refusing job_id {job_id!r}: not a plain id")
+    return work_root / job_id
 
 
 class _Link:
@@ -97,7 +109,7 @@ class _Link:
         try:
             from .models import load  # noqa: PLC0415
 
-            adapter = self._work_root / (msg.get("job_id") or "")
+            adapter = _job_dir(self._work_root, msg.get("job_id") or "")
             if not adapter.is_dir():
                 raise FileNotFoundError(
                     f"adapter for job {msg.get('job_id')} is not on this "
@@ -296,7 +308,7 @@ def _run_job(link: _Link, client: RemoteClient, name: str, job: dict,
         be.load(job["base_model"],
                 load_in_4bit=job.get("load_in_4bit", False),
                 max_seq_length=job.get("max_seq_length", 2048))
-        out_dir = work_root / job_id
+        out_dir = _job_dir(work_root, job_id)
         result = be.finetune(
             dataset, _rebuild_config(job.get("config") or {}),
             Callbacks(on_step=up.step, on_eval=up.eval, on_log=up.log,
