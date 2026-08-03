@@ -46,6 +46,7 @@ _SYSTEM = "gen_ai.system_instructions"
 _CONVERSATION = "gen_ai.conversation.id"
 _REQ_MODEL = "gen_ai.request.model"
 _RESP_MODEL = "gen_ai.response.model"
+_TOOLS = "gen_ai.request.tools"
 # Indexed form (older OpenLLMetry/Traceloop convention) — kept as a fallback.
 _PROMPT = "gen_ai.prompt"          # gen_ai.prompt.{i}.{role,content,tool_calls...}
 _COMPLETION = "gen_ai.completion"  # gen_ai.completion.{i}.{role,content,tool_calls...}
@@ -134,6 +135,28 @@ def _tool_calls(attrs: dict, base: str) -> list[dict]:
             "function": {"name": name, "arguments": _as_json_str(args)},
         })
     return calls
+
+
+def _span_tools(attrs: dict) -> list[dict] | None:
+    """Tool definitions declared on the call, in OpenAI schema shape.
+
+    From `gen_ai.request.tools` (a JSON list — what a spec-compliant instrumentor
+    and our own synth emitter write) or OpenInference's indexed
+    `llm.tools.{i}.tool.json_schema`. Bare function schemas are wrapped.
+    """
+    raw = _as_list(attrs.get(_TOOLS)) or [
+        attrs.get(f"llm.tools.{i}.tool.json_schema") for i in _indices(attrs, "llm.tools")
+    ]
+    tools = []
+    for t in raw:
+        if isinstance(t, str):
+            try:
+                t = json.loads(t)
+            except json.JSONDecodeError:
+                continue
+        if isinstance(t, dict):
+            tools.append(t if "function" in t else {"type": "function", "function": t})
+    return tools or None
 
 
 def _message(attrs: dict, p: str) -> dict | None:
@@ -361,7 +384,8 @@ def _span_call(span: dict) -> _Call | None:
         ts = float(ts)
     except (TypeError, ValueError):
         ts = 0.0
-    return _Call(trace, ts, prompt, completion[-1] if completion else None, None, model)
+    return _Call(trace, ts, prompt, completion[-1] if completion else None,
+                 _span_tools(attrs), model)
 
 
 def _system_text(val: Any) -> list[dict]:
@@ -433,11 +457,13 @@ def from_spans(
     out: list[Trajectory] = []
     for trace, calls in by_trace.items():
         model = next((c.model for c in calls if c.model), None)
+        tools = next((c.tools for c in calls if c.tools), None)
         for convo in _reconstruct(calls, per_request=(builder == "per_request")):
             if not convo:
                 continue
             out.append(Trajectory(
                 messages=convo,
+                tools=tools,
                 reward=rewards.get(trace, 0.0),
                 metadata={"trace_id": trace, "model": model, "source": "otel"},
             ))

@@ -13,6 +13,20 @@ def _router():
     ])
 
 
+def test_grouped_unit_routes_on_every_phrasing():
+    """A unit of paraphrases must be reachable by any of them — the surrogate
+    joins the whole group, so phrasing #3 routes as well as phrasing #1."""
+    rows = [{"question": q, "answer": "$0.08"} for q in (
+        "What does Lyzr Cloud cost per agent run?",
+        "How much am I billed each time an agent executes?",
+        "Pricing for a single agent invocation?",
+    )] + [{"question": "Where is Lyzr headquartered?", "answer": "Boston"}]
+    surrogates = [s for s, _ in mp.split_units(rows, group_size=3)]
+    r = mp.BM25Router.build(surrogates)
+    assert r.rank("billed each time an agent executes", 1)[0][0] == 0
+    assert r.rank("pricing single invocation", 1)[0][0] == 0
+
+
 def test_tokenize_lowercases_and_splits():
     assert mp._tokenize("Lyzr's $0.08 / agent-run!") == ["lyzr", "s", "0", "08", "agent", "run"]
 

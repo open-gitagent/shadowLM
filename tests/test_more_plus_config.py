@@ -32,7 +32,9 @@ def test_split_units_cardinality_and_surrogate():
     assert len(mp.split_units(ds, 1)) == 6
     assert len(mp.split_units(ds, 3)) == 2
     surrogate, rows = mp.split_units(ds, 3)[0]
-    assert surrogate == "q0" and len(rows) == 3
+    # every row in the group joins the surrogate — a unit holding several
+    # phrasings of one fact must be routable by all of them, not just the first
+    assert surrogate == "q0 q1 q2" and len(rows) == 3
 
 
 def test_split_units_chat_surrogate():

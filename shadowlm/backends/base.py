@@ -50,6 +50,21 @@ class Callbacks:
         return bool(self._should_stop and self._should_stop())
 
 
+def warn_dropped_tools(dataset: Dataset, callbacks: Callbacks) -> None:
+    """Say so when a dataset's tool schemas won't reach the training template.
+
+    Rows may carry `tools`, but neither backend passes them to the chat template
+    while training — inference (`chat(tools=...)`) does. Never let that skew pass
+    silently.
+    """
+    if any(r.get("tools") for r in getattr(dataset, "rows", ())):
+        callbacks.log(
+            "[shadowlm] dataset carries tool schemas: training renders the tool "
+            "*calls* but not the tool *definitions*, which inference does pass — "
+            "the train and inference prompts differ on that block."
+        )
+
+
 class FinetuneResult:
     """What a backend returns from `finetune`: where the adapter/model landed."""
 
