@@ -24,6 +24,8 @@ from .eval import EvalResult, evaluate
 from .models import Model, Reply, load
 from .rl import Trajectory, TrajectoryGroup, judge_group
 from .training import Metric, TrainConfig, TrainingRun
+from . import synth  # noqa: E402 — imports models/apo, so it lands after them
+from .synth import SynthRun, synthesize
 
 __version__ = "0.4.12"
 
@@ -43,6 +45,9 @@ __all__ = [
     "load",
     "methods",
     "runs",
+    "synth",
+    "synthesize",
+    "SynthRun",
     "traces",
     "Metric",
     "TrainConfig",
