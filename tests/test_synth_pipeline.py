@@ -10,7 +10,9 @@ import json
 import pytest
 
 import shadowlm as slm
-from shadowlm.synth import synthesize
+from shadowlm.synth import _judged_input, synthesize
+from shadowlm.synth.generate import _parse_conversation, _wire_tool_calls
+from shadowlm.synth.quality import validate
 
 
 class FakeTeacher:
@@ -182,6 +184,79 @@ def test_everything_rejected_raises_with_the_counts():
     with pytest.raises(RuntimeError, match="nothing usable"):
         synthesize(task="t", teacher=FakeTeacher(scores=("0.0",)), n=4,
                    min_score=0.9, verbose=False)
+
+
+# ---- shaping the teacher's output -------------------------------------------
+# Every case below cost a live run to find: real teachers fail in ways a
+# cooperative fake never will.
+
+def test_shallow_tool_shape_becomes_the_wire_form():
+    """Teachers miscount braces in the real 4-deep shape, so the prompt asks for
+    a flat one and we build the protocol — including ids that always match."""
+    messages = _wire_tool_calls([
+        {"role": "user", "content": "refund invoice 5678"},
+        {"role": "assistant", "content": "Looking that up.",
+         "call": {"name": "lookup_invoice", "args": {"invoice_id": "5678"}}},
+        {"role": "tool", "result": "Invoice 5678 is $150."},
+        {"role": "assistant", "content": "It's $150 — shall I refund it?"},
+    ])
+    call = messages[1]["tool_calls"][0]
+    assert call["type"] == "function"
+    assert call["function"]["name"] == "lookup_invoice"
+    # arguments must be a JSON *string* on the wire, not the object we asked for
+    assert json.loads(call["function"]["arguments"]) == {"invoice_id": "5678"}
+    assert messages[2]["tool_call_id"] == call["id"]
+    assert messages[2]["content"] == "Invoice 5678 is $150."
+    assert "call" not in messages[1] and "result" not in messages[2]
+    assert validate(messages, tools=[{"type": "function", "function": {
+        "name": "lookup_invoice"}}]) == []
+
+
+def test_native_tool_shape_is_tidied_rather_than_rejected():
+    messages = _wire_tool_calls([
+        {"role": "user", "content": "q"},
+        {"role": "assistant", "content": None, "tool_calls": [
+            {"id": "call_9", "type": "function", "function": {
+                "name": "f", "arguments": {"a": 1}}}]},   # object, not a string
+        {"role": "tool", "result": "done"},
+        {"role": "assistant", "content": "ok"},
+    ])
+    assert messages[1]["tool_calls"][0]["function"]["arguments"] == '{"a": 1}'
+    assert messages[2]["tool_call_id"] == "call_9"  # the teacher's own id is kept
+
+
+def test_a_truncated_reply_does_not_parse_to_a_stray_message():
+    """Cut off mid-JSON, an object scan happily returns the *first message* —
+    a dict that parses, carries no conversation, and looks like a valid empty
+    result. It has to read as a failure so the retry fires."""
+    truncated = ('{"messages":[{"role":"user","content":"hello"},'
+                 '{"role":"assistant","content":"partial')
+    assert _parse_conversation(truncated) is None
+    whole = '{"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":"yo"}]}'
+    assert len(_parse_conversation(whole)) == 2
+    # a teacher that skips the wrapper object is still understood
+    assert len(_parse_conversation('[{"role":"user","content":"hi"}]')) == 1
+
+
+def test_the_judge_sees_the_whole_lead_up_not_just_the_first_question():
+    """A tool episode's answer cites what a tool returned; judged against the
+    opening question alone it reads as unsupported and gets thrown away."""
+    single = slm.Trajectory(messages=[{"role": "user", "content": "what is X?"},
+                                      {"role": "assistant", "content": "X is Y"}])
+    assert _judged_input(single) == "what is X?"
+
+    episode = slm.Trajectory(messages=[
+        {"role": "user", "content": "refund invoice 5678"},
+        {"role": "assistant", "content": None, "tool_calls": [
+            {"id": "c1", "type": "function",
+             "function": {"name": "lookup_invoice", "arguments": '{"id":"5678"}'}}]},
+        {"role": "tool", "tool_call_id": "c1", "content": "Invoice 5678 is $150."},
+        {"role": "assistant", "content": "It's $150."},
+    ])
+    seen = _judged_input(episode)
+    assert "Invoice 5678 is $150." in seen      # the evidence for the answer
+    assert "lookup_invoice" in seen             # and the call that fetched it
+    assert "It's $150." not in seen             # but never the answer itself
 
 
 def test_unknown_format_and_method_are_caught_early():

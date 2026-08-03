@@ -27,6 +27,11 @@ from .quality import first_json_array, jaccard, validate
 # themselves and truncating JSON.
 _MAX_LEAVES_PER_CALL = 25
 
+# Room for a multi-turn tool episode. Too tight and the reply is cut mid-JSON,
+# which costs a whole retry; the prompt caps the turn count so this is slack,
+# not a target.
+_REPLY_TOKENS = 3000
+
 # Rotated so consecutive rows never read like the same person wrote them.
 STYLES = (
     "terse, a single line",
@@ -189,9 +194,21 @@ def _avoid_block(scenarios) -> str:
 
 
 # ---- instances ---------------------------------------------------------------
-_TOOL_RULES = """- A tool call is {"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"...","arguments":"<a JSON string>"}}]}.
-- Every tool call must be followed by {"role":"tool","tool_call_id":"call_1","content":"<a plausible result>"}.
-- Call only the tools listed above."""
+# The real wire shape is four levels deep — messages > tool_calls > function >
+# arguments — and teachers miscount the closing braces, losing the whole
+# episode to a JSON error. They also invent call ids and then fail to match
+# them. So ask for a shallow shape and build the protocol in _wire_tool_calls,
+# where the nesting and the ids are correct by construction.
+_TOOL_RULES = """- To use a tool, add "call" to the assistant message: {"role":"assistant","content":"<what you say to the user, or null>","call":{"name":"lookup_invoice","args":{"invoice_id":"5678"}}}
+- The very next message is its result: {"role":"tool","result":"<short plain-text result>"}
+- After the final tool result the assistant must answer the user in words.
+- Call only the tools listed above, and never nest JSON inside a string."""
+
+# Offered the "tool" role with no tools defined, a teacher will invent tool turns
+# to narrate its own reasoning ("Classifying urgency: urgent") — messages that
+# mean nothing to a chat template. Don't offer the role, and say why.
+_NO_TOOL_RULE = ('- There are no tools here: never emit a "tool" role message, '
+                 'and never narrate an internal action as one.')
 
 _CONVERSATION = """Write ONE realistic training conversation for this task.
 
@@ -201,10 +218,11 @@ DIFFICULTY: {difficulty}{angle}
 USER STYLE: {style}
 {tools}{grounding}{exemplars}
 Output strict JSON only:
-{{"messages": [{{"role": "system" | "user" | "assistant" | "tool", "content": "..."}}]}}
+{{"messages": [{{"role": {roles}, "content": "..."}}]}}
 
 Rules:
 - The conversation MUST end with an assistant turn.
+- At most {max_messages} messages, and keep each one to a few sentences.
 - Write specific, realistic content — never placeholders like [NAME] or [DATE].
 - The assistant answers the way the task demands, not as a generic chatbot.
 {rules}"""
@@ -251,7 +269,13 @@ def conversation(leaf: Leaf, seed, teacher, *, tools=None, style: str) -> Outcom
         task=seed.context(), scenario=leaf.scenario, difficulty=leaf.difficulty,
         angle=f"\nANGLE: {leaf.angle}" if leaf.angle else "", style=style,
         tools=_tools_block(tools), grounding=_grounding_block(leaf),
-        exemplars=_exemplar_block(leaf), rules=_TOOL_RULES if tools else "")
+        exemplars=_exemplar_block(leaf),
+        roles=('"system" | "user" | "assistant" | "tool"' if tools
+               else '"system" | "user" | "assistant"'),
+        # a tool episode needs user → call → result → answer before it can even
+        # begin, so it gets more room than a plain exchange
+        max_messages=8 if tools else 6,
+        rules=_TOOL_RULES if tools else _NO_TOOL_RULE)
     outcome = Outcome()
     messages = _ask_messages(teacher, prompt, tools=tools, outcome=outcome)
     if messages:
@@ -350,6 +374,59 @@ def _diverse(questions: list[str], k: int, *, threshold: float = 0.6) -> list[st
     return picked
 
 
+def _parse_conversation(raw: str) -> list[dict] | None:
+    """The message list out of a teacher's reply, or None if it isn't one.
+
+    Guarded against the quiet failure: a reply truncated by the token budget
+    leaves the outer object unclosed, so a plain object scan happily returns the
+    *first message* instead — a dict that parses, carries no `messages`, and
+    looks like the teacher simply said nothing useful. Requiring the shape here
+    turns that into a retry rather than a mystery.
+    """
+    parsed = _first_json_object(raw)
+    candidate = parsed.get("messages") if isinstance(parsed, dict) else None
+    if not isinstance(candidate, list):
+        candidate = first_json_array(raw)  # some teachers skip the wrapper
+    if candidate and all(isinstance(m, dict) and "role" in m for m in candidate):
+        return candidate
+    return None
+
+
+def _wire_tool_calls(messages: list[dict]) -> list[dict]:
+    """However the teacher expressed tool use → the OpenAI wire form.
+
+    Accepts the shallow `{"call": {name, args}}` / `{"role":"tool","result":…}`
+    pair the prompt asks for (see `_TOOL_RULES`), and tidies the native shape
+    when a teacher produces that instead. Call ids are generated here, so a
+    result always refers to a call that exists.
+    """
+    pending = None
+    for i, message in enumerate(messages):
+        call = message.pop("call", None)
+        if message.get("role") == "tool":
+            result = message.pop("result", None)
+            if result is not None:
+                message["content"] = (result if isinstance(result, str)
+                                      else json.dumps(result))
+            if pending and not message.get("tool_call_id"):
+                message["tool_call_id"] = pending
+            pending = None
+            continue
+        if isinstance(call, dict) and call.get("name"):
+            pending = f"call_{i}"
+            message["tool_calls"] = [{
+                "id": pending, "type": "function",
+                "function": {"name": str(call["name"]),
+                             "arguments": json.dumps(call.get("args") or {})}}]
+            message.setdefault("content", None)
+        for native in message.get("tool_calls") or []:
+            fn = native.get("function")
+            if isinstance(fn, dict) and not isinstance(fn.get("arguments"), str):
+                fn["arguments"] = json.dumps(fn.get("arguments") or {})
+            pending = native.get("id") or pending
+    return messages
+
+
 def _ask_messages(teacher, prompt: str, *, tools, outcome: Outcome) -> list[dict] | None:
     """Ask for a conversation, validate it, allow exactly one corrective retry.
 
@@ -358,17 +435,21 @@ def _ask_messages(teacher, prompt: str, *, tools, outcome: Outcome) -> list[dict
     """
     for attempt in (0, 1):
         raw = str(teacher.chat([{"role": "user", "content": prompt}],
-                               temperature=0.9, max_new_tokens=1600))
-        parsed = _first_json_object(raw)
-        messages = parsed.get("messages") if isinstance(parsed, dict) else None
-        problems = validate(messages or [], tools=tools)
+                               temperature=0.9, max_new_tokens=_REPLY_TOKENS))
+        messages = _parse_conversation(raw)
+        if messages:
+            messages = _wire_tool_calls(messages)
+        problems = validate(messages, tools=tools) if messages else [
+            "the reply was not a JSON object with a 'messages' list (it may have "
+            "run past the length limit)"]
         if not problems:
             outcome.repaired += attempt
             return messages
         if attempt:
             break
         prompt = (f"{prompt}\n\nYour previous attempt was rejected: "
-                  f"{'; '.join(problems)}.\nEmit corrected JSON only.")
+                  f"{'; '.join(problems)}.\nEmit corrected JSON only, and keep "
+                  "the conversation short.")
     outcome.invalid += 1
     return None
 

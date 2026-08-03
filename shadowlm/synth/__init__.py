@@ -41,6 +41,7 @@ from .teacher import OpenAIChatTeacher, as_teacher, CountingTeacher, frontier
 
 __all__ = [
     "synthesize", "SynthRun", "SynthReport", "Seed", "FORMATS", "resolve_output",
+    "default_per_scenario",
     "frontier", "as_teacher", "OpenAIChatTeacher", "chunk_text", "emit",
 ]
 
@@ -63,7 +64,7 @@ def synthesize(
     judge=None,
     min_score: float | None = 0.6,
     dedup_threshold: float = 0.7,
-    per_scenario: int = 4,
+    per_scenario: int | None = None,
     seed: int = 3407,
     verbose: bool = True,
     on_progress=None,
@@ -84,13 +85,14 @@ def synthesize(
         call doubles as a grounding check. `min_score=None` disables it.
     dedup_threshold: reject a row whose question overlaps an accepted one by at
         least this much (token Jaccard).
-    per_scenario: rows generated per scenario — attempts per group for "groups",
-        and paraphrases per fact for the MoRE methods.
+    per_scenario: rows generated per scenario. Defaults to what the shape needs
+        — see `default_per_scenario`.
     """
-    if per_scenario < 1:
-        raise ValueError("per_scenario must be at least 1")
     started = time.time()
     fmt, mode = resolve_output(method, format)
+    per_scenario = per_scenario or default_per_scenario(fmt, mode)
+    if per_scenario < 1:
+        raise ValueError("per_scenario must be at least 1")
     source = resolve_seed(task=task, document=document, episodes=episodes)
     teacher = CountingTeacher(as_teacher(teacher))
     scorer = CountingTeacher(as_teacher(judge)) if judge is not None else teacher
@@ -162,6 +164,18 @@ def synthesize(
     if verbose:
         print(report.summary(), flush=True)
     return run
+
+
+def default_per_scenario(fmt: str, mode: str) -> int:
+    """How many rows to write per scenario, when the caller doesn't say.
+
+    Depth is what GRPO and the MoRE methods need — several attempts at one
+    scenario to compare, several phrasings of one fact to route by. Everything
+    else wants breadth instead: four conversations about the same scenario are
+    four rewrites of one training example, so spend the budget on more
+    scenarios and keep just enough repetition to vary the user's voice.
+    """
+    return 4 if (fmt == "groups" or mode == "paraphrases") else 2
 
 
 def resolve_output(method: str | None, fmt: str | None) -> tuple[str, str]:
@@ -237,10 +251,30 @@ def _score(outcomes, judge, *, enabled: bool) -> None:
 def _judge(traj, judge) -> None:
     """Score an episode 0–1. When the row is grounded in a source passage that
     passage is the reference, so this doubles as the hallucination check."""
-    traj.reward = _judge_one(judge, traj.first_user_content(),
-                             traj.final_content(),
+    traj.reward = _judge_one(judge, _judged_input(traj), traj.final_content(),
                              traj.metadata.get("grounding") or "")
     traj.metrics["judge_score"] = traj.reward
+
+
+def _judged_input(traj) -> str:
+    """What the final answer gets scored against.
+
+    A single exchange is just its question. A multi-turn or tool-using episode
+    needs the whole lead-up: the closing answer cites what a tool returned, and
+    a judge shown only the opening question marks that as unsupported — which
+    was rejecting perfectly good tool episodes.
+    """
+    lead = traj.messages[:-1] or traj.messages
+    if len(lead) == 1:
+        return lead[0].get("content") or ""
+    lines = []
+    for message in lead:
+        text = message.get("content") or ""
+        for call in message.get("tool_calls") or []:
+            fn = call.get("function") or {}
+            text = f"{text} [calls {fn.get('name')}({fn.get('arguments')})]".strip()
+        lines.append(f"{message.get('role')}: {text}")
+    return "\n".join(lines)
 
 
 def _absorb(outcome, *, report, dedup, min_score, kept, rejected) -> None:
