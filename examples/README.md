@@ -46,6 +46,22 @@ Notes:
   bitfit has nothing to train there — the examples note this and point you to a
   base that has biases (e.g. `Qwen/Qwen2.5-7B-Instruct`).
 
+## Getting the data in
+
+The method examples above start from a file. These four start from wherever your
+data actually is — or from nothing at all:
+
+| script | starts from | ends at |
+|--------|-------------|---------|
+| `synthesize_from_task.py` | a plain-English task description | chat rows → `lora` |
+| `synthesize_from_doc.py`  | a reference document | grounded paraphrase units → `more_plus` |
+| `shadow_from_traces.py`   | an OTLP export of production spans | chat rows → `lora` |
+| `evaluate.py`             | a trained model | a task-quality score |
+
+The two synthesis scripts call a frontier teacher, so they need
+`OPENAI_API_KEY` — or swap in `slm.synth.as_teacher(slm.load(...))` to keep the
+whole loop local.
+
 ## Shared data
 
 The `data/` folder holds tiny sample datasets so the examples are self-contained:
@@ -56,6 +72,8 @@ The `data/` folder holds tiny sample datasets so the examples are self-contained
 | `data/preference.jsonl` | preference (`prompt/chosen/rejected`) | dpo |
 | `data/domain.jsonl`     | raw text (`text`)              | cpt |
 | `data/facts.jsonl`      | instruction (`instruction/output`) | more, more_plus |
+| `data/handbook.md`      | prose                          | synthesize_from_doc |
+| `data/agent_traces.otlp.json` | OTel GenAI spans         | shadow_from_traces |
 
 `grpo` defines its prompts and reward function inline in each script.
 
