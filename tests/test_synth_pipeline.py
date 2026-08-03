@@ -51,7 +51,7 @@ class FakeTeacher:
                 "questions": [f"alpha bravo {fact}", f"charlie delta {fact}",
                               f"echo foxtrot {fact}", f"golf hotel {fact}"],
                 "answer": f"the answer to {fact}"})
-        if "user message this scenario would produce" in prompt:
+        if "writing test data" in prompt:  # the user's turn for a preference pair
             self._conversations += 1
             return f"user question {self._conversations}"
         if "FLAWED" in prompt:
@@ -184,6 +184,49 @@ def test_everything_rejected_raises_with_the_counts():
     with pytest.raises(RuntimeError, match="nothing usable"):
         synthesize(task="t", teacher=FakeTeacher(scores=("0.0",)), n=4,
                    min_score=0.9, verbose=False)
+
+
+def test_preference_pairs_have_a_question_and_two_distinct_answers():
+    run = synthesize(task="t", teacher=FakeTeacher(), n=4, method="dpo",
+                     verbose=False)
+    assert run.dataset.format == "preference"
+    for row in run.dataset.rows:
+        assert set(row) == {"prompt", "chosen", "rejected"}
+        assert row["prompt"].startswith("user question")   # the user's turn
+        assert row["chosen"] == "the good answer"
+        assert row["rejected"] == "a flawed answer"
+
+
+def test_a_student_supplies_the_rejected_side_when_given():
+    """The shadowing-native pairing: chosen is the teacher, rejected is the
+    student, so DPO targets exactly the gap between them."""
+    class Student:
+        name = "student"
+
+        def chat(self, messages, **_):
+            return "the student's weaker answer"
+
+    run = synthesize(task="t", teacher=FakeTeacher(), student=Student(), n=2,
+                     method="dpo", verbose=False)
+    assert run.dataset.rows[0]["rejected"] == "the student's weaker answer"
+    assert run.trajectories[0].metadata["rejected_from"] == "student"
+
+
+def test_a_teacher_that_answers_instead_of_asking_is_rejected():
+    """Handed the task, a teacher will sometimes perform it where the user's
+    message belongs. The pair then teaches nothing — 'chosen' merely restates
+    the 'question' — so it must not reach the dataset."""
+    class Confused(FakeTeacher):
+        def chat(self, messages, **_):
+            prompt = messages[-1]["content"]
+            if "writing test data" in prompt:
+                return "I can process your refund of $150 right away."
+            if "Answer this as well as you possibly can" in prompt:
+                return "I can process your refund of $150 right away for you."
+            return super().chat(messages)
+
+    with pytest.raises(RuntimeError, match="nothing usable"):
+        synthesize(task="t", teacher=Confused(), n=4, method="dpo", verbose=False)
 
 
 # ---- shaping the teacher's output -------------------------------------------

@@ -227,12 +227,20 @@ Rules:
 - The assistant answers the way the task demands, not as a generic chatbot.
 {rules}"""
 
-_QUESTION = """TASK: {task}
-SCENARIO: {scenario}
-USER STYLE: {style}
+# Leading with the task made teachers perform it — returning an assistant reply
+# where the user's message belongs, after which "chosen" just answered that
+# reply and the pair collapsed into three near-identical strings. State the
+# writing job first and demote the task to context.
+_QUESTION = """You are writing test data. Do not answer anything.
 
-Write the single user message this scenario would produce. The message only —
-no preamble, no quotes."""
+Write the single message the USER sends in this situation — the words they
+would type, in their voice.
+
+SITUATION: {scenario}
+THEIR STYLE: {style}
+(For context only, the assistant they are writing to does this: {task})
+
+Reply with the user's message alone — no preamble, no quotes, no answer."""
 
 _ANSWER = """{task}
 {grounding}
@@ -313,6 +321,11 @@ def preference(leaf: Leaf, seed, teacher, *, student=None, style: str,
         _ask_answer(teacher, _FLAWED.format(
             task=seed.context(), flaw=flaw, question=question), temperature=0.9))
     if not chosen or not rejected or _norm(chosen) == _norm(rejected):
+        outcome.invalid += 1
+        return outcome
+    if jaccard(set(_tokenize(question)), set(_tokenize(chosen))) > 0.7:
+        # the teacher answered instead of writing the user's turn, so the
+        # "question" is itself a reply and the pair teaches nothing
         outcome.invalid += 1
         return outcome
     traj = _trajectory(
