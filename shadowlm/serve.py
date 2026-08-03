@@ -435,6 +435,7 @@ class Server:
         self._infer_cache: dict[tuple, object] = {}  # (model, adapter) → Model
         self._infer_cache_cap = 3  # compare mode alternates base ↔ adapter
         self._downloads: dict[str, dict] = {}  # model id → prefetch status
+        self._synth: dict[str, dict] = {}      # synth id → status + log lines
         self._settings_path = work_root / "settings.json"
         self._custom_path = work_root / "custom_models.json"
         self._tokens_path = work_root / "tokens.json"
@@ -605,6 +606,70 @@ class Server:
                 d["pct"] = round(100 * d["downloaded"] / total, 1) if total else None
             out[model] = d
         return out
+
+    # ---- synthesis: generate a dataset instead of uploading one --------------
+    def start_synth(self, body: dict) -> dict:
+        """Kick off a synthesis run in the background; poll `synth_status`.
+
+        Deliberately not on the training queue — synthesis is teacher calls and
+        would otherwise block the one training slot for the whole run.
+        """
+        from .synth import frontier, synthesize  # noqa: PLC0415
+
+        spec = body.get("teacher") or {}
+        if spec.get("kind") == "local":
+            from .models import load  # noqa: PLC0415
+            teacher = load(spec["model"], backend=self.backend_name)
+        else:
+            # the key is used for this run and never written to disk
+            teacher = frontier(spec.get("model") or "gpt-4o",
+                               base_url=spec.get("base_url") or None,
+                               api_key=spec.get("api_key") or None)
+        episodes = (self.datasets.resolve(body["dataset_id"])
+                    if body.get("dataset_id") else None)
+        synth_id = uuid.uuid4().hex[:10]
+        name = body.get("name") or f"synth-{synth_id[:4]}"
+        requested = int(body.get("n") or 100)
+        with self._lock:
+            self._synth[synth_id] = {"synth_id": synth_id, "name": name,
+                                     "status": "running", "kept": 0,
+                                     "requested": requested, "logs": []}
+
+        def run() -> None:
+            def progress(kept: int, total: int) -> None:
+                with self._lock:
+                    entry = self._synth[synth_id]
+                    entry["kept"] = kept
+                    entry["logs"].append(f"[synth] {kept}/{total} rows kept")
+
+            try:
+                result = synthesize(
+                    teacher=teacher, task=body.get("task") or None,
+                    document=body.get("document") or None, episodes=episodes,
+                    n=requested, method=body.get("method") or None,
+                    min_score=body.get("min_score", 0.6), verbose=False,
+                    on_progress=progress)
+                meta = self.datasets.save(name, result.rows())
+                with self._lock:
+                    self._synth[synth_id].update(
+                        status="succeeded", kept=result.report.kept,
+                        dataset_id=meta["dataset_id"])
+                    self._synth[synth_id]["logs"].append(result.report.summary())
+            except Exception as e:  # noqa: BLE001 — surfaced to the UI
+                with self._lock:
+                    self._synth[synth_id].update(
+                        status="failed", error=f"{type(e).__name__}: {e}")
+
+        threading.Thread(target=run, daemon=True).start()
+        return {"synth_id": synth_id}
+
+    def synth_status(self, synth_id: str | None = None) -> dict:
+        with self._lock:
+            if synth_id is not None:
+                entry = self._synth.get(synth_id)
+                return dict(entry) if entry else {}
+            return {"jobs": [{k: v for k, v in e.items() if k != "logs"}
+                             for e in self._synth.values()]}
 
     # ---- persistence: jobs survive restarts ----------------------------------
     def _persist(self, job: _Job) -> None:
@@ -1266,6 +1331,14 @@ def make_handler(server: Server, auth: "Auth"):
                                  "server_backend": server.backend_name})
             elif parts == ["v1", "models", "downloads"]:
                 self._send(200, {"downloads": server.download_status()})
+            elif parts == ["v1", "synth"]:
+                self._send(200, server.synth_status())
+            elif len(parts) == 3 and parts[:2] == ["v1", "synth"]:
+                status = server.synth_status(parts[2])
+                if status:
+                    self._send(200, status)
+                else:
+                    self._error(404, f"unknown synth run {parts[2]!r}")
             elif parts == ["v1", "vram"]:
                 self._send(200, {"used_mb": server._gpu_used_mb(),
                                  "cached_models": len(server._infer_cache)})
@@ -1365,6 +1438,12 @@ def make_handler(server: Server, auth: "Auth"):
                     if not b.get("model"):
                         return self._error(422, "provide a 'model' id")
                     self._send(202, server.start_download(b["model"]))
+                elif parts == ["v1", "synth"]:
+                    b = self._body()
+                    if not (b.get("task") or b.get("document") or b.get("dataset_id")):
+                        return self._error(
+                            422, "provide a 'task', a 'document', or a 'dataset_id'")
+                    self._send(202, server.start_synth(b))
                 elif parts == ["v1", "vram", "clear"]:
                     self._send(200, server.clear_vram())
                 elif parts == ["v1", "models", "custom"]:

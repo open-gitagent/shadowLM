@@ -435,6 +435,89 @@ def _trunc(text: str, n: int = 60) -> str:
     return text if len(text) <= n else text[: n - 1] + "…"
 
 
+# ---- synthesize --------------------------------------------------------------
+@app.command(name="synth", rich_help_panel="Training")
+def synth(
+    task: Annotated[Optional[str], typer.Option("--task", "-t",
+        help="what the model should learn, in plain English")] = None,
+    document: Annotated[Optional[Path], typer.Option(
+        help="ground the data in a .txt/.md document")] = None,
+    episodes: Annotated[Optional[Path], typer.Option(
+        help="amplify real episodes (.jsonl, or an OTLP trace export)")] = None,
+    teacher: Annotated[Optional[str], typer.Option(
+        help="teacher model over an OpenAI-compatible API, e.g. gpt-4o")] = None,
+    teacher_local: Annotated[Optional[str], typer.Option("--teacher-local",
+        help="teacher loaded on this machine instead — an HF model id")] = None,
+    teacher_base_url: Annotated[Optional[str], typer.Option("--teacher-base-url",
+        envvar="OPENAI_BASE_URL", help="OpenAI-compatible endpoint")] = None,
+    api_key: Annotated[Optional[str], typer.Option("--api-key",
+        envvar="OPENAI_API_KEY", help="key for the teacher endpoint")] = None,
+    n: Annotated[int, typer.Option("-n", help="rows to generate")] = 100,
+    method: Annotated[Optional[str], typer.Option(
+        help="method the data is for — picks the output shape")] = None,
+    format: Annotated[Optional[str], typer.Option(
+        help="chat | text | preference | grpo | groups | otlp")] = None,
+    min_score: Annotated[float, typer.Option("--min-score",
+        help="judge gate; 0 disables it")] = 0.6,
+    per_scenario: Annotated[int, typer.Option("--per-scenario",
+        help="rows per scenario (paraphrases per fact for the MoRE methods)")] = 4,
+    seed: Annotated[int, typer.Option()] = 3407,
+    out: Annotated[Optional[Path], typer.Option("--out", "-o",
+        help="write the rows here (.jsonl), or the spans for --format otlp")] = None,
+    backend: Annotated[str, typer.Option(help="auto | mlx | torch, for --teacher-local")] = "auto",
+    dry_run: Annotated[bool, typer.Option("--dry-run",
+        help="print the resolved plan and exit without calling the teacher")] = False,
+):
+    """Generate training data — from a task description, a document, or real episodes."""
+    from .synth import FORMATS, frontier, resolve_output, synthesize  # noqa: PLC0415
+
+    if bool(teacher) == bool(teacher_local):
+        raise typer.BadParameter(
+            "pass exactly one of --teacher (an API model) or --teacher-local (an HF id)")
+    if format is not None and format not in FORMATS:
+        raise typer.BadParameter(f"--format must be one of {', '.join(FORMATS)}")
+    if not (task or document or episodes):
+        raise typer.BadParameter("give it a seed: --task, --document, or --episodes")
+
+    resolved_format, mode = resolve_output(method, format)
+    if dry_run:
+        console.print(f"[slm]synth[/slm] {n} rows · format [ok]{resolved_format}[/ok] · "
+                      f"{mode} mode · {per_scenario}/scenario\n"
+                      f"  seed: {'document' if document else 'episodes' if episodes else 'task'}\n"
+                      f"  teacher: {teacher or teacher_local}")
+        raise typer.Exit()
+
+    if teacher_local:
+        from .models import load  # noqa: PLC0415
+        teacher_model = load(teacher_local, backend=backend)
+    else:
+        teacher_model = frontier(teacher, base_url=teacher_base_url, api_key=api_key)
+
+    run = synthesize(teacher=teacher_model, task=task, document=document,
+                     episodes=episodes, n=n, method=method, format=format,
+                     min_score=min_score or None, per_scenario=per_scenario,
+                     seed=seed, verbose=False)
+
+    table = Table(title="synthesis", title_style="slm", header_style="slm",
+                  border_style="muted", show_header=False)
+    r = run.report
+    table.add_row("kept", f"[ok]{r.kept}[/ok] / {r.requested} requested")
+    table.add_row("generated", f"{r.generated} over {r.scenarios} scenarios")
+    table.add_row("rejected", f"{r.rejected_validation} invalid · {r.rejected_dedup} "
+                              f"duplicate · {r.rejected_judge} low-scoring")
+    table.add_row("teacher", f"{r.teacher_calls} calls · {r.duration_s:.1f}s")
+    if r.mean_score:
+        table.add_row("mean score", f"{r.mean_score:.2f}")
+    if r.note:
+        table.add_row("note", f"[warn]{r.note}[/warn]")
+    console.print(table)
+
+    if out:
+        console.print(f"wrote [ok]{run.save(out)}[/ok]")
+    else:
+        console.print("[muted]pass --out to write the rows to a file[/muted]")
+
+
 # ---- runs / history ---------------------------------------------------------
 @app.command(rich_help_panel="Runs")
 def runs(
