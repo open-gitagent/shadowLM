@@ -329,7 +329,11 @@ def run_worker(hub: str | None = None, *, name: str | None = None,
     work_root = Path(work_root or Path.home() / ".shadowlm" / "worker")
     work_root.mkdir(parents=True, exist_ok=True)
 
-    be_name = select_backend("auto").name  # what this machine trains with
+    # What this machine trains with. When a factory is supplied it *is* the
+    # backend — consulting select_backend anyway would raise on a box with no
+    # training stack installed, which is the one situation backend_factory
+    # exists for. _run_job already honours the override; this didn't.
+    be_name = (backend_factory() if backend_factory else select_backend("auto")).name
     link = _Link(client, name, {
         "backend": be_name,
         "device": f"{platform.system()}/{platform.machine()}",
