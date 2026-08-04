@@ -123,7 +123,7 @@ JSON only."""
 def plan_leaves(seed, teacher, *, count: int, rng, avoid=()) -> list[Leaf]:
     """Expand a seed into `count` distinct scenarios to generate against."""
     if seed.kind == "document":
-        return _document_leaves(seed, teacher, count=count)
+        return _document_leaves(seed, teacher, count=count, avoid=avoid)
     if seed.kind == "episodes":
         return _episode_leaves(seed, teacher, count=count, rng=rng, avoid=avoid)
     return _batched_leaves(
@@ -140,7 +140,7 @@ def _batched_leaves(teacher, prompt_for, *, count: int, avoid) -> list[Leaf]:
         batch = min(_MAX_LEAVES_PER_CALL, count - len(leaves))
         fresh = _parse_leaves(teacher.chat(
             [{"role": "user", "content": prompt_for(batch, _avoid_block(seen))}],
-            temperature=0.9, max_new_tokens=160 * batch + 300))
+            temperature=0.9, max_new_tokens=160 * batch + 300, json_only=True))
         if not fresh:
             break  # the teacher stopped producing usable JSON — report what we have
         for leaf in fresh[:batch]:
@@ -149,17 +149,29 @@ def _batched_leaves(teacher, prompt_for, *, count: int, avoid) -> list[Leaf]:
     return leaves
 
 
-def _document_leaves(seed, teacher, *, count: int) -> list[Leaf]:
-    """One leaf per fact stated in the document, carrying its source passage."""
+def _document_leaves(seed, teacher, *, count: int, avoid=()) -> list[Leaf]:
+    """One leaf per fact stated in the document, carrying its source passage.
+
+    `avoid` holds facts already planned, so a top-up round advances into the
+    document's later facts instead of re-planning the first ones — without it,
+    round two regenerated the same units, deduplication rejected them all, and
+    the run stalled having never read past wherever round one stopped.
+    """
+    covered = set(avoid)
     leaves: list[Leaf] = []
-    for chunk in seed.chunks:
+    for i, chunk in enumerate(seed.chunks):
         if len(leaves) >= count:
             break
-        raw = teacher.chat([{"role": "user", "content": _FACTS.format(chunk=chunk)}],
-                           temperature=0.2, max_new_tokens=1200)
-        for fact in first_json_array(str(raw)) or []:
-            if isinstance(fact, str) and fact.strip():
-                leaves.append(Leaf(scenario=fact.strip(), grounding=chunk))
+        if i not in seed.fact_cache:
+            raw = teacher.chat(
+                [{"role": "user", "content": _FACTS.format(chunk=chunk)}],
+                temperature=0.2, max_new_tokens=1200, json_only=True)
+            seed.fact_cache[i] = [f.strip() for f in first_json_array(str(raw)) or []
+                                  if isinstance(f, str) and f.strip()]
+        for fact in seed.fact_cache[i]:
+            if fact not in covered:  # also drops a fact two chunks both state
+                covered.add(fact)
+                leaves.append(Leaf(scenario=fact, grounding=chunk))
     return leaves[:count]
 
 
@@ -261,7 +273,8 @@ Reply with the answer only."""
 
 _PARAPHRASES = """A user could ask about this fact in many different ways. Write {k}
 questions that should all retrieve it, varying vocabulary, question form and
-specificity — include one keyword-style query with no sentence structure.
+specificity — include one keyword-style query with no sentence structure, and
+one asked in this voice: {style}.
 
 FACT: {fact}
 {grounding}
@@ -349,8 +362,8 @@ def paraphrases(leaf: Leaf, seed, teacher, *, k: int, style: str) -> Outcome:
     """
     outcome = Outcome()
     raw = teacher.chat([{"role": "user", "content": _PARAPHRASES.format(
-        k=k, fact=leaf.scenario, grounding=_grounding_block(leaf))}],
-        temperature=0.9, max_new_tokens=200 * k + 400)
+        k=k, fact=leaf.scenario, style=style, grounding=_grounding_block(leaf))}],
+        temperature=0.9, max_new_tokens=200 * k + 400, json_only=True)
     parsed = _first_json_object(str(raw)) or {}
     questions = [str(q).strip() for q in parsed.get("questions") or []
                  if str(q).strip()]
@@ -448,7 +461,8 @@ def _ask_messages(teacher, prompt: str, *, tools, outcome: Outcome) -> list[dict
     """
     for attempt in (0, 1):
         raw = str(teacher.chat([{"role": "user", "content": prompt}],
-                               temperature=0.9, max_new_tokens=_REPLY_TOKENS))
+                               temperature=0.9, max_new_tokens=_REPLY_TOKENS,
+                               json_only=True))
         messages = _parse_conversation(raw)
         if messages:
             messages = _wire_tool_calls(messages)

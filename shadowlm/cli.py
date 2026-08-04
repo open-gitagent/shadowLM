@@ -459,8 +459,8 @@ def synth(
         help="chat | text | preference | grpo | groups | otlp")] = None,
     min_score: Annotated[float, typer.Option("--min-score",
         help="judge gate; 0 disables it")] = 0.6,
-    per_scenario: Annotated[int, typer.Option("--per-scenario",
-        help="rows per scenario (paraphrases per fact for the MoRE methods)")] = 4,
+    per_scenario: Annotated[Optional[int], typer.Option("--per-scenario",
+        help="rows per scenario (default: what the output shape needs)")] = None,
     seed: Annotated[int, typer.Option()] = 3407,
     out: Annotated[Optional[Path], typer.Option("--out", "-o",
         help="write the rows here (.jsonl), or the spans for --format otlp")] = None,
@@ -469,7 +469,8 @@ def synth(
         help="print the resolved plan and exit without calling the teacher")] = False,
 ):
     """Generate training data — from a task description, a document, or real episodes."""
-    from .synth import FORMATS, frontier, resolve_output, synthesize  # noqa: PLC0415
+    from .synth import (FORMATS, default_per_scenario, frontier,  # noqa: PLC0415
+                        resolve_output, synthesize)
 
     if bool(teacher) == bool(teacher_local):
         raise typer.BadParameter(
@@ -480,9 +481,10 @@ def synth(
         raise typer.BadParameter("give it a seed: --task, --document, or --episodes")
 
     resolved_format, mode = resolve_output(method, format)
+    per = per_scenario or default_per_scenario(resolved_format, mode)
     if dry_run:
         console.print(f"[slm]synth[/slm] {n} rows · format [ok]{resolved_format}[/ok] · "
-                      f"{mode} mode · {per_scenario}/scenario\n"
+                      f"{mode} mode · {per}/scenario\n"
                       f"  seed: {'document' if document else 'episodes' if episodes else 'task'}\n"
                       f"  teacher: {teacher or teacher_local}")
         raise typer.Exit()

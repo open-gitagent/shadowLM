@@ -28,6 +28,10 @@ class Seed:
     task: str | None = None
     chunks: list[str] = field(default_factory=list)      # document passages
     exemplars: list[Trajectory] = field(default_factory=list)
+    # chunk index → facts already extracted from it. Fact extraction is nearly
+    # deterministic, so a top-up round reads the cache instead of paying the
+    # teacher to restate what round one already found.
+    fact_cache: dict[int, list[str]] = field(default_factory=dict)
 
     def context(self) -> str:
         """The task description every generation prompt is written against."""

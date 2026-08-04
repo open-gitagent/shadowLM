@@ -27,13 +27,14 @@ from __future__ import annotations
 
 import math
 import random
+import threading
 import time
 
 from .. import methods
 from ..apo import _judge_one
 from . import emit
-from .generate import (FLAWS, STYLES, conversation, paraphrases, plan_leaves,
-                       preference)
+from .generate import (FLAWS, STYLES, Outcome, conversation, paraphrases,
+                       plan_leaves, preference)
 from .quality import Dedup
 from .run import SynthReport, SynthRun
 from .seeds import Seed, chunk_text, resolve_seed
@@ -48,6 +49,35 @@ __all__ = [
 FORMATS = ("chat", "text", "preference", "grpo", "groups", "otlp")
 _MORE_ADAPTERS = (methods.ADAPTER_MORE, methods.ADAPTER_MORE_PLUS)
 _MAX_ROUNDS = 3  # a round that keeps nothing ends the run; this caps the rest
+
+
+class _Breaker:
+    """Trips after several consecutive teacher failures.
+
+    One bad call must not kill a run that already holds paid-for rows — but a
+    dead endpoint must not burn a full retry cycle per remaining job either.
+    Failures open the circuit; any success closes it again.
+    """
+
+    LIMIT = 4
+
+    def __init__(self) -> None:
+        self.last_error = ""
+        self._consecutive = 0
+        self._lock = threading.Lock()
+
+    @property
+    def open(self) -> bool:
+        with self._lock:
+            return self._consecutive >= self.LIMIT
+
+    def record(self, error: str | None) -> None:
+        with self._lock:
+            if error is None:
+                self._consecutive = 0
+            else:
+                self._consecutive += 1
+                self.last_error = error
 
 
 def synthesize(
@@ -108,6 +138,9 @@ def synthesize(
     # filtering the weak ones out would throw away exactly the signal it needs —
     # score every row, gate on nothing.
     gate = None if fmt == "groups" else min_score
+    # One breaker per phase: generation failures must not pre-emptively cancel
+    # the judging of rows that were already generated and paid for.
+    gen_breaker, judge_breaker = _Breaker(), _Breaker()
     kept: list = []
     rejected: list = []
     covered: list[str] = []
@@ -125,8 +158,10 @@ def synthesize(
         report.scenarios += len(leaves)
         covered.extend(leaf.scenario for leaf in leaves)
         outcomes = _generate(leaves, source, teacher, mode=mode, tools=tools,
-                             student=student, per_scenario=per_scenario)
-        _score(outcomes, scorer, enabled=min_score is not None)
+                             student=student, per_scenario=per_scenario,
+                             breaker=gen_breaker)
+        _score(outcomes, scorer, enabled=min_score is not None,
+               breaker=judge_breaker)
         before = len(kept)
         for outcome in outcomes:
             _absorb(outcome, report=report, dedup=dedup, min_score=gate,
@@ -136,6 +171,8 @@ def synthesize(
                   flush=True)
         if on_progress:
             on_progress(len(kept), n)
+        if gen_breaker.open or judge_breaker.open:
+            break  # the teacher is down — keep what we have rather than lose it
         if len(kept) == before:
             break  # a whole round survived nothing — stop spending teacher calls
 
@@ -144,23 +181,30 @@ def synthesize(
         # paraphrase units are left whole because MoRE+ groups by fixed size
         report.surplus = len(kept) - n
         kept = kept[:n]
+    failing = gen_breaker.last_error or judge_breaker.last_error
     if not kept:
         gated = (f", {report.rejected_judge} below min_score={min_score}"
                  if gate is not None else "")
+        errors = f" Teacher errors: {failing}." if failing else ""
         raise RuntimeError(
             f"synthesis produced nothing usable — {report.rejected_validation} "
-            f"invalid, {report.rejected_dedup} duplicate{gated}. Loosen the gate "
-            "(min_score=, dedup_threshold=) or check what the teacher is emitting.")
+            f"invalid, {report.rejected_dedup} duplicate{gated}.{errors} Loosen "
+            "the gate (min_score=, dedup_threshold=) or check what the teacher "
+            "is emitting.")
 
-    report.kept = len(kept)
-    scored = [t.reward for t in kept if t.reward]
+    run = _emit(fmt, kept, report, rejected, seed=seed)
+    report.kept = len(run.trajectories)  # after emit: flat groups may have gone
+    scored = [t.metrics["judge_score"] for t in run.trajectories
+              if "judge_score" in t.metrics]
     report.mean_score = sum(scored) / len(scored) if scored else None
     report.teacher_calls = teacher.calls + (0 if scorer is teacher else scorer.calls)
     report.duration_s = time.time() - started
+    notes = []
     if mode == "paraphrases":
-        report.note = f"train with more_plus_group_size={per_scenario}"
-
-    run = _emit(fmt, kept, report, rejected, seed=seed)
+        notes.append(f"train with more_plus_group_size={per_scenario}")
+    if gen_breaker.open or judge_breaker.open:
+        notes.append(f"stopped early — the teacher kept failing ({failing})")
+    report.note = " · ".join(notes) or None
     if verbose:
         print(report.summary(), flush=True)
     return run
@@ -203,8 +247,14 @@ def resolve_output(method: str | None, fmt: str | None) -> tuple[str, str]:
     return fmt or "chat", mode
 
 
-def _generate(leaves, source, teacher, *, mode, tools, student, per_scenario):
-    """One job per row wanted, run at the teacher's parallelism."""
+def _generate(leaves, source, teacher, *, mode, tools, student, per_scenario,
+              breaker):
+    """One job per row wanted, run at the teacher's parallelism.
+
+    A job that raises is counted as invalid, not fatal — the rows already kept
+    were paid for. Once the breaker opens, remaining jobs are skipped outright
+    (returning None, counted nowhere) instead of each burning a retry cycle.
+    """
     jobs = []
     for i, leaf in enumerate(leaves):
         if mode == "paraphrases":
@@ -222,7 +272,22 @@ def _generate(leaves, source, teacher, *, mode, tools, student, per_scenario):
             else:
                 jobs.append(lambda leaf=leaf, style=style: conversation(
                     leaf, source, teacher, tools=tools, style=style))
-    return _run_jobs(jobs, workers=teacher.parallelism)
+
+    def guarded(job):
+        def run():
+            if breaker.open:
+                return None
+            try:
+                out = job()
+            except Exception as e:  # noqa: BLE001 — record, count, carry on
+                breaker.record(f"{type(e).__name__}: {e}")
+                return Outcome(invalid=1)
+            breaker.record(None)
+            return out
+        return run
+
+    results = _run_jobs([guarded(j) for j in jobs], workers=teacher.parallelism)
+    return [r for r in results if r is not None]
 
 
 def _run_jobs(jobs, *, workers: int) -> list:
@@ -235,14 +300,32 @@ def _run_jobs(jobs, *, workers: int) -> list:
         return list(pool.map(lambda job: job(), jobs))
 
 
-def _score(outcomes, judge, *, enabled: bool) -> None:
+def _score(outcomes, judge, *, enabled: bool, breaker) -> None:
     """Judge one row per outcome; a unit's rows share an answer, so one score
-    speaks for all of them (and a conversation outcome is a single row anyway)."""
+    speaks for all of them (and a conversation outcome is a single row anyway).
+
+    A judge failure leaves the row at reward 0.0 — it then fails the gate,
+    which is the honest reading of "could not be scored" — rather than killing
+    a run full of rows that were already paid for.
+    """
     if not enabled:
         return
     heads = [o.trajectories[0] for o in outcomes if o.trajectories]
-    _run_jobs([lambda t=t: _judge(t, judge) for t in heads],
-              workers=judge.parallelism)
+
+    def guarded(traj):
+        def run():
+            if breaker.open:
+                return
+            try:
+                _judge(traj, judge)
+            except Exception as e:  # noqa: BLE001 — unscored just fails the gate
+                breaker.record(f"{type(e).__name__}: {e}")
+                traj.metrics["judge_error"] = f"{type(e).__name__}: {e}"
+                return
+            breaker.record(None)
+        return run
+
+    _run_jobs([guarded(t) for t in heads], workers=judge.parallelism)
     for outcome in outcomes:
         for traj in outcome.trajectories[1:]:
             traj.reward = outcome.trajectories[0].reward
@@ -251,9 +334,18 @@ def _score(outcomes, judge, *, enabled: bool) -> None:
 def _judge(traj, judge) -> None:
     """Score an episode 0–1. When the row is grounded in a source passage that
     passage is the reference, so this doubles as the hallucination check."""
+    grounding = traj.metadata.get("grounding") or ""
     traj.reward = _judge_one(judge, _judged_input(traj), traj.final_content(),
-                             traj.metadata.get("grounding") or "")
+                             grounding)
     traj.metrics["judge_score"] = traj.reward
+    if traj.metadata.get("rejected_from") == "student":
+        # A capable student can out-answer the teacher on an easy question, and
+        # that pair would push DPO the wrong way — score the student's side too
+        # so the gate can drop inverted pairs. Teacher-corrupted rejects are
+        # flawed by construction; scoring those would double judge cost for
+        # nothing.
+        traj.metrics["rejected_score"] = _judge_one(
+            judge, _judged_input(traj), traj.metadata["rejected"], grounding)
 
 
 def _judged_input(traj) -> str:
@@ -290,7 +382,14 @@ def _absorb(outcome, *, report, dedup, min_score, kept, rejected) -> None:
         _mark(rows, "duplicate", rejected)
     elif min_score is not None and rows[0].reward < min_score:
         report.rejected_judge += len(rows)
-        _mark(rows, f"judge score {rows[0].reward:.2f} < {min_score}", rejected)
+        _mark(rows, (f"judge score {rows[0].reward:.2f} < {min_score}"
+                     if "judge_score" in rows[0].metrics else
+                     "unscored — the judge was unavailable"), rejected)
+    elif (min_score is not None
+          and rows[0].metrics.get("rejected_score", -1.0) >= rows[0].reward):
+        report.rejected_judge += len(rows)
+        _mark(rows, "the student's answer scored no worse than the teacher's — "
+                    "nothing to prefer", rejected)
     else:
         kept.extend(rows)
 
@@ -309,6 +408,16 @@ def _emit(fmt: str, kept: list, report, rejected: list, *, seed: int) -> SynthRu
     run = SynthRun(format=fmt, report=report, trajectories=kept, rejected=rejected)
     if fmt == "groups":
         run.groups = emit.to_groups(kept)
+        # a group whose attempts all scored the same carries no training signal
+        # and was dropped — say so in the report instead of letting report.kept
+        # claim rows that never reached run.groups
+        grouped = {id(t) for g in run.groups for t in g.trajectories}
+        flat = [t for t in kept if id(t) not in grouped]
+        if flat:
+            report.rejected_flat += len(flat)
+            _mark(flat, "its group had no reward spread — no signal for GRPO",
+                  rejected)
+            run.trajectories = [t for t in kept if id(t) in grouped]
     elif fmt == "otlp":
         run.spans = emit.to_otlp(kept, seed=seed)
     else:

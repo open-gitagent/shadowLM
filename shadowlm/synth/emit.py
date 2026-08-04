@@ -90,8 +90,8 @@ def to_groups(trajectories: list[Trajectory]) -> list[TrajectoryGroup]:
     if not groups:
         raise ValueError(
             "no scored groups — trajectory-GRPO needs several attempts per "
-            "scenario with differing judge scores (raise attempts=, or leave "
-            "min_score enabled so the judge actually runs)")
+            "scenario with differing judge scores (raise per_scenario=, or "
+            "leave min_score enabled so the judge actually runs)")
     return groups
 
 

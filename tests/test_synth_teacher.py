@@ -14,10 +14,13 @@ from shadowlm.synth import teacher as tch
 
 
 class _Stub:
-    """A tiny OpenAI-compatible endpoint. `fail_first` 429s that many times."""
+    """A tiny OpenAI-compatible endpoint. `fail_first` 429s that many times;
+    `reject_json` 400s any request carrying `response_format`."""
 
-    def __init__(self, *, reply="hello", fail_first=0, status=None):
+    def __init__(self, *, reply="hello", fail_first=0, status=None,
+                 reject_json=False):
         self.reply, self.remaining_failures, self.status = reply, fail_first, status
+        self.reject_json = reject_json
         self.requests: list[dict] = []
         outer = self
 
@@ -30,6 +33,9 @@ class _Stub:
                 outer.requests.append({"body": body, "auth": self.headers.get("Authorization")})
                 if outer.status is not None:
                     self.send_error(outer.status, "nope")
+                    return
+                if outer.reject_json and "response_format" in body:
+                    self.send_error(400, "response_format is not supported")
                     return
                 if outer.remaining_failures > 0:
                     outer.remaining_failures -= 1
@@ -81,6 +87,34 @@ def test_transient_failures_are_retried():
     try:
         assert _teacher(stub).chat([{"role": "user", "content": "hi"}]) == "eventually"
         assert len(stub.requests) == 2
+    finally:
+        stub.close()
+
+
+def test_json_only_requests_the_servers_json_mode():
+    stub = _Stub(reply='{"messages": []}')
+    try:
+        teacher = _teacher(stub)
+        teacher.chat([{"role": "user", "content": "JSON please"}], json_only=True)
+        teacher.chat([{"role": "user", "content": "prose please"}])
+        assert stub.requests[0]["body"]["response_format"] == {"type": "json_object"}
+        assert "response_format" not in stub.requests[1]["body"]
+    finally:
+        stub.close()
+
+
+def test_a_server_without_json_mode_gets_one_plain_retry_then_never_asked():
+    stub = _Stub(reply="ok", reject_json=True)
+    try:
+        teacher = _teacher(stub)
+        assert teacher.chat([{"role": "user", "content": "JSON"}], json_only=True) == "ok"
+        # first request carried response_format and 400'd; the retry dropped it
+        assert "response_format" in stub.requests[0]["body"]
+        assert "response_format" not in stub.requests[1]["body"]
+        # and the lesson sticks — the next json_only call doesn't even try
+        teacher.chat([{"role": "user", "content": "JSON"}], json_only=True)
+        assert len(stub.requests) == 3
+        assert "response_format" not in stub.requests[2]["body"]
     finally:
         stub.close()
 

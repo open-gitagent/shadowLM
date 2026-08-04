@@ -5,6 +5,7 @@ away, so the report is not a summary line bolted on at the end: every rejection
 is counted as it happens, and the counts reconcile exactly —
 
     generated == kept + rejected_validation + rejected_dedup + rejected_judge
+                 + rejected_flat + surplus
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ class SynthReport:
     rejected_validation: int = 0  # malformed, even after the corrective retry
     rejected_dedup: int = 0       # a repeat of something already kept
     rejected_judge: int = 0       # scored below min_score
+    rejected_flat: int = 0        # GRPO group with no reward spread — no signal
     surplus: int = 0              # good rows past `requested`, trimmed
     repaired: int = 0             # rescued by the corrective retry
     mean_score: float | None = None
@@ -40,10 +42,11 @@ class SynthReport:
         """The funnel reconciles — nothing vanished unaccounted for."""
         return self.generated == (self.kept + self.rejected_validation
                                   + self.rejected_dedup + self.rejected_judge
-                                  + self.surplus)
+                                  + self.rejected_flat + self.surplus)
 
     def summary(self) -> str:
         score = f" · mean score {self.mean_score:.2f}" if self.mean_score else ""
+        flat = f" · {self.rejected_flat} flat-group" if self.rejected_flat else ""
         surplus = f" · {self.surplus} surplus" if self.surplus else ""
         note = f"\n  note: {self.note}" if self.note else ""
         return (
@@ -51,7 +54,7 @@ class SynthReport:
             f"({self.scenarios} scenarios)\n"
             f"  rejected: {self.rejected_validation} invalid · "
             f"{self.rejected_dedup} duplicate · {self.rejected_judge} low-scoring"
-            f"{surplus} · {self.repaired} repaired\n"
+            f"{flat}{surplus} · {self.repaired} repaired\n"
             f"  {self.teacher_calls} teacher calls · {self.duration_s:.1f}s{score}{note}"
         )
 

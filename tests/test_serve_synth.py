@@ -63,6 +63,23 @@ def test_synth_run_lands_a_dataset_in_the_store(monkeypatch):
         assert server.datasets.resolve(new[0]["dataset_id"]).rows[0]["messages"]
 
 
+def test_the_post_returns_before_the_teacher_finishes_loading(monkeypatch):
+    """Loading a local teacher can take minutes — it must happen on the
+    background thread, not while the HTTP request waits."""
+    def slow_load(*a, **k):
+        time.sleep(0.6)
+        return _Teacher()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        server = _server(tmp)
+        monkeypatch.setattr("shadowlm.models.load", slow_load)
+        t0 = time.monotonic()
+        started = server.start_synth({
+            "task": "t", "n": 4, "teacher": {"kind": "local", "model": "stub"}})
+        assert time.monotonic() - t0 < 0.3, "start_synth blocked on model load"
+        assert _wait(server, started["synth_id"])["status"] == "succeeded"
+
+
 def test_failures_are_reported_not_swallowed(monkeypatch):
     with tempfile.TemporaryDirectory() as tmp:
         server = _server(tmp)

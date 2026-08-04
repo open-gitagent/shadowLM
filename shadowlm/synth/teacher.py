@@ -40,25 +40,38 @@ class OpenAIChatTeacher:
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY") or ""
         self.parallelism = max(1, parallelism)
         self.timeout = timeout
+        self._json_ok = True  # flipped off the first time the server rejects it
 
     def chat(self, messages: list[dict], *, temperature: float = 0.7,
-             max_new_tokens: int = 1024, **_) -> str:
-        body = json.dumps({"model": self.model, "messages": messages,
-                           "temperature": temperature,
-                           "max_tokens": max_new_tokens}).encode()
+             max_new_tokens: int = 1024, json_only: bool = False, **_) -> str:
+        """One completion. `json_only=True` requests the server's JSON mode
+        (`response_format`), which stops truncated-prose parse failures at the
+        source; a server that rejects it gets one plain retry and is never
+        asked again."""
+        payload = {"model": self.model, "messages": messages,
+                   "temperature": temperature, "max_tokens": max_new_tokens}
+        if json_only and self._json_ok:
+            payload["response_format"] = {"type": "json_object"}
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
-        req = urllib.request.Request(f"{self.base_url}/chat/completions",
-                                     data=body, headers=headers, method="POST")
-        delay = _RETRY_AFTER_S
-        for attempt in range(_RETRIES):
+        delay, attempt = _RETRY_AFTER_S, 0
+        while True:
+            req = urllib.request.Request(
+                f"{self.base_url}/chat/completions", data=json.dumps(payload).encode(),
+                headers=headers, method="POST")
             final = attempt == _RETRIES - 1
             try:
                 with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                    payload = json.loads(resp.read())
-                return payload["choices"][0]["message"].get("content") or ""
+                    data = json.loads(resp.read())
+                return data["choices"][0]["message"].get("content") or ""
             except urllib.error.HTTPError as e:
+                if e.code == 400 and "response_format" in payload:
+                    # this server doesn't speak JSON mode — drop it for good
+                    # and retry plainly (doesn't consume a retry attempt)
+                    self._json_ok = False
+                    del payload["response_format"]
+                    continue
                 if final or e.code not in _RETRY_CODES:
                     detail = e.read()[:200].decode("utf-8", "replace")
                     raise RuntimeError(
@@ -69,6 +82,7 @@ class OpenAIChatTeacher:
                     raise RuntimeError(
                         f"teacher {self.name!r} unreachable at {self.base_url}: {e}"
                     ) from None
+            attempt += 1
             time.sleep(delay)
             delay *= 4
 

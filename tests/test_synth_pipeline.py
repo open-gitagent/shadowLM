@@ -84,7 +84,7 @@ def test_the_funnel_reconciles():
     r = run.report
     assert r.balanced, r.summary()
     assert r.generated == (r.kept + r.rejected_validation + r.rejected_dedup
-                           + r.rejected_judge + r.surplus)
+                           + r.rejected_judge + r.rejected_flat + r.surplus)
     assert r.rejected_judge > 0  # the 0.1 scores were gated out
     assert r.teacher_calls > 0
 
@@ -206,10 +206,103 @@ def test_a_student_supplies_the_rejected_side_when_given():
         def chat(self, messages, **_):
             return "the student's weaker answer"
 
-    run = synthesize(task="t", teacher=FakeTeacher(), student=Student(), n=2,
-                     method="dpo", verbose=False)
+    # judge alternates (chosen, rejected): the student must actually score
+    # lower or the inversion gate — correctly — finds nothing to prefer
+    run = synthesize(task="t", teacher=FakeTeacher(scores=("0.9", "0.2")),
+                     student=Student(), n=2, method="dpo", verbose=False)
     assert run.dataset.rows[0]["rejected"] == "the student's weaker answer"
     assert run.trajectories[0].metadata["rejected_from"] == "student"
+
+
+def test_flat_grpo_groups_are_counted_not_silently_dropped():
+    """A group whose attempts all scored the same carries no GRPO signal and is
+    dropped at emit — report.kept must then say what run.groups actually holds,
+    not what survived the earlier gates."""
+    scores = ("0.9", "0.5", "0.9", "0.5",   # scenario 0 — real spread
+              "0.7", "0.7", "0.7", "0.7")   # scenario 1 — flat, no signal
+    run = synthesize(task="t", teacher=FakeTeacher(scenarios=2, scores=scores),
+                     n=8, method="grpo", verbose=False)
+    assert len(run.groups) == 1
+    assert run.report.kept == 4
+    assert run.report.rejected_flat == 4
+    assert run.report.balanced, run.report.summary()
+    assert any("no reward spread" in t.metadata["reject_reason"]
+               for t in run.rejected)
+
+
+def test_document_topup_rounds_reach_later_facts():
+    """When round one under-delivers, round two must advance into facts not yet
+    planned — not re-extract and regenerate the first ones, which dedup would
+    reject, stalling the run below its target."""
+    class DocTeacher(FakeTeacher):
+        def chat(self, messages, **_):
+            prompt = messages[-1]["content"]
+            if "factual claims" in prompt:
+                self.prompts.append(prompt)
+                return json.dumps(["fact A", "fact B", "fact C"])
+            if ("questions that should all retrieve" in prompt
+                    and "fact B" in prompt):
+                return json.dumps({"questions": [], "answer": ""})
+            return super().chat(messages)  # fact A / C paraphrases, judging
+
+    teacher = DocTeacher()
+    run = synthesize(document="One paragraph of source text.", teacher=teacher,
+                     n=8, method="more_plus", verbose=False)
+    facts = {t.metadata["taxonomy_path"] for t in run.trajectories}
+    assert facts == {"fact A", "fact C"}   # round 2 moved past A and B
+    assert len(run.trajectories) == 8
+    # and the extraction ran once — the second round read the cache
+    assert sum("factual claims" in p for p in teacher.prompts) == 1
+
+
+def test_a_failing_teacher_ends_the_run_with_what_it_has():
+    """One dead call must not lose every row already paid for; a dead teacher
+    must not burn a retry cycle per remaining job either."""
+    class Flaky(FakeTeacher):
+        def chat(self, messages, **_):
+            if ("training conversation" in messages[-1]["content"]
+                    and self._conversations >= 2):
+                self._conversations += 1
+                raise RuntimeError("boom: connection reset")
+            return super().chat(messages)
+
+    run = synthesize(task="t", teacher=Flaky(scenarios=4), n=8, verbose=False)
+    assert len(run.dataset.rows) == 2          # what survived, not an exception
+    assert "stopped early" in run.report.note
+    assert "boom" in run.report.note
+    assert run.report.balanced, run.report.summary()
+
+
+def test_a_dead_teacher_raises_with_its_own_error():
+    class Dead(FakeTeacher):
+        def chat(self, messages, **_):
+            if "training conversation" in messages[-1]["content"]:
+                raise RuntimeError("boom: 502 bad gateway")
+            return super().chat(messages)
+
+    with pytest.raises(RuntimeError, match="boom: 502"):
+        synthesize(task="t", teacher=Dead(), n=4, verbose=False)
+
+
+def test_a_student_that_beats_the_teacher_produces_no_pair():
+    """chosen=teacher / rejected=student trains DPO on the gap between them —
+    a pair where the student scored higher would train the gap backwards."""
+    class Student:
+        name = "student"
+
+        def chat(self, messages, **_):
+            return "the student's weaker answer"
+
+    # judge scores alternate (chosen, rejected) per pair:
+    # pair 1 → 0.9 vs 0.2 (kept) · pair 2 → 0.6 vs 0.9 (inverted → dropped)
+    teacher = FakeTeacher(scores=("0.9", "0.2", "0.6", "0.9"))
+    run = synthesize(task="t", teacher=teacher, student=Student(), n=2,
+                     method="dpo", verbose=False)
+    assert run.report.kept == 2
+    assert run.report.rejected_judge == 2
+    assert all(t.metrics["rejected_score"] < t.reward for t in run.trajectories)
+    assert any("nothing to prefer" in t.metadata["reject_reason"]
+               for t in run.rejected)
 
 
 def test_a_teacher_that_answers_instead_of_asking_is_rejected():

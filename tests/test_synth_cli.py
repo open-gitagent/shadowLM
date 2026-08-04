@@ -34,6 +34,15 @@ def test_dry_run_shows_the_resolved_shape_without_calling_out():
     assert "preference" in result.stdout
 
 
+def test_dry_run_shows_the_shape_aware_per_scenario_default():
+    plain = runner.invoke(app, ["synth", "--task", "t", "--teacher", "gpt-4o",
+                                "--dry-run"])
+    assert "2/scenario" in plain.stdout      # breadth for SFT
+    grpo = runner.invoke(app, ["synth", "--task", "t", "--teacher", "gpt-4o",
+                               "--method", "grpo", "--dry-run"])
+    assert "4/scenario" in grpo.stdout       # depth for groups
+
+
 def test_needs_exactly_one_teacher():
     both = runner.invoke(app, ["synth", "--task", "t", "--teacher", "gpt-4o",
                                "--teacher-local", "Qwen/Qwen2.5-0.5B", "--dry-run"])

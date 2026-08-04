@@ -617,16 +617,6 @@ class Server:
         from .synth import frontier, synthesize  # noqa: PLC0415
 
         spec = body.get("teacher") or {}
-        if spec.get("kind") == "local":
-            from .models import load  # noqa: PLC0415
-            teacher = load(spec["model"], backend=self.backend_name)
-        else:
-            # the key is used for this run and never written to disk
-            teacher = frontier(spec.get("model") or "gpt-4o",
-                               base_url=spec.get("base_url") or None,
-                               api_key=spec.get("api_key") or None)
-        episodes = (self.datasets.resolve(body["dataset_id"])
-                    if body.get("dataset_id") else None)
         synth_id = uuid.uuid4().hex[:10]
         name = body.get("name") or f"synth-{synth_id[:4]}"
         requested = int(body.get("n") or 100)
@@ -643,11 +633,25 @@ class Server:
                     entry["logs"].append(f"[synth] {kept}/{total} rows kept")
 
             try:
+                # teacher and episodes resolve in here: loading a local model
+                # (or pulling an HF dataset) can take minutes, and the POST
+                # must return the synth_id immediately, not after the download
+                if spec.get("kind") == "local":
+                    from .models import load  # noqa: PLC0415
+                    teacher = load(spec["model"], backend=self.backend_name)
+                else:
+                    # the key is used for this run and never written to disk
+                    teacher = frontier(spec.get("model") or "gpt-4o",
+                                       base_url=spec.get("base_url") or None,
+                                       api_key=spec.get("api_key") or None)
+                episodes = (self.datasets.resolve(body["dataset_id"])
+                            if body.get("dataset_id") else None)
                 result = synthesize(
                     teacher=teacher, task=body.get("task") or None,
                     document=body.get("document") or None, episodes=episodes,
                     n=requested, method=body.get("method") or None,
-                    min_score=body.get("min_score", 0.6), verbose=False,
+                    # 0 from the UI means "no gate", same as the CLI
+                    min_score=body.get("min_score", 0.6) or None, verbose=False,
                     on_progress=progress)
                 meta = self.datasets.save(name, result.rows())
                 with self._lock:
