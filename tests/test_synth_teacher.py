@@ -135,6 +135,25 @@ def test_an_unreachable_endpoint_says_where_it_tried():
         teacher.chat([{"role": "user", "content": "hi"}])
 
 
+def test_a_missing_key_fails_at_construction_not_mid_run(monkeypatch):
+    """Otherwise the run gets twenty teacher calls in before a raw provider 401
+    surfaces, and the message says nothing about where to put the key."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    with pytest.raises(ValueError, match="no API key for the teacher"):
+        tch.frontier("gpt-4o-mini")
+    # the environment is a valid place to put it
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-from-env")
+    assert tch.frontier("gpt-4o-mini").api_key == "sk-from-env"
+
+
+def test_a_local_endpoint_needs_no_key(monkeypatch):
+    """vLLM and Ollama serve the same API without auth — only api.openai.com
+    insists on a key."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    teacher = tch.frontier("qwen", base_url="http://127.0.0.1:8000/v1")
+    assert teacher.api_key == ""
+
+
 def test_a_loaded_model_becomes_a_serialized_teacher():
     class FakeModel:
         name = "qwen-tiny"

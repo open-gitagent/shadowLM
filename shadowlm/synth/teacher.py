@@ -21,6 +21,7 @@ import urllib.request
 _RETRIES = 3
 _RETRY_AFTER_S = 1.0  # doubled ×4 per attempt: 1s, 4s
 _RETRY_CODES = frozenset({408, 429, 500, 502, 503, 504})
+_OPENAI = "https://api.openai.com"
 
 
 class OpenAIChatTeacher:
@@ -38,6 +39,14 @@ class OpenAIChatTeacher:
         self.base_url = (base_url or os.environ.get("OPENAI_BASE_URL")
                          or "https://api.openai.com/v1").rstrip("/")
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY") or ""
+        if not self.api_key and self.base_url.startswith(_OPENAI):
+            # Fail here, not twenty teacher calls later with a raw provider 401.
+            # Keyless is legitimate against a local server, so only the real
+            # OpenAI endpoint insists.
+            raise ValueError(
+                "no API key for the teacher. Pass api_key=, set OPENAI_API_KEY "
+                "in the environment the process was started from, or point "
+                "base_url= at a local server (vLLM, Ollama) that needs no key.")
         self.parallelism = max(1, parallelism)
         self.timeout = timeout
         self._json_ok = True  # flipped off the first time the server rejects it
