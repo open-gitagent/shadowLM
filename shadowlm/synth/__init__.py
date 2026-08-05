@@ -38,7 +38,8 @@ from .generate import (FLAWS, STYLES, Outcome, conversation, paraphrases,
 from .quality import Dedup
 from .run import SynthReport, SynthRun
 from .seeds import Seed, chunk_text, resolve_seed
-from .teacher import OpenAIChatTeacher, as_teacher, CountingTeacher, frontier
+from .teacher import (CountingTeacher, OpenAIChatTeacher, as_teacher, frontier,
+                      run_jobs)
 
 __all__ = [
     "synthesize", "SynthRun", "SynthReport", "Seed", "FORMATS", "resolve_output",
@@ -117,6 +118,9 @@ def synthesize(
         least this much (token Jaccard).
     per_scenario: rows generated per scenario. Defaults to what the shape needs
         — see `default_per_scenario`.
+    on_progress: `(done, total, phase)` as work completes, where phase is
+        "planning", "generating", "judging" or "kept". Called per finished job,
+        not per round, so a caller can show real movement.
     """
     started = time.time()
     fmt, mode = resolve_output(method, format)
@@ -148,20 +152,30 @@ def synthesize(
         print(f"[synth] {source.kind} seed · target {n} rows · format {fmt} · "
               f"teacher {teacher.name}", flush=True)
 
+    def tick(phase: str):
+        """Report a phase's own completion count, so a long batch shows movement
+        rather than sitting at zero until the whole round lands."""
+        if on_progress is None:
+            return None
+        return lambda done, total: on_progress(done, total, phase)
+
     for round_no in range(1, _MAX_ROUNDS + 1):
         if len(kept) >= n:
             break
+        if on_progress:
+            on_progress(0, 1, "planning")
         leaves = plan_leaves(source, teacher, rng=rng, avoid=covered,
-                             count=math.ceil((n - len(kept)) / per_scenario))
+                             count=math.ceil((n - len(kept)) / per_scenario),
+                             on_done=tick("planning"))
         if not leaves:
             break
         report.scenarios += len(leaves)
         covered.extend(leaf.scenario for leaf in leaves)
         outcomes = _generate(leaves, source, teacher, mode=mode, tools=tools,
                              student=student, per_scenario=per_scenario,
-                             breaker=gen_breaker)
+                             breaker=gen_breaker, on_done=tick("generating"))
         _score(outcomes, scorer, enabled=min_score is not None,
-               breaker=judge_breaker)
+               breaker=judge_breaker, on_done=tick("judging"))
         before = len(kept)
         for outcome in outcomes:
             _absorb(outcome, report=report, dedup=dedup, min_score=gate,
@@ -170,7 +184,7 @@ def synthesize(
             print(f"[synth] round {round_no} · {len(kept)}/{n} rows kept",
                   flush=True)
         if on_progress:
-            on_progress(len(kept), n)
+            on_progress(len(kept), n, "kept")
         if gen_breaker.open or judge_breaker.open:
             break  # the teacher is down — keep what we have rather than lose it
         if len(kept) == before:
@@ -248,7 +262,7 @@ def resolve_output(method: str | None, fmt: str | None) -> tuple[str, str]:
 
 
 def _generate(leaves, source, teacher, *, mode, tools, student, per_scenario,
-              breaker):
+              breaker, on_done=None):
     """One job per row wanted, run at the teacher's parallelism.
 
     A job that raises is counted as invalid, not fatal — the rows already kept
@@ -286,21 +300,12 @@ def _generate(leaves, source, teacher, *, mode, tools, student, per_scenario,
             return out
         return run
 
-    results = _run_jobs([guarded(j) for j in jobs], workers=teacher.parallelism)
+    results = run_jobs([guarded(j) for j in jobs], workers=teacher.parallelism,
+                       on_done=on_done)
     return [r for r in results if r is not None]
 
 
-def _run_jobs(jobs, *, workers: int) -> list:
-    """Run jobs, preserving submission order — order groups MoRE+ units."""
-    if workers <= 1 or len(jobs) <= 1:
-        return [job() for job in jobs]
-    from concurrent.futures import ThreadPoolExecutor  # noqa: PLC0415
-
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        return list(pool.map(lambda job: job(), jobs))
-
-
-def _score(outcomes, judge, *, enabled: bool, breaker) -> None:
+def _score(outcomes, judge, *, enabled: bool, breaker, on_done=None) -> None:
     """Judge one row per outcome; a unit's rows share an answer, so one score
     speaks for all of them (and a conversation outcome is a single row anyway).
 
@@ -325,7 +330,8 @@ def _score(outcomes, judge, *, enabled: bool, breaker) -> None:
             breaker.record(None)
         return run
 
-    _run_jobs([guarded(t) for t in heads], workers=judge.parallelism)
+    run_jobs([guarded(t) for t in heads], workers=judge.parallelism,
+             on_done=on_done)
     for outcome in outcomes:
         for traj in outcome.trajectories[1:]:
             traj.reward = outcome.trajectories[0].reward

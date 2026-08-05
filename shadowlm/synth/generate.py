@@ -22,6 +22,7 @@ from ..models import _first_json_object
 from ..more_plus import _tokenize
 from ..rl import Trajectory
 from .quality import first_json_array, jaccard, validate
+from .teacher import run_jobs
 
 # Asking for more than this in one array is where teachers start repeating
 # themselves and truncating JSON.
@@ -120,19 +121,23 @@ same domain and register. Reply with a JSON array of objects:
 JSON only."""
 
 
-def plan_leaves(seed, teacher, *, count: int, rng, avoid=()) -> list[Leaf]:
+def plan_leaves(seed, teacher, *, count: int, rng, avoid=(),
+                on_done=None) -> list[Leaf]:
     """Expand a seed into `count` distinct scenarios to generate against."""
     if seed.kind == "document":
-        return _document_leaves(seed, teacher, count=count, avoid=avoid)
+        return _document_leaves(seed, teacher, count=count, avoid=avoid,
+                                on_done=on_done)
     if seed.kind == "episodes":
-        return _episode_leaves(seed, teacher, count=count, rng=rng, avoid=avoid)
+        return _episode_leaves(seed, teacher, count=count, rng=rng, avoid=avoid,
+                               on_done=on_done)
     return _batched_leaves(
         teacher, lambda n, block: _TAXONOMY.format(
             task=seed.context(), n=n, avoid=block),
-        count=count, avoid=avoid)
+        count=count, avoid=avoid, on_done=on_done)
 
 
-def _batched_leaves(teacher, prompt_for, *, count: int, avoid) -> list[Leaf]:
+def _batched_leaves(teacher, prompt_for, *, count: int, avoid,
+                    on_done=None) -> list[Leaf]:
     """Ask for scenarios in batches, steering each round clear of the last."""
     leaves: list[Leaf] = []
     seen = list(avoid)
@@ -146,10 +151,13 @@ def _batched_leaves(teacher, prompt_for, *, count: int, avoid) -> list[Leaf]:
         for leaf in fresh[:batch]:
             leaves.append(leaf)
             seen.append(leaf.scenario)
+        if on_done:
+            on_done(len(leaves), count)
     return leaves
 
 
-def _document_leaves(seed, teacher, *, count: int, avoid=()) -> list[Leaf]:
+def _document_leaves(seed, teacher, *, count: int, avoid=(),
+                     on_done=None) -> list[Leaf]:
     """One leaf per fact stated in the document, carrying its source passage.
 
     `avoid` holds facts already planned, so a top-up round advances into the
@@ -158,29 +166,39 @@ def _document_leaves(seed, teacher, *, count: int, avoid=()) -> list[Leaf]:
     the run stalled having never read past wherever round one stopped.
     """
     covered = set(avoid)
+    # Extract from every uncached chunk at once. Sequentially this is one
+    # round-trip per chunk before a single row can be generated — the whole
+    # document's latency arrives up front, with the teacher mostly idle.
+    pending = [i for i, _ in enumerate(seed.chunks) if i not in seed.fact_cache]
+    if pending:
+        extracted = run_jobs(
+            [lambda c=seed.chunks[i]: teacher.chat(
+                [{"role": "user", "content": _FACTS.format(chunk=c)}],
+                temperature=0.2, max_new_tokens=1200, json_only=True)
+             for i in pending],
+            workers=teacher.parallelism, on_done=on_done)
+        for i, raw in zip(pending, extracted):
+            seed.fact_cache[i] = [f.strip() for f in first_json_array(str(raw)) or []
+                                  if isinstance(f, str) and f.strip()]
+
     leaves: list[Leaf] = []
     for i, chunk in enumerate(seed.chunks):
         if len(leaves) >= count:
             break
-        if i not in seed.fact_cache:
-            raw = teacher.chat(
-                [{"role": "user", "content": _FACTS.format(chunk=chunk)}],
-                temperature=0.2, max_new_tokens=1200, json_only=True)
-            seed.fact_cache[i] = [f.strip() for f in first_json_array(str(raw)) or []
-                                  if isinstance(f, str) and f.strip()]
-        for fact in seed.fact_cache[i]:
+        for fact in seed.fact_cache.get(i, ()):
             if fact not in covered:  # also drops a fact two chunks both state
                 covered.add(fact)
                 leaves.append(Leaf(scenario=fact, grounding=chunk))
     return leaves[:count]
 
 
-def _episode_leaves(seed, teacher, *, count: int, rng, avoid) -> list[Leaf]:
+def _episode_leaves(seed, teacher, *, count: int, rng, avoid,
+                    on_done=None) -> list[Leaf]:
     examples = _render_exemplars(seed.exemplars[:3])
     leaves = _batched_leaves(
         teacher, lambda n, block: _PATTERNS.format(
             examples=examples, task=seed.context(), n=n, avoid=block),
-        count=count, avoid=avoid)
+        count=count, avoid=avoid, on_done=on_done)
     for leaf in leaves:
         leaf.exemplars = [rng.choice(seed.exemplars)]
     return leaves

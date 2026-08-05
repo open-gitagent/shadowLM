@@ -33,7 +33,7 @@ class OpenAIChatTeacher:
     """
 
     def __init__(self, model: str, *, base_url: str | None = None,
-                 api_key: str | None = None, parallelism: int = 4,
+                 api_key: str | None = None, parallelism: int = 8,
                  timeout: float = 120.0) -> None:
         self.name = self.model = model
         self.base_url = (base_url or os.environ.get("OPENAI_BASE_URL")
@@ -128,6 +128,35 @@ class CountingTeacher:
         with self._lock:
             self.calls += 1
         return self._inner.chat(messages, **kwargs)
+
+
+def run_jobs(jobs, *, workers: int, on_done=None) -> list:
+    """Run `jobs` concurrently, returning results in submission order.
+
+    Order is load-bearing: MoRE+ units are consecutive rows, so results must
+    come back in the order they went in. But `on_done(done, total)` fires as
+    each job *finishes*, so a caller can report progress instead of going
+    silent for the length of the batch — which is what made the studio look
+    frozen at 0 while a whole round ran.
+    """
+    total = len(jobs)
+    if workers <= 1 or total <= 1:
+        results = []
+        for job in jobs:
+            results.append(job())
+            if on_done:
+                on_done(len(results), total)
+        return results
+    from concurrent.futures import ThreadPoolExecutor, as_completed  # noqa: PLC0415
+
+    results: list = [None] * total
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(job): i for i, job in enumerate(jobs)}
+        for done, future in enumerate(as_completed(futures), 1):
+            results[futures[future]] = future.result()
+            if on_done:
+                on_done(done, total)
+    return results
 
 
 def frontier(model: str, **kwargs) -> OpenAIChatTeacher:

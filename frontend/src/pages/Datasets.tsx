@@ -276,15 +276,33 @@ function SynthForm({ onDone }: { onDone: () => void }) {
   }
 
   if (run) {
-    const pct = Math.round((100 * run.kept) / Math.max(1, run.requested));
+    // While a batch runs there are no kept rows yet, so track the live phase
+    // counter; once the round lands, fall back to the real kept/requested.
+    const live = run.status === "running" && !!run.total;
+    const pct = live
+      ? Math.round((100 * (run.done ?? 0)) / Math.max(1, run.total!))
+      : Math.round((100 * run.kept) / Math.max(1, run.requested));
+    const PHASES: Record<string, string> = {
+      starting: "starting", planning: "planning scenarios",
+      generating: "generating", judging: "judging", kept: "collecting",
+    };
     return (
       <div className="p-5 grid gap-3">
         <div className="flex items-center justify-between text-xs">
-          <span className="font-mono">{run.status}</span>
-          <span className="text-muted-foreground">{run.kept} / {run.requested} rows</span>
+          <span className="font-mono">
+            {run.status === "running"
+              ? PHASES[run.phase ?? "starting"] ?? run.phase
+              : run.status}
+            {live && run.phase !== "planning" && ` ${run.done}/${run.total}`}
+          </span>
+          <span className="text-muted-foreground">
+            {run.kept} / {run.requested} rows kept
+          </span>
         </div>
         <div className="h-1.5 bg-muted rounded overflow-hidden">
-          <div className="h-full bg-primary transition-all" style={{ width: `${pct}%` }} />
+          <div className={`h-full bg-primary transition-all ${
+            run.phase === "planning" && live ? "animate-pulse" : ""}`}
+            style={{ width: `${run.phase === "planning" && live ? 100 : pct}%` }} />
         </div>
         {run.error && <p className="text-xs text-destructive">{run.error}</p>}
         {!!run.logs?.length && (

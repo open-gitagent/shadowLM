@@ -214,6 +214,34 @@ def test_a_student_supplies_the_rejected_side_when_given():
     assert run.trajectories[0].metadata["rejected_from"] == "student"
 
 
+def test_progress_ticks_per_job_not_per_round():
+    """The studio sat at 0 for a whole run: progress fired once per round, and
+    round one does all the work. Every finished job must report."""
+    seen = []
+    run = synthesize(task="t", teacher=FakeTeacher(), n=8, method="lora",
+                     verbose=False, on_progress=lambda d, t, p: seen.append((p, d, t)))
+
+    phases = [p for p, _, _ in seen]
+    assert "planning" in phases and "generating" in phases and "judging" in phases
+    generating = [(d, t) for p, d, t in seen if p == "generating"]
+    assert len(generating) == 8, "one tick per generated row"
+    assert [d for d, _ in generating] == list(range(1, 9)), "counts climb"
+    assert all(t == 8 for _, t in generating)
+    assert ("kept", run.report.kept, 8) in seen
+
+
+def test_parallel_results_stay_in_submission_order():
+    """Completion order is arbitrary under a thread pool, but MoRE+ units are
+    consecutive rows — results must come back in the order submitted."""
+    from shadowlm.synth.teacher import run_jobs
+
+    ticks = []
+    out = run_jobs([lambda i=i: i for i in range(20)], workers=8,
+                   on_done=lambda d, t: ticks.append(d))
+    assert out == list(range(20))
+    assert sorted(ticks) == list(range(1, 21))
+
+
 def test_flat_grpo_groups_are_counted_not_silently_dropped():
     """A group whose attempts all scored the same carries no GRPO signal and is
     dropped at emit — report.kept must then say what run.groups actually holds,

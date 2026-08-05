@@ -623,14 +623,19 @@ class Server:
         with self._lock:
             self._synth[synth_id] = {"synth_id": synth_id, "name": name,
                                      "status": "running", "kept": 0,
-                                     "requested": requested, "logs": []}
+                                     "requested": requested, "phase": "starting",
+                                     "done": 0, "total": 0, "logs": []}
 
         def run() -> None:
-            def progress(kept: int, total: int) -> None:
+            def progress(done: int, total: int, phase: str) -> None:
                 with self._lock:
                     entry = self._synth[synth_id]
-                    entry["kept"] = kept
-                    entry["logs"].append(f"[synth] {kept}/{total} rows kept")
+                    entry["phase"], entry["done"], entry["total"] = phase, done, total
+                    # Only a completed round is worth a log line; ticking once
+                    # per finished job would bury the report under hundreds.
+                    if phase == "kept":
+                        entry["kept"] = done
+                        entry["logs"].append(f"[synth] {done}/{total} rows kept")
 
             try:
                 # teacher and episodes resolve in here: loading a local model

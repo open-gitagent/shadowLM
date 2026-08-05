@@ -159,6 +159,11 @@ export interface SynthStatus {
   status: "running" | "succeeded" | "failed";
   kept: number;
   requested: number;
+  // live phase counters — a round's generating/judging batches tick as each
+  // job lands, so the bar moves instead of waiting for the whole round
+  phase?: "starting" | "planning" | "generating" | "judging" | "kept";
+  done?: number;
+  total?: number;
   dataset_id?: string;
   error?: string;
   logs?: string[];

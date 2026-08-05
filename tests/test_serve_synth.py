@@ -96,6 +96,22 @@ def test_failures_are_reported_not_swallowed(monkeypatch):
         assert "teacher is down" in status["error"]
 
 
+def test_status_exposes_live_phase_counters(monkeypatch):
+    """The UI polls this to move its bar; without phase/done/total it can only
+    show kept, which stays 0 until a whole round lands."""
+    with tempfile.TemporaryDirectory() as tmp:
+        server = _server(tmp)
+        monkeypatch.setattr("shadowlm.models.load", lambda *a, **k: _Teacher())
+        started = server.start_synth({
+            "task": "t", "n": 4, "teacher": {"kind": "local", "model": "stub"}})
+        final = _wait(server, started["synth_id"])
+
+        assert final["phase"] == "kept"
+        assert final["done"] == final["kept"] == 4
+        # the log stays a summary — one line per round, not one per job
+        assert len(final["logs"]) <= 3
+
+
 def test_listing_hides_the_log_buffer(monkeypatch):
     with tempfile.TemporaryDirectory() as tmp:
         server = _server(tmp)
