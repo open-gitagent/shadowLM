@@ -92,8 +92,8 @@ class RemoteBackend(Backend):
         if reward_fns:
             raise RuntimeError(
                 "the remote backend can't ship Python reward functions — run "
-                "method='grpo' with reward_fns locally, or train on judge-scored "
-                "trajectory groups (those serialize)."
+                "method='grpo'/'sdpo' with reward_fns locally, or train on "
+                "judge-scored trajectory groups (those serialize, grpo only)."
             )
         job_id = self._client.submit_finetune(
             base_model=self.model_name,
