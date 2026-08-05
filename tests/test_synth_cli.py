@@ -72,3 +72,5 @@ def test_run_writes_rows_and_reports(monkeypatch, tmp_path):
     assert len(rows) == 4
     assert all(r["messages"][-1]["role"] == "assistant" for r in rows)
     assert "kept" in result.stdout
+    # a trailing newline, so `wc -l` agrees with the report and appends are safe
+    assert out.read_text().endswith("}\n")

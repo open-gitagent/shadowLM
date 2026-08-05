@@ -89,12 +89,16 @@ class SynthRun:
         return []
 
     def save(self, path: str | Path) -> str:
-        """Write the run's artifact — JSONL rows, or the OTLP payload as JSON."""
+        """Write the run's artifact — JSONL rows, or the OTLP payload as JSON.
+
+        The JSONL ends with a newline: without it `wc -l` undercounts by one and
+        anything appending to the file corrupts the final row.
+        """
         path = Path(path)
         if self.spans is not None:
-            path.write_text(json.dumps(self.spans, indent=2))
+            path.write_text(json.dumps(self.spans, indent=2) + "\n")
         else:
-            path.write_text("\n".join(json.dumps(r) for r in self.rows()))
+            path.write_text("".join(json.dumps(r) + "\n" for r in self.rows()))
         return str(path)
 
     def to_otlp(self, path: str | Path | None = None, **kwargs) -> dict:
