@@ -5,9 +5,10 @@ server in this package, backed by the local backend) and ShadowLM Studio (the
 hosted tier). The SDK's remote backend speaks to either — `backend="remote"`
 plus `SHADOWLM_API_URL` / `SHADOWLM_API_KEY` is all a caller configures.
 `
-Endpoints (JSON over HTTP, optional Bearer auth):
+Endpoints this client speaks (JSON over HTTP, optional Bearer auth):
 
-    GET  /v1/health                      → {ok, backend, version, gpus, running, pending}
+    GET  /v1/health                      → {ok, backend, version, gpus, running,
+                                            pending, workers}
     POST /v1/finetunes                   → {job_id}
     GET  /v1/finetunes/<id>              → {status, error, checkpoint, final_loss}
     GET  /v1/finetunes/<id>/metrics      → {steps: [...], evals: [...]}
@@ -19,6 +20,10 @@ Endpoints (JSON over HTTP, optional Bearer auth):
     GET  /v1/workers                     → {workers: [...]} connected devices
     GET  /v1/workers/<name>/socket       → websocket upgrade (see worker.py)
     POST /v1/workers/<n>/jobs/<id>/artifact ← a worker ships its adapter home
+
+The server also serves the studio's own routes — datasets, models, settings,
+vram, methods, tokens, prewarm, checkpoints, auth/login. They're driven from
+`frontend/src/api.ts`, not from here; add a method when the SDK needs one.
 
 `SHADOWLM_API_URL` may name several servers, comma-separated — `pick()` binds the
 client to the least-busy reachable one and stays there for the session. That is
@@ -53,6 +58,26 @@ def _user_agent() -> str:
 
 class RemoteError(RuntimeError):
     """An error returned by (or while reaching) a ShadowLM server."""
+
+
+def _check_members(tar: tarfile.TarFile, dest: Path) -> None:
+    """Refuse any member that would land outside `dest` (or isn't a plain
+    file/dir/symlink). An adapter tarball needs nothing fancier, and the server
+    is just a URL somebody typed — treat the archive as hostile. This is the
+    only guard on Python < 3.12, where extractall has no `filter=` kwarg."""
+    base = dest.resolve()
+    for m in tar.getmembers():
+        target = (base / m.name).resolve()
+        if not target.is_relative_to(base):
+            raise RemoteError(f"artifact refused: member {m.name!r} escapes {dest}")
+        if m.issym() or m.islnk():
+            anchor = target.parent if m.issym() else base
+            if not (anchor / m.linkname).resolve().is_relative_to(base):
+                raise RemoteError(
+                    f"artifact refused: link {m.name!r} → {m.linkname!r} escapes {dest}")
+        elif not (m.isfile() or m.isdir()):
+            raise RemoteError(
+                f"artifact refused: member {m.name!r} is not a regular file or directory")
 
 
 class RemoteClient:
@@ -123,8 +148,10 @@ class RemoteClient:
                 h = self.health(base=url)
             except RemoteError:
                 continue  # a dead box in the pool is skipped, not fatal
+            # queue depth first; break ties on capacity — a hub with workers
+            # attached can absorb more than a lone box with the same GPU count
             ranked.append(((h.get("running", 0) + h.get("pending", 0),
-                            -h.get("gpus", 0)), url, h))
+                            -h.get("workers", 0), -h.get("gpus", 0)), url, h))
         if not ranked:
             raise RemoteError(
                 f"no reachable ShadowLM server in the pool: {', '.join(self.pool)}")
@@ -132,13 +159,21 @@ class RemoteClient:
         _, self.api_url, health = ranked[0]
         return health
 
-    def submit_finetune(self, *, base_model: str, config: dict, dataset: dict,
-                        eval_dataset: dict | None, load_in_4bit: bool,
-                        max_seq_length: int, worker: str | None = None) -> str:
+    def submit_finetune(self, *, base_model: str, config: dict,
+                        dataset: dict | None, eval_dataset: dict | None,
+                        load_in_4bit: bool, max_seq_length: int,
+                        worker: str | None = None, name: str | None = None,
+                        dataset_id: str | None = None) -> str:
+        """Queue a run. Send inline `dataset` rows, or a `dataset_id` already
+        stored on the server (what the studio's Datasets page holds)."""
+        if not dataset and not dataset_id:
+            raise ValueError("pass dataset={'rows': [...]} or dataset_id='...'")
         out = self._request("POST", "/v1/finetunes", {
             "base_model": base_model,
             "config": config,
+            "name": name,  # what the studio's run list shows
             "dataset": dataset,
+            "dataset_id": dataset_id,
             "eval_dataset": eval_dataset,
             "load_in_4bit": load_in_4bit,
             "max_seq_length": max_seq_length,
@@ -169,10 +204,11 @@ class RemoteClient:
         dest = Path(dest)
         dest.mkdir(parents=True, exist_ok=True)
         with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tar:
+            _check_members(tar, dest)  # the server is untrusted network input
             try:
                 tar.extractall(dest, filter="data")
             except TypeError:  # Python < 3.12 has no filter= kwarg
-                tar.extractall(dest)  # noqa: S202 — archive comes from our server
+                tar.extractall(dest)  # noqa: S202 — members vetted above
         return str(dest)
 
     # ---- worker side: a machine that executes the hub's jobs -----------------

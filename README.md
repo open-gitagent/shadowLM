@@ -72,6 +72,7 @@ The whole **capture → judge → train → own a shadowLM** loop runs on these:
 | Block | What it does | API |
 |-------|--------------|-----|
 | **Capture proxy** | drop-in OpenAI endpoint that records your agent's traffic into trajectories — agent unchanged | `slm.capture()` |
+| **Trace ingestion** | already have OpenTelemetry GenAI spans? turn an OTLP dump into a training set, no proxy | `slm.traces.to_dataset()` |
 | **13 methods** | LoRA · QLoRA · DoRA · full · CPT · DPO · GRPO · MoRE · MoRE+ · BitFit · prompt · p-tuning · adapter | `method=` |
 | **Judge → train** | score episodes with an LLM judge, train with trajectory-GRPO or DPO | `judge_group` |
 | **APO** | optimize the *prompt* instead of weights — same capture/judge front end, no GPU | `slm.optimize_prompt()` |
@@ -80,7 +81,9 @@ The whole **capture → judge → train → own a shadowLM** loop runs on these:
 | **Any hardware** | CUDA · TPU · Trainium · Intel · Apple · CPU (whatever HF accelerate targets) | `device=` |
 | **Shadow accelerator** | 4-bit, grad checkpointing, flash-attn, fused optimizer, optional Liger kernels — logged, never silent | `accelerator="shadow"` |
 | **Checkpoints** | save every N steps, then load or A/B any version — `step 200` vs `final` — in the playground | `save_steps=` · `run.checkpoint_at(step)` |
+| **Eval** | score a model on a held-out set — exact/contains/numeric/JSON/LLM-judge scorers | `slm.evaluate()` · `shadowlm eval` |
 | **Remote + server** | train on a GPU box or fleet over one JSON protocol; metrics stream back | `backend="remote"` · `shadowlm serve` |
+| **Worker fleet** | a NAT'd GPU box dials the hub over one websocket and takes jobs; the studio routes to it | `shadowlm worker --hub …` |
 | **Studio** | datasets → models → guided train → live runs (charts + console) → playground compare | `shadowlm serve` → `/` |
 | **CLI** | finetune / runs / plot / chat / export / methods from the shell | `shadowlm …` |
 | **Own the weights** | adapter/merged export, run records that survive restarts, nothing leaves your box | `model.save()` |
@@ -139,8 +142,9 @@ curl -fsSL https://install.shadowlm.sh | sh
 It detects your hardware and installs the matching stack — Apple Silicon → mlx,
 NVIDIA → torch + Liger fused kernels, otherwise torch CPU — into an isolated env
 in `~/.shadowlm/venv`, then launches `shadowlm serve` at `http://127.0.0.1:8329`.
-Re-run any time to upgrade. Override with `SHADOWLM_EXTRAS=cli` (UI only),
-`SHADOWLM_PORT=…`, or `SHADOWLM_NO_SERVE=1` (install without launching).
+Re-run any time to upgrade. Override with `SHADOWLM_EXTRAS=…` (pip extras —
+NVIDIA gets `kernels` by default), `SHADOWLM_PORT=…`, or `SHADOWLM_NO_SERVE=1`
+(install without launching).
 
 Or with pip — `pip install shadowlm` ships the full training stack (torch +
 HuggingFace, retrieval, CLI). On Apple Silicon the mlx dev backend is pulled in
@@ -154,12 +158,12 @@ automatically. Two extras stay opt-in for specialized hardware:
 ```bash
 git clone https://github.com/open-gitagent/shadowLM && cd shadowLM
 python3 -m venv .venv && source .venv/bin/activate && pip install -e .
-python examples/quickstart.py    # datasets → finetune → inference, end to end
+python examples/mlx/lora.py      # datasets → finetune → inference, end to end
 ```
 
-No hardware handy? Test-drive the whole thing — checkpoints, faiss MoRE, APO —
-on a free Colab GPU:
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/open-gitagent/shadowLM/blob/main/examples/colab_test_drive.ipynb)
+`examples/` has one runnable script per (backend × method) — `mlx/` runs a 0.5B
+model in seconds, `torch/` and `remote/` use Qwen3-8B. See
+[examples/README.md](./examples/README.md) for the full matrix.
 
 Run output (mlx, a 0.5B model, ~3.5s):
 
@@ -204,16 +208,17 @@ The engine ships first; **ShadowLM Studio** (the hosted tier) wraps this exact
 API — nothing reimplemented — to turn the blocks into a one-click migration:
 
 - **Decision inbox** — captured traces surfaced for human approve/correct into chosen-vs-rejected pairs (today: auto-scored by an LLM judge).
-- **Eval gates** — advance only when quality holds *and* savings beat cost: task-level evals + cost-per-task on the run records.
+- **Cost gates** — `slm.evaluate` already scores a model on a held-out set; the gate that ties quality to cost-per-task and blocks the switch is Studio's.
 - **Shadow router** — the capture proxy evolved: run the shadowLM in parallel behind the live agent, then shift traffic % frontier → owned.
-- **Fleet + teams** — GPU job queue, shared run history, dataset/adapter registry.
+- **Teams** — shared run history, dataset/adapter registry, org auth on top of the fleet below.
 
 ```
 [x] SDK — datasets → finetune → inference on mlx / torch / remote
 [x] 13 methods incl. MoRE, MoRE+ (decoupled MoE), trajectory GRPO, judge rewards
-[x] Capture proxy · shadow accelerator · any-hardware
+[x] Capture proxy · OTLP trace ingestion · shadow accelerator · any-hardware
 [x] Remote backend + reference server + the studio dashboard + CLI
-[ ] Studio orchestration — decision inbox · eval gates · shadow router · switch
+[x] Eval scorers (`slm.evaluate`, `shadowlm eval`) · worker fleet (`shadowlm worker`)
+[ ] Studio orchestration — decision inbox · cost gates · shadow router · switch
 ```
 
 ## Contributing

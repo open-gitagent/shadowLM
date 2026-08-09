@@ -67,6 +67,24 @@ def _build_lr(config: TrainConfig, total_steps: int):
     return build_schedule({"name": name, "arguments": arguments, "warmup": warmup})
 
 
+def _make_optimizer(optim_mod, config: TrainConfig, lr):
+    """AdamW honoring `config.weight_decay` — the same decoupled-decay family
+    the torch backend runs. mlx has no 8-bit variant, so plain AdamW is the
+    closest honest mapping of the default `optim="adamw_8bit"`."""
+    return optim_mod.AdamW(learning_rate=lr, weight_decay=config.weight_decay)
+
+
+def _ignored_fields(config: TrainConfig) -> list[str]:
+    """TrainConfig fields the mlx path can't honor — logged, never silent."""
+    return [name for name, off in (
+        ("optim", not (config.optim or "").startswith("adamw")),
+        ("max_grad_norm", config.max_grad_norm is not None),
+        ("packing", config.packing),
+        ("use_rslora", config.use_rslora),
+        ("report_to", bool(config.report_to)),
+    ) if off]
+
+
 def _is_quantized(model) -> bool:
     import mlx.nn as nn  # noqa: PLC0415
 
@@ -206,6 +224,9 @@ class MLXBackend(Backend):
         from mlx_lm.tuner.trainer import TrainingArgs, train  # noqa: PLC0415
         from mlx_lm.tuner.utils import linear_to_lora_layers  # noqa: PLC0415
 
+        if config.seed is not None:
+            mx.random.seed(config.seed)  # all trainer paths dispatch from here
+
         model, tokenizer = self.model, self.tokenizer
         n = len(dataset)
         iters = resolve_total_steps(config, n)
@@ -290,7 +311,11 @@ class MLXBackend(Backend):
                 linear_to_lora_layers(model, num_layers, self._lora_params(config),
                                       use_dora=(spec.adapter == methods.ADAPTER_DORA))
         else:
-            raise RuntimeError(f"mlx backend has no attach path for adapter kind {spec.adapter!r}")
+            raise RuntimeError(
+                f"mlx backend has no attach path for adapter kind {spec.adapter!r} — "
+                "load with backend='torch', or register a method whose adapter kind "
+                "mlx supports (lora, dora, bitfit, bottleneck, more, more_plus, none)."
+            )
 
         out = Path(output_dir)
         out.mkdir(parents=True, exist_ok=True)
@@ -345,16 +370,10 @@ class MLXBackend(Backend):
         )
         train_set = CacheDataset(
             _to_mlx_dataset(dataset, tokenizer, raw_text=raw_text, mask_prompt=mask))
-        opt = optim.Adam(learning_rate=_build_lr(config, iters))
+        opt = _make_optimizer(optim, config, _build_lr(config, iters))
 
         # Fields the mlx path can't honor — say so instead of silently dropping.
-        ignored = [name for name, off in (
-            ("optim", config.optim != "adamw_8bit"),
-            ("max_grad_norm", config.max_grad_norm is not None),
-            ("packing", config.packing),
-            ("use_rslora", config.use_rslora),
-            ("report_to", bool(config.report_to)),
-        ) if off]
+        ignored = _ignored_fields(config)
         if ignored:
             callbacks.log(f"[mlx] note: {', '.join(ignored)} not supported on mlx — ignored")
 
@@ -429,7 +448,7 @@ class MLXBackend(Backend):
                 losses.append(float(loss))
             return sum(losses) / max(1, len(losses))
 
-        opt = optim.Adam(learning_rate=_build_lr(config, iters))
+        opt = _make_optimizer(optim, config, _build_lr(config, iters))
         loss_and_grad = nn.value_and_grad(model, default_loss)
         accum = max(1, config.gradient_accumulation_steps)
 
@@ -570,7 +589,7 @@ class MLXBackend(Backend):
             mlp.down_proj = wrapper                      # swap in the trainable expert
             self.model.freeze()
             self.model.unfreeze(keys=["lora_a", "lora_b"], strict=False, recurse=True)
-            opt = optim.Adam(learning_rate=config.learning_rate or 1e-4)
+            opt = _make_optimizer(optim, config, config.learning_rate or 1e-4)
             loss_and_grad = nn.value_and_grad(self.model, loss_fn)
             step = 0
             while step < steps and batches:
@@ -720,7 +739,7 @@ class MLXBackend(Backend):
             per_seq = (ce * mask).sum(-1) / mx.maximum(mask.sum(-1), 1)
             return (weights * per_seq).mean()
 
-        opt = optim.Adam(learning_rate=_build_lr(config, iters))
+        opt = _make_optimizer(optim, config, _build_lr(config, iters))
         loss_and_grad = nn.value_and_grad(model, pg_loss)
         accum = max(1, config.gradient_accumulation_steps)
         callbacks.log(
@@ -820,7 +839,7 @@ class MLXBackend(Backend):
             grad_checkpoint=shadow.grad_checkpoint,
             beta=config.beta,
         )
-        opt = optim.Adam(learning_rate=_build_lr(config, iters))
+        opt = _make_optimizer(optim, config, _build_lr(config, iters))
 
         callbacks.log(
             f"[mlx:{self.device}] dpo on {self.model_name} · {n} preference pairs · "
@@ -908,7 +927,7 @@ class MLXBackend(Backend):
             beta=config.beta,
             max_completion_length=config.grpo_max_completion_length,
         )
-        opt = optim.Adam(learning_rate=_build_lr(config, iters))
+        opt = _make_optimizer(optim, config, _build_lr(config, iters))
 
         callbacks.log(
             f"[mlx:{self.device}] grpo on {self.model_name} · {n} prompts · "

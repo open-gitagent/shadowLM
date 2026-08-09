@@ -22,6 +22,7 @@ import io
 import json
 import os
 import queue
+import re
 import tarfile
 import threading
 import time
@@ -35,6 +36,58 @@ from .data import Dataset
 from .training import Metric, TrainConfig
 
 DEFAULT_PORT = 8329
+
+# Request bodies land in memory whole (datasets, adapter tarballs), so the
+# Content-Length header is a promise to allocate — cap it. Generous: the
+# biggest legitimate body is a worker shipping an adapter home.
+_MAX_BODY = 512 << 20
+
+
+class _PayloadTooLarge(Exception):
+    """A request body over `_MAX_BODY` — answered with a 413, never read."""
+
+
+def _write_private(path: Path, text: str) -> None:
+    """write_text, but owner-only — for files that hold credentials."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(text)
+    os.chmod(path, 0o600)  # a pre-existing file keeps its old mode otherwise
+
+
+# Ids that may appear in a filesystem path (dataset ids, job ids): one plain
+# segment, nothing the path layer could interpret.
+_PLAIN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
+
+
+class LoginThrottle:
+    """After `limit` consecutive failures from one address, /v1/login answers
+    429 for `window` seconds — enough to make online password guessing
+    pointless without ever locking out the console user for long."""
+
+    def __init__(self, limit: int = 5, window: float = 60.0,
+                 clock=time.monotonic) -> None:
+        self._limit, self._window, self._clock = limit, window, clock
+        self._strikes: dict[str, tuple[int, float]] = {}  # addr → (fails, last)
+        self._lock = threading.Lock()
+
+    def allowed(self, addr: str) -> bool:
+        with self._lock:
+            fails, last = self._strikes.get(addr, (0, 0.0))
+            if fails < self._limit:
+                return True
+            if self._clock() - last >= self._window:
+                self._strikes.pop(addr, None)  # lock expired
+                return True
+            return False
+
+    def record(self, addr: str, *, ok: bool) -> None:
+        with self._lock:
+            if ok:
+                self._strikes.pop(addr, None)
+            else:
+                fails, _ = self._strikes.get(addr, (0, 0.0))
+                self._strikes[addr] = (fails + 1, self._clock())
 
 # Shown only when running from a source checkout where the React app hasn't been
 # built. Every pip install ships the compiled UI in _static, so users never see
@@ -327,12 +380,16 @@ class DatasetStore:
         return sorted(metas, key=lambda m: m.get("created", 0), reverse=True)
 
     def rows(self, ds_id: str) -> list[dict] | None:
+        if not _PLAIN_ID.fullmatch(ds_id or ""):
+            return None  # ids come off the URL — never let one shape a path
         p = self.root / f"{ds_id}.jsonl"
         if not p.exists():
             return None
         return [json.loads(line) for line in p.read_text().splitlines() if line.strip()]
 
     def meta(self, ds_id: str) -> dict | None:
+        if not _PLAIN_ID.fullmatch(ds_id or ""):
+            return None
         p = self.root / f"{ds_id}.json"
         return json.loads(p.read_text()) if p.exists() else None
 
@@ -356,6 +413,8 @@ class DatasetStore:
         return Dataset.from_hf(meta["repo"], subset=sub, split=meta["eval_split"])
 
     def delete(self, ds_id: str) -> bool:
+        if not _PLAIN_ID.fullmatch(ds_id or ""):
+            return False
         found = False
         for suffix in (".json", ".jsonl"):
             p = self.root / f"{ds_id}{suffix}"
@@ -474,7 +533,7 @@ class Server:
 
         hub.set_token(token)
         try:
-            self._settings_path.write_text(json.dumps({"hf_token": token or ""}))
+            _write_private(self._settings_path, json.dumps({"hf_token": token or ""}))
         except OSError:
             pass  # in-memory still works for this process
 
@@ -492,7 +551,7 @@ class Server:
 
     def _save_tokens(self) -> None:
         try:
-            self._tokens_path.write_text(json.dumps(self._machine_tokens, indent=1))
+            _write_private(self._tokens_path, json.dumps(self._machine_tokens, indent=1))
         except OSError:
             pass  # in-memory still works for this process
 
@@ -785,8 +844,11 @@ class Server:
 
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as e:  # noqa: BLE001 — the retry below is the real
+                # recovery; but if the cache never cleared, the retry's OOM is a
+                # consequence of this, so leave a trail.
+                print(f"[serve] VRAM release failed ({type(e).__name__}: {e}) — "
+                      "retrying the load anyway", flush=True)
             m = _load()
         if len(self._infer_cache) >= self._infer_cache_cap:
             self._infer_cache.pop(next(iter(self._infer_cache)))  # oldest out
@@ -812,6 +874,7 @@ class Server:
         import gc  # noqa: PLC0415
 
         before = self._gpu_used_mb()
+        freed_error: str | None = None
         with self._model_lock:
             n = len(self._infer_cache)
             self._infer_cache.clear()
@@ -821,10 +884,14 @@ class Server:
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
                 torch.cuda.synchronize()
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as e:  # noqa: BLE001 — report, don't fail the request
+            freed_error = f"{type(e).__name__}: {e}"
+            print(f"[serve] VRAM release failed ({freed_error})", flush=True)
         gc.collect()
-        return {"unloaded": n, "before_mb": before, "after_mb": self._gpu_used_mb()}
+        out = {"unloaded": n, "before_mb": before, "after_mb": self._gpu_used_mb()}
+        if freed_error:  # don't report a clean sweep when the allocator threw
+            out["error"] = freed_error
+        return out
 
     # ---- operations ------------------------------------------------------------
     def submit(self, payload: dict) -> str:
@@ -838,7 +905,7 @@ class Server:
         with self._lock:
             self.jobs[job_id] = job
         self._persist(job)  # visible (as pending) the instant it's queued
-        # target="<worker name>" routes the job to that machine's inbox instead
+        # worker="<worker name>" routes the job to that machine's inbox instead
         # of this box's own training queue. Submitting ahead of the worker
         # connecting is fine — the inbox waits.
         if payload.get("worker"):
@@ -1158,6 +1225,8 @@ class Auth:
 
 
 def make_handler(server: Server, auth: "Auth"):
+    throttle = LoginThrottle()
+
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt, *args):  # quiet; job logs print directly
             pass
@@ -1188,8 +1257,27 @@ def make_handler(server: Server, auth: "Auth"):
             return False
 
         def _body(self) -> dict:
+            return json.loads(self._read_body() or b"{}")
+
+        def _read_body(self) -> bytes:
+            """The request body, refused up front when the client claims more
+            than `_MAX_BODY` — we read into memory, so the header is a promise
+            we'd otherwise allocate sight unseen."""
             length = int(self.headers.get("Content-Length") or 0)
-            return json.loads(self.rfile.read(length) or b"{}")
+            if length > _MAX_BODY:
+                self.close_connection = True  # unread body would poison keep-alive
+                raise _PayloadTooLarge(
+                    f"request body of {length} bytes exceeds the {_MAX_BODY} cap")
+            return self.rfile.read(length)
+
+        def _require(self, body: dict, *fields: str) -> bool:
+            """422 naming the first missing/empty field. Without this the route
+            table's blanket except turns a client typo into `500 KeyError`."""
+            for f in fields:
+                if not body.get(f):
+                    self._error(422, f"missing field {f!r}")
+                    return False
+            return True
 
         def _job_or_404(self, job_id: str):
             job = server.jobs.get(job_id)
@@ -1209,9 +1297,10 @@ def make_handler(server: Server, auth: "Auth"):
                     self._send(200, _NO_BUILD_PAGE.encode(),
                                ctype="text/html; charset=utf-8")
                 return
-            if parts[0] == "assets" and len(parts) == 2 and ".." not in parts[1]:
-                asset = Path(__file__).parent / "_static" / "assets" / parts[1]
-                if asset.is_file():
+            if parts[0] == "assets" and len(parts) == 2:
+                root = (Path(__file__).parent / "_static" / "assets").resolve()
+                asset = (root / parts[1]).resolve()
+                if asset.is_relative_to(root) and asset.is_file():
                     ctype = ("text/javascript" if asset.suffix == ".js"
                              else "text/css" if asset.suffix == ".css"
                              else "application/octet-stream")
@@ -1219,7 +1308,8 @@ def make_handler(server: Server, auth: "Auth"):
                 else:
                     self._error(404, "no such asset")
                 return
-            if len(parts) == 1 and parts[0].endswith(".png") and ".." not in parts[0]:
+            if len(parts) == 1 and parts[0].endswith(".png") and "/" not in parts[0] \
+                    and not parts[0].startswith("."):
                 try:
                     from importlib import resources  # noqa: PLC0415
                     blob = (resources.files("shadowlm") / "_assets" / parts[0]).read_bytes()
@@ -1342,8 +1432,16 @@ def make_handler(server: Server, auth: "Auth"):
         def do_POST(self):  # noqa: N802
             parts = self.path.split("?")[0].strip("/").split("/")
             if parts == ["v1", "login"]:  # public: exchange credentials for a token
-                b = self._body()
-                if auth.check_login(b.get("username", ""), b.get("password", "")):
+                try:
+                    b = self._body()
+                except _PayloadTooLarge as e:
+                    return self._error(413, str(e))
+                addr = self.client_address[0]
+                if not throttle.allowed(addr):
+                    return self._error(429, "too many failed logins; wait a minute")
+                ok = auth.check_login(b.get("username", ""), b.get("password", ""))
+                throttle.record(addr, ok=ok)
+                if ok:
                     token, exp = auth.issue_token()
                     self._send(200, {"token": token, "user": auth.user, "expires": exp})
                 else:
@@ -1423,15 +1521,18 @@ def make_handler(server: Server, auth: "Auth"):
                 elif len(parts) == 6 and parts[:2] == ["v1", "workers"] \
                         and parts[3] == "jobs" and parts[5] == "artifact":
                     if (job := self._job_or_404(parts[4])):
-                        length = int(self.headers.get("Content-Length") or 0)
-                        server.store_artifact(job, self.rfile.read(length))
+                        server.store_artifact(job, self._read_body())
                         self._send(200, {"ok": True})
                 elif parts == ["v1", "prewarm"]:
                     b = self._body()
+                    if not self._require(b, "model"):
+                        return
                     self._send(200, server.prewarm(
                         b["model"], b.get("adapter"), b.get("checkpoint")))
                 elif parts == ["v1", "generate"]:
                     b = self._body()
+                    if not self._require(b, "prompt", "model"):
+                        return
                     # a worker-trained shadow answers on its own machine — the
                     # adapter format matches that backend, not necessarily ours
                     wjob = server.jobs.get(b.get("adapter") or "")
@@ -1452,6 +1553,10 @@ def make_handler(server: Server, auth: "Auth"):
                     self._send(200, {"text": text})
                 elif parts == ["v1", "chat"]:
                     b = self._body()
+                    if not self._require(b, "messages", "model"):
+                        return
+                    if not isinstance(b["messages"], list):
+                        return self._error(422, "field 'messages' must be a list")
                     wjob = server.jobs.get(b.get("adapter") or "")
                     if wjob is not None and wjob.worker:
                         self._send(200, {"text": server.worker_infer(wjob, {
@@ -1470,6 +1575,8 @@ def make_handler(server: Server, auth: "Auth"):
                     self._send(200, {"text": reply.raw or reply.content})
                 else:
                     self._error(404, f"no route: POST {self.path}")
+            except _PayloadTooLarge as e:
+                self._error(413, str(e))
             except Exception as e:  # noqa: BLE001 — report, keep serving
                 self._error(500, f"{type(e).__name__}: {e}")
 

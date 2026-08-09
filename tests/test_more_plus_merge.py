@@ -8,9 +8,11 @@ added, or merged inference wouldn't match the trained behavior.
 import math
 import tempfile
 
-import torch
+import pytest
 
-from shadowlm import more_plus as mp
+torch = pytest.importorskip("torch", reason="the merge math runs on torch tensors")
+
+from shadowlm import more_plus as mp  # noqa: E402 — after the importorskip guard
 
 
 def test_merged_weight_adds_and_is_out_of_place():
