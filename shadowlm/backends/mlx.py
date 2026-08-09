@@ -165,7 +165,8 @@ class MLXBackend(Backend):
             linear_to_lora_layers(self.model, more_cfg["num_layers"],
                                   adapter_cfg["lora_parameters"])
             more.attach(self.model, self._more_index, rank=more_cfg["rank"],
-                        k=more_cfg["index_k"], num_layers=more_cfg["num_layers"])
+                        k=more_cfg["index_k"], num_layers=more_cfg["num_layers"],
+                        tau=more_cfg.get("tau"))
             self.model.load_weights(str(Path(adapter) / "adapters.safetensors"),
                                     strict=False)
             self._surface = methods.ADAPTER_MORE
@@ -474,7 +475,8 @@ class MLXBackend(Backend):
         self._write_adapter_config(out, config, num_layers)
         self._more_index.save(out)
         more.write_config(out, base_model=self.model_name, rank=config.lora_r,
-                          k=config.retrieval_k, num_layers=num_layers)
+                          k=config.retrieval_k, num_layers=num_layers,
+                          tau=config.retrieval_tau)
         self._train_config = config
         self._num_layers = num_layers
         self._tuned = True
@@ -957,7 +959,7 @@ class MLXBackend(Backend):
             linear_to_lora_layers(self.model, n_layers, self._lora_params(config))
             wrapped = more.attach(self.model, self._more_index,
                                   rank=config.lora_r, k=config.retrieval_k,
-                                  num_layers=n_layers)
+                                  num_layers=n_layers, tau=config.retrieval_tau)
             if wrapped:
                 callbacks.log(f"[more] memory attention + lora on {wrapped} layers "
                               f"(k={config.retrieval_k}, r={config.lora_r})")
@@ -1021,6 +1023,12 @@ class MLXBackend(Backend):
         finally:
             if merged:
                 self._more_plus_restore()
+            if getattr(self, "_surface", None) == methods.ADAPTER_MORE:
+                from .. import more  # noqa: PLC0415
+
+                report = more.retrieval_report(self.model, self._more_index)
+                if report:
+                    print(f"[more] {report}", flush=True)
 
     def _generate_text(self, prompt: str, max_new_tokens, temperature, top_p) -> str:
         from mlx_lm import generate  # noqa: PLC0415
@@ -1080,7 +1088,8 @@ class MLXBackend(Backend):
                 self._more_index.save(out)
                 more.write_config(out, base_model=self.model_name, rank=cfg.lora_r,
                                   k=cfg.retrieval_k,
-                                  num_layers=getattr(self, "_num_layers", cfg.retrieval_layers))
+                                  num_layers=getattr(self, "_num_layers", cfg.retrieval_layers),
+                                  tau=cfg.retrieval_tau)
             # Write the config alongside the weights so the dir is self-contained
             # and reloadable via load(adapter=path) / mlx_lm.load(adapter_path=path).
             cfg = getattr(self, "_train_config", None)

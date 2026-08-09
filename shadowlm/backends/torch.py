@@ -143,12 +143,14 @@ class TorchBackend(Backend):
                 self._more_index = more.MemoryIndex.load(adapter)
                 more.attach_torch(self.model, self._more_index,
                                   rank=more_cfg["rank"], k=more_cfg["index_k"],
-                                  num_layers=more_cfg["num_layers"])
+                                  num_layers=more_cfg["num_layers"],
+                                  tau=more_cfg.get("tau"))
                 self.model = PeftModel.from_pretrained(self.model, adapter)
                 more.load_torch_wrappers(self.model, adapter)
                 self.model._shadow_surface = methods.ADAPTER_MORE
                 self._more_meta = {"rank": more_cfg["rank"], "k": more_cfg["index_k"],
-                                   "num_layers": more_cfg["num_layers"]}
+                                   "num_layers": more_cfg["num_layers"],
+                                   "tau": more_cfg.get("tau")}
             elif more_plus_cfg:
                 # decoupled experts: base stays untouched at rest; chat() merges
                 # the BM25-routed deltas into the final FFN per call, then restores.
@@ -564,7 +566,8 @@ class TorchBackend(Backend):
                             else self.model).layers))
         if existing != methods.ADAPTER_MORE:
             wrapped = more.attach_torch(self.model, index, rank=config.lora_r,
-                                        k=config.retrieval_k, num_layers=n_layers)
+                                        k=config.retrieval_k, num_layers=n_layers,
+                                        tau=config.retrieval_tau)
             self.model = get_peft_model(self.model, LoraConfig(
                 r=config.lora_r, lora_alpha=config.lora_alpha,
                 lora_dropout=config.lora_dropout,
@@ -577,7 +580,7 @@ class TorchBackend(Backend):
                     param.requires_grad_(True)
             self.model._shadow_surface = methods.ADAPTER_MORE
             self._more_meta = {"rank": config.lora_r, "k": config.retrieval_k,
-                               "num_layers": n_layers}
+                               "num_layers": n_layers, "tau": config.retrieval_tau}
             callbacks.log(f"[more] memory attention + lora on {wrapped} layers "
                           f"(k={config.retrieval_k}, r={config.lora_r})")
 
@@ -639,7 +642,8 @@ class TorchBackend(Backend):
         more.save_torch_wrappers(self.model, out)
         index.save(out)
         more.write_config(out, base_model=self.model_name, rank=config.lora_r,
-                          k=config.retrieval_k, num_layers=n_layers)
+                          k=config.retrieval_k, num_layers=n_layers,
+                          tau=config.retrieval_tau)
         final_loss = float(result.training_loss) if result else None
         callbacks.log(f"[torch:{self.device}] more done · final loss {final_loss} · {out}")
         return FinetuneResult(checkpoint=str(out), final_loss=final_loss)
@@ -1048,6 +1052,14 @@ class TorchBackend(Backend):
         finally:
             if merged:
                 self._more_plus_restore()
+        if getattr(self.model, "_shadow_surface", None) == methods.ADAPTER_MORE:
+            from .. import more  # noqa: PLC0415
+
+            meta = getattr(self, "_more_meta", {})
+            report = more.retrieval_report(self.model, self._more_index,
+                                           tau=meta.get("tau"))
+            if report:
+                print(f"[more] {report}", flush=True)
         prompt_len = enc["input_ids"].shape[1]
         return self.tokenizer.decode(out[0][prompt_len:], skip_special_tokens=True)
 
