@@ -1,0 +1,41 @@
+# The CPU test suite, on every push and PR.
+#
+# tests/gpu/ is excluded — it needs a real CUDA box and is run with
+# `make gpu-test`. Everything under tests/ runs here.
+
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]  # the floor and the current default
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install (batteries included — the same stack users get)
+        run: |
+          python -m pip install --quiet --upgrade pip
+          python -m pip install --quiet -e '.[dev]'
+
+      - name: Run the CPU suite
+        run: python -m pytest tests/ --ignore=tests/gpu -q
+
+      - name: Byte-compile the package
+        run: python -m compileall -q shadowlm

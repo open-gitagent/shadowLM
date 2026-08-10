@@ -106,12 +106,33 @@ class CaptureProxy:
                 else:
                     self.send_error(404)
 
+            def _error(self, code: int, message: str, kind: str) -> None:
+                """An OpenAI-shaped error body. Harnesses under capture are real
+                OpenAI clients: they handle a JSON error and retry, but a dropped
+                connection reads as a transport fault and usually kills the run."""
+                data = json.dumps({"error": {"message": message, "type": kind,
+                                             "param": None, "code": None}}).encode()
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
             def do_POST(self):  # noqa: N802 (http.server API)
                 if not self.path.rstrip("/").endswith("/chat/completions"):
                     self.send_error(404)
                     return
-                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-                reply = proxy._serve(body, self.headers.get("x-session-id"))
+                try:
+                    length = int(self.headers.get("Content-Length") or 0)
+                    body = json.loads(self.rfile.read(length) or b"")
+                    if not isinstance(body, dict):
+                        raise ValueError("request body must be a JSON object")
+                except ValueError as e:
+                    return self._error(400, str(e), "invalid_request_error")
+                try:
+                    reply = proxy._serve(body, self.headers.get("x-session-id"))
+                except Exception as e:  # noqa: BLE001 — the agent gets the error, not a dead socket
+                    return self._error(500, f"{type(e).__name__}: {e}", "server_error")
                 if body.get("stream"):
                     # synthetic provider-shaped stream from the completed
                     # response — most real harnesses request streaming
@@ -131,6 +152,7 @@ class CaptureProxy:
                 self.wfile.write(data)
 
         self._server = ThreadingHTTPServer((self.host, self.port), Handler)
+        self.port = self._server.server_address[1]  # port=0 → whatever the OS gave us
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
         return self

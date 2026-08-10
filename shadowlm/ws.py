@@ -25,6 +25,11 @@ _GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"  # fixed by RFC 6455
 
 OP_TEXT, OP_CLOSE, OP_PING, OP_PONG = 0x1, 0x8, 0x9, 0xA
 
+# The largest frame either peer may claim. Job messages carry inline dataset
+# rows, so this is generous — but a header is 10 bytes and can claim 2**63,
+# and we allocate what the header says. Cap it before the read.
+MAX_PAYLOAD = 512 << 20
+
 
 def accept_key(client_key: str) -> str:
     """The Sec-WebSocket-Accept value proving the server speaks WebSocket."""
@@ -68,6 +73,8 @@ def recv_frame(sock: socket.socket) -> tuple[int, bytes]:
         (n,) = struct.unpack(">H", _read_exact(sock, 2))
     elif n == 127:
         (n,) = struct.unpack(">Q", _read_exact(sock, 8))
+    if n > MAX_PAYLOAD:
+        raise ConnectionError(f"websocket frame claims {n} bytes (cap {MAX_PAYLOAD})")
     key = _read_exact(sock, 4) if masked else None
     payload = _read_exact(sock, n)
     if key:

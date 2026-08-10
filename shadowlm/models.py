@@ -148,7 +148,8 @@ class Model:
         """Finetune on `dataset`, returning a `TrainingRun`.
 
         method: any registered training method — built-ins are lora, qlora,
-        dora, full, cpt, dpo, grpo, more, bitfit, prompt, ptuning, and adapter.
+        dora, full, cpt, dpo, grpo, more, more_plus, bitfit, prompt, ptuning,
+        and adapter.
         See `shadowlm.methods` to list or register methods. The default
         learning rate comes from the method's spec.
 
@@ -303,7 +304,8 @@ def load(
 ) -> Model:
     """Load a model.
 
-    backend: "auto" (CUDA→torch, Apple→mlx, else torch-CPU) | "mlx" | "torch".
+    backend: "auto" (CUDA→torch, Apple→mlx, else torch-CPU) | "mlx" | "torch" |
+        "remote" (a ShadowLM server) | "verl" (multi-GPU GRPO).
     accelerator: the shadow optimization layer — "auto" | "shadow" | "none".
     device: "auto" | "cuda" | "cpu" (torch backend; mlx is always the Metal GPU).
     adapter: path to a previously-trained LoRA checkpoint to attach.

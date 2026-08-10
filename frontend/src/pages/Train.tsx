@@ -215,7 +215,7 @@ export default function Train({ methods }: { methods: MethodInfo[] }) {
   }
 
   async function start() {
-    if (!ready || busy) return;
+    if (!ready || busy || !model || !ds) return;  // `ready` covers this; tsc can't see it
     setErr(""); setBusy(true);
     try {
       const out = await submitFinetune({

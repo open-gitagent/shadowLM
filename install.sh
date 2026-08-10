@@ -6,7 +6,7 @@
 # Installs shadowlm into an isolated venv (~/.shadowlm/venv), picks the right
 # training backend for your machine, and opens the studio. Re-run any time to
 # upgrade. Override with env vars:
-#   SHADOWLM_EXTRAS=cli      # lighter: just the UI/CLI, add a backend later
+#   SHADOWLM_EXTRAS=kernels  # pip extras to add (NVIDIA gets this by default)
 #   SHADOWLM_PORT=8329       # studio port
 #   SHADOWLM_NO_SERVE=1      # install only, don't launch
 set -eu

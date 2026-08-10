@@ -63,6 +63,9 @@ class TrainConfig:
     # memory tuning (more — mixture of retrieval experts)
     retrieval_k: int = 2  # memories retrieved per token
     retrieval_layers: int = 8  # how many attention layers (from the top) get memory
+    retrieval_tau: float | None = None  # abstention threshold (squared-L2 in index
+    # space): memories farther than this are masked; a token with no memory within
+    # tau gets none — off-topic queries stop fusing noise. None = always fuse.
 
     # decoupled experts (more_plus — DMoE-style final-FFN experts + BM25 routing)
     more_plus_k: int = 1  # experts merged per query; >1 composes facts but the

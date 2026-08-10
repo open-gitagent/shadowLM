@@ -29,6 +29,8 @@ INDEX_DIM = 384
 _STORE_FILE = "memory_store.npz"
 _INDEX_FILE = "index.faiss"
 _CONFIG_FILE = "more_config.json"
+_TEXTS_FILE = "memory_texts.json"
+_TRACE_CAP = 4096  # per-wrapper telemetry ring; drained by retrieval_report()
 
 
 def _build_faiss(keys):
@@ -57,12 +59,14 @@ class MemoryIndex:
     to an exact brute-force numpy search — identical results, slower at scale.
     """
 
-    def __init__(self, keys, values, index=None) -> None:
+    def __init__(self, keys, values, index=None,
+                 texts: list[str] | None = None) -> None:
         import numpy as np  # noqa: PLC0415
 
         self.keys = np.ascontiguousarray(keys, dtype="float32")
         self.values = np.ascontiguousarray(values, dtype="float32")
         self.index = index if index is not None else _build_faiss(self.keys)
+        self.texts = texts  # key-side fact texts, for telemetry (optional)
         self._keys_sq = None  # numpy-fallback cache, built on first use
 
     @classmethod
@@ -106,34 +110,44 @@ class MemoryIndex:
             if proc.returncode != 0:
                 raise RuntimeError(f"embedding subprocess failed:\n{proc.stderr[-800:]}")
             store = np.load(out_npz)
-            return cls(store["keys"], store["values"])
+            return cls(store["keys"], store["values"], texts=list(inputs))
 
     def __len__(self) -> int:
         return len(self.keys)
 
     def lookup(self, queries, k: int):
-        """queries: [n, dim] float32 numpy → (keys [n,k,dim], values [n,k,dim])."""
+        """queries: [n, dim] float32 numpy →
+        (keys [n,k,dim], values [n,k,dim], dists [n,k], idx [n,k]).
+
+        Distances are squared L2, sorted ascending — the same units whether
+        faiss or the numpy fallback answered, so a threshold means one thing.
+        """
         import numpy as np  # noqa: PLC0415
 
         q = np.ascontiguousarray(queries, dtype="float32")
         k = min(k, len(self.keys))
-        if self.index is not None:  # faiss: exact L2, results sorted ascending
-            _, idx = self.index.search(q, k)
+        if self.index is not None:  # faiss: exact squared L2, sorted ascending
+            dists, idx = self.index.search(q, k)
             idx = np.clip(idx, 0, len(self.keys) - 1)  # guard -1 padding slots
-        else:  # numpy fallback — exact L2: ||q||²-2q·K+||K||² (first term skipped)
+        else:  # numpy fallback — exact squared L2: ||q||² - 2q·K + ||K||²
             if self._keys_sq is None:
                 self._keys_sq = (self.keys ** 2).sum(axis=1)
-            dist = self._keys_sq[None, :] - 2.0 * (q @ self.keys.T)
+            q_sq = (q ** 2).sum(axis=1, keepdims=True)
+            dist = q_sq + self._keys_sq[None, :] - 2.0 * (q @ self.keys.T)
             idx = np.argpartition(dist, kth=k - 1, axis=1)[:, :k]
             order = np.argsort(np.take_along_axis(dist, idx, axis=1), axis=1)
             idx = np.take_along_axis(idx, order, axis=1)
-        return self.keys[idx], self.values[idx]
+            dists = np.take_along_axis(dist, idx, axis=1)
+        return self.keys[idx], self.values[idx], \
+            np.maximum(dists, 0.0).astype("float32"), idx
 
     def save(self, directory: str | Path) -> None:
         import numpy as np  # noqa: PLC0415
 
         d = Path(directory)
         np.savez(d / _STORE_FILE, keys=self.keys, values=self.values)
+        if self.texts is not None:
+            (d / _TEXTS_FILE).write_text(json.dumps(self.texts))
         if self.index is not None:
             try:
                 import faiss  # noqa: PLC0415
@@ -156,12 +170,19 @@ class MemoryIndex:
                 index = faiss.read_index(str(fp))
             except Exception:  # noqa: BLE001 — rebuild from keys in __init__
                 index = None
-        return cls(store["keys"], store["values"], index=index)
+        tp = d / _TEXTS_FILE
+        texts = json.loads(tp.read_text()) if tp.exists() else None
+        return cls(store["keys"], store["values"], index=index, texts=texts)
 
 
 def make_memory_attention(base_attn, hidden_size: int, index: MemoryIndex,
-                          *, rank: int, k: int):
-    """Wrap one attention module with retrieval-fused memory attention."""
+                          *, rank: int, k: int, tau: float | None = None):
+    """Wrap one attention module with retrieval-fused memory attention.
+
+    `tau` (squared-L2, index space): memories farther than this are masked out,
+    and a token whose *every* retrieved memory is beyond tau gets no memory
+    contribution at all — retrieval learns to abstain instead of fusing noise.
+    """
     import mlx.core as mx  # noqa: PLC0415
     import mlx.nn as nn  # noqa: PLC0415
     import numpy as np  # noqa: PLC0415
@@ -177,6 +198,7 @@ def make_memory_attention(base_attn, hidden_size: int, index: MemoryIndex,
             self.v_out = nn.Linear(rank, hidden_size, bias=False)
             # zero-init the output projection so training starts as a no-op
             self.v_out.weight = mx.zeros_like(self.v_out.weight)
+            self._trace: list[tuple[float, int]] = []  # (min_dist, top_idx)/token
 
         def __call__(self, x, *args, **kwargs):
             out = self.base(x, *args, **kwargs)
@@ -189,21 +211,31 @@ def make_memory_attention(base_attn, hidden_size: int, index: MemoryIndex,
             B, L, D = q.shape
             q_det = mx.stop_gradient(q).reshape(B * L, D)
             mx.eval(q_det)
-            keys_np, values_np = index.lookup(np.array(q_det), k)
+            keys_np, values_np, dists_np, idx_np = index.lookup(np.array(q_det), k)
+            if len(self._trace) < _TRACE_CAP:  # ascending: col 0 is the nearest
+                self._trace.extend(zip(dists_np[:, 0].tolist(),
+                                       idx_np[:, 0].tolist()))
             keys = mx.array(keys_np).reshape(B, L, -1, D)      # [B, L, k, D]
             values = mx.array(values_np).reshape(B, L, -1, D)  # [B, L, k, D]
 
             # per-token attention over the k retrieved memories
             scores = (q[:, :, None, :] * keys).sum(-1) / mx.sqrt(mx.array(float(D)))
+            if tau is not None:  # abstention: mask far memories, gate all-far tokens
+                valid = mx.array(dists_np <= tau).reshape(B, L, -1)
+                scores = mx.where(valid, scores, mx.array(-1e9))
+                gate = valid.max(axis=-1, keepdims=True).astype(scores.dtype)
             weights = mx.softmax(scores, axis=-1)              # [B, L, k]
             memory = (weights[..., None] * values).sum(axis=2)  # [B, L, D]
+            if tau is not None:
+                memory = memory * gate  # [B, L, 1] broadcasts over D
 
             return out + self.v_out(self.v_in(memory)).astype(out.dtype)
 
     return MemoryAttention()
 
 
-def attach(model, index: MemoryIndex, *, rank: int, k: int, num_layers: int) -> int:
+def attach(model, index: MemoryIndex, *, rank: int, k: int, num_layers: int,
+           tau: float | None = None) -> int:
     """Wrap the last `num_layers` attention modules. Returns how many wrapped."""
     layers = model.layers[-num_layers:] if num_layers > 0 else model.layers
     hidden_size = model.args.hidden_size if hasattr(model, "args") else None
@@ -213,9 +245,44 @@ def attach(model, index: MemoryIndex, *, rank: int, k: int, num_layers: int) -> 
         if attn is None or hasattr(attn, "q_in"):  # missing, or already wrapped
             continue
         size = hidden_size or attn.q_proj.weight.shape[1]
-        layer.self_attn = make_memory_attention(attn, size, index, rank=rank, k=k)
+        layer.self_attn = make_memory_attention(attn, size, index, rank=rank,
+                                                k=k, tau=tau)
         wrapped += 1
     return wrapped
+
+
+def retrieval_report(model, index: MemoryIndex | None = None,
+                     tau: float | None = None) -> str | None:
+    """Drain the wrappers' telemetry into one line: how retrieval actually went.
+
+    Answers the debugging question the hard way is guessing at: did the last
+    call's queries land near trained facts, or was the fused memory noise?
+    """
+    import statistics  # noqa: PLC0415
+
+    traces: list[tuple[float, int]] = []
+    mods = model.modules()  # torch and mlx nn.Module both provide this
+    for mod in (mods if not isinstance(mods, list) else mods):
+        trace = getattr(mod, "_trace", None)
+        if isinstance(trace, list) and trace:
+            traces.extend(trace)
+            trace.clear()
+    if not traces:
+        return None
+    dists = [d for d, _ in traces]
+    med = statistics.median(dists)
+    line = f"retrieval: {len(traces)} lookups · median d²={med:.2f} · min d²={min(dists):.2f}"
+    if tau is not None:
+        hit = sum(d <= tau for d in dists) / len(dists)
+        line += f" · {hit:.0%} within tau={tau}"
+    if index is not None and index.texts:
+        from collections import Counter  # noqa: PLC0415
+
+        top, n = Counter(i for _, i in traces).most_common(1)[0]
+        if 0 <= top < len(index.texts):
+            frag = index.texts[top][:60].replace("\n", " ")
+            line += f" · top fact ({n / len(traces):.0%}): {frag!r}"
+    return line
 
 
 # ---- torch ------------------------------------------------------------------
@@ -227,8 +294,12 @@ _WRAPPER_WEIGHTS_FILE = "retrieval_experts.pt"
 
 
 def make_memory_attention_torch(base_attn, hidden_size: int, index: MemoryIndex,
-                                *, rank: int, k: int):
-    """Torch twin of `make_memory_attention` — wraps one HF attention module."""
+                                *, rank: int, k: int, tau: float | None = None):
+    """Torch twin of `make_memory_attention` — wraps one HF attention module.
+
+    Same `tau` abstention semantics: memories beyond tau are masked, tokens
+    whose every retrieved memory is beyond tau contribute no memory at all.
+    """
     import math  # noqa: PLC0415
 
     import torch  # noqa: PLC0415
@@ -244,6 +315,7 @@ def make_memory_attention_torch(base_attn, hidden_size: int, index: MemoryIndex,
             self.v_out = nn.Linear(rank, hidden_size, bias=False)
             nn.init.zeros_(self.v_out.weight)  # start as a no-op
             self._index = index  # plain attribute — not a parameter
+            self._trace: list[tuple[float, int]] = []  # (min_dist, top_idx)/token
 
         def forward(self, hidden_states, *args, **kwargs):
             out = self.base(hidden_states, *args, **kwargs)
@@ -255,13 +327,22 @@ def make_memory_attention_torch(base_attn, hidden_size: int, index: MemoryIndex,
             B, L, D = q.shape
             with torch.no_grad():
                 q_np = q.detach().reshape(B * L, D).cpu().numpy()
-                keys_np, values_np = self._index.lookup(q_np, k)
+                keys_np, values_np, dists_np, idx_np = self._index.lookup(q_np, k)
+                if len(self._trace) < _TRACE_CAP:  # col 0 = nearest (sorted)
+                    self._trace.extend(zip(dists_np[:, 0].tolist(),
+                                           idx_np[:, 0].tolist()))
             keys = torch.from_numpy(keys_np).to(q.device).reshape(B, L, -1, D)
             values = torch.from_numpy(values_np).to(q.device).reshape(B, L, -1, D)
 
             scores = (q.unsqueeze(2) * keys).sum(-1) / math.sqrt(D)
+            if tau is not None:  # abstention: mask far memories, gate all-far tokens
+                valid = torch.from_numpy(dists_np <= tau).to(q.device).reshape(B, L, -1)
+                scores = scores.masked_fill(~valid, -1e9)
+                gate = valid.any(-1, keepdim=True).to(scores.dtype)  # [B, L, 1]
             weights = scores.softmax(-1)                       # [B, L, k]
             memory = (weights.unsqueeze(-1) * values).sum(2)   # [B, L, D]
+            if tau is not None:
+                memory = memory * gate
 
             fused = self.v_out(self.v_in(memory)).to(attn_out.dtype)
             if isinstance(out, tuple):
@@ -272,7 +353,7 @@ def make_memory_attention_torch(base_attn, hidden_size: int, index: MemoryIndex,
 
 
 def attach_torch(model, index: MemoryIndex, *, rank: int, k: int,
-                 num_layers: int) -> int:
+                 num_layers: int, tau: float | None = None) -> int:
     """Wrap the last `num_layers` attention modules of an HF causal LM."""
     decoder = model.model if hasattr(model, "model") else model
     layers = decoder.layers[-num_layers:] if num_layers > 0 else decoder.layers
@@ -283,7 +364,7 @@ def attach_torch(model, index: MemoryIndex, *, rank: int, k: int,
         if attn is None or hasattr(attn, "q_in"):  # missing, or already wrapped
             continue
         wrapper = make_memory_attention_torch(
-            attn, hidden_size, index, rank=rank, k=k)
+            attn, hidden_size, index, rank=rank, k=k, tau=tau)
         device = next(attn.parameters()).device
         for proj in (wrapper.q_in, wrapper.q_out, wrapper.v_in, wrapper.v_out):
             proj.to(device)
@@ -310,13 +391,14 @@ def load_torch_wrappers(model, directory: str | Path) -> None:
 
 
 def write_config(directory: str | Path, *, base_model: str, rank: int, k: int,
-                 num_layers: int) -> None:
+                 num_layers: int, tau: float | None = None) -> None:
     (Path(directory) / _CONFIG_FILE).write_text(json.dumps({
         "type": "more",
         "base_model": base_model,
         "rank": rank,
         "index_k": k,
         "num_layers": num_layers,
+        "tau": tau,
         "index_dim": INDEX_DIM,
         "embed_model": EMBED_MODEL,
     }, indent=2))

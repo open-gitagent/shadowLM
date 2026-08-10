@@ -28,19 +28,22 @@ make check             # compileall the package + `tsc -b` the frontend
 make build             # build the frontend, then the wheel+sdist, then twine check
 make release           # bump patch (or BUMP=minor/major, V=x.y.z), build, tag, push
 
-pytest                                       # the CPU test suite (tests/, excludes gpu/)
+make test              # the CPU test suite — exactly what CI runs
 pytest tests/test_more_plus_router.py        # a single test file
 pytest tests/test_more_plus_router.py::test_name -x   # a single test, stop on first fail
 make gpu-test          # the CUDA verification suite — run on a GPU box only
 ```
 
 `tests/gpu/` (CUDA, real GPU) is **not** part of the default `pytest` run — it's
-invoked explicitly via `make gpu-test` or `python tests/gpu/test_cuda.py`.
+invoked explicitly via `make gpu-test` or `python tests/gpu/test_cuda.py`, and
+it exits non-zero if every test skipped (no CUDA) rather than reading as a pass.
 
-Releases publish to PyPI via `.github/workflows/publish.yml` on a `v*` tag. The
-CI gate requires the version to match in **three** places: the git tag,
-`pyproject.toml`, and `shadowlm/__init__.py`. `make bump`/`make release` keep
-the latter two in sync — never edit only one.
+Two workflows: `.github/workflows/test.yml` runs the CPU suite on 3.10 + 3.12
+for every push and PR; `.github/workflows/publish.yml` builds on every push to
+main and publishes to PyPI on a `v*` tag. The publish gate requires the version
+to match in **three** places: the git tag, `pyproject.toml`, and
+`shadowlm/__init__.py`. `make bump`/`make release` keep the latter two in sync —
+never edit only one.
 
 ## Architecture
 
@@ -92,14 +95,16 @@ There are four ways data gets in, and they all end at a `Trajectory`:
   records an unmodified agent's traffic, reconstructing message-level
   trajectories (calls that extend a prior call's message prefix merge into one
   episode; use an `x-session-id` header to disambiguate interleaved conversations).
-- `traces.py` — the offline sibling of capture: OpenTelemetry **GenAI** spans →
-  `Trajectory`. Four dialects are read (OTel spec `{role,parts}`, OpenInference,
-  indexed OpenLLMetry, OpenAI-wire blobs).
+- `traces.py` — the offline sibling of `capture.py`: ingests OpenTelemetry GenAI
+  spans, groups them into conversations, and `to_dataset()`s them. Four dialects
+  are read (OTel spec `{role,parts}`, OpenInference, indexed OpenLLMetry,
+  OpenAI-wire blobs). For agents already instrumented — no proxy in the path.
 - `rl.py` — `Trajectory` / `TrajectoryGroup` / `judge_group` (LLM-judge scoring),
   fed into `method="grpo"`.
 - `apo.py` — `optimize_prompt()`: optimize the prompt instead of weights, same
   capture/judge front end, no GPU.
-- `eval.py` — `slm.evaluate()`: task quality rather than training loss.
+- `eval.py` — `slm.evaluate()` / `shadowlm eval`: score a model on a held-out set
+  (exact / contains / numeric / JSON / LLM-judge scorers).
 
 ### The synthesizer (`synth/`)
 
@@ -145,14 +150,27 @@ routing; its run progress is one step per unit (see `resolve_total_steps`).
 - `serve.py` — `python -m shadowlm.serve` / `shadowlm serve`. Pure-stdlib
   (`http.server` + threads) reference server: trains on **this machine's real
   backend** (no mock), streams metrics, ships adapters as tar.gz, serves the
-  built React UI from `_static`. One job at a time — honest reference tier.
+  built React UI from `_static`. It runs one local job at a time, and doubles as
+  the **hub** for the worker tier below (per-worker inboxes, job routing,
+  inference forwarding).
+- `worker.py` + `ws.py` — the fleet tier. `shadowlm worker --hub <url>` makes a
+  NAT'd machine dial *out* and hold one websocket open: jobs arrive on it, logs
+  and metrics stream back up it, cancels land mid-step, and playground
+  chat/generate is proxied to whichever worker holds the adapter. The trained
+  adapter ships home over plain HTTP (`POST /v1/workers/<n>/jobs/<id>/artifact`).
+  `ws.py` is a minimal RFC 6455 implementation — no fragmentation, no
+  extensions, capped frame size.
 - `remote.py` — the typed client for that JSON protocol (`/v1/finetunes`, …).
-  Same protocol backs `backend="remote"` and ShadowLM Studio.
+  Same protocol backs `backend="remote"` and ShadowLM Studio. `SHADOWLM_API_URL`
+  may list several servers; `pick()` binds to the least-busy reachable one for
+  the session (client-side routing, deliberately not a scheduler).
 - `frontend/` — React 19 + Vite + Tailwind v4 studio. `npm run build` outputs to
   `../shadowlm/_static` (the wheel ships the compiled UI; end users never need
   node). `frontend/src/api.ts` is the typed mirror of the remote protocol. The
-  pages (Datasets → Models → Train → Runs → Playground) are the capture→train→own
-  loop as a UI. Auth: studio routes are gated by username/password.
+  pages (Dashboard · Datasets → Models → Train → Runs → Playground · Machines)
+  are the capture→train→own loop as a UI. Auth has three modes — `password`,
+  `apikey`, or `none` (`GET /v1/auth` reports which) — plus long-lived, hashed,
+  individually-revocable **machine tokens** that workers authenticate with.
 
 ### The shadow accelerator (`accel.py`)
 
