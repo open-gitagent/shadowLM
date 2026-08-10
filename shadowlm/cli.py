@@ -461,6 +461,9 @@ def synth(
         help="judge gate; 0 disables it")] = 0.6,
     per_scenario: Annotated[Optional[int], typer.Option("--per-scenario",
         help="rows per scenario (default: what the output shape needs)")] = None,
+    token_budget: Annotated[Optional[int], typer.Option("--token-budget",
+        help="stop generating past this many billed tokens (a throttle, "
+             "not a hard cap — in-flight calls and scoring overshoot it)")] = None,
     seed: Annotated[int, typer.Option()] = 3407,
     out: Annotated[Optional[Path], typer.Option("--out", "-o",
         help="write the rows here (.jsonl), or the spans for --format otlp")] = None,
@@ -498,7 +501,7 @@ def synth(
     run = synthesize(teacher=teacher_model, task=task, document=document,
                      episodes=episodes, n=n, method=method, format=format,
                      min_score=min_score or None, per_scenario=per_scenario,
-                     seed=seed, verbose=False)
+                     token_budget=token_budget, seed=seed, verbose=False)
 
     table = Table(title="synthesis", title_style="slm", header_style="slm",
                   border_style="muted", show_header=False)
@@ -507,7 +510,9 @@ def synth(
     table.add_row("generated", f"{r.generated} over {r.scenarios} scenarios")
     table.add_row("rejected", f"{r.rejected_validation} invalid · {r.rejected_dedup} "
                               f"duplicate · {r.rejected_judge} low-scoring")
-    table.add_row("teacher", f"{r.teacher_calls} calls · {r.duration_s:.1f}s")
+    spend = (f" · {r.tokens:,} tokens ({r.prompt_tokens:,} in / "
+             f"{r.completion_tokens:,} out)" if r.tokens else "")
+    table.add_row("teacher", f"{r.teacher_calls} calls{spend} · {r.duration_s:.1f}s")
     if r.mean_score:
         table.add_row("mean score", f"{r.mean_score:.2f}")
     if r.note:

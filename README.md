@@ -83,7 +83,9 @@ model.finetune(run.dataset, method="lora")
 The teacher expands your task into distinct scenarios before writing anything,
 so you get coverage instead of one example rewritten 200 times. Every row is
 validated, deduplicated and judged, and **every rejection is counted** — the
-report reconciles exactly. `method=` picks the output shape from that method's
+report reconciles exactly. It reports the tokens the provider actually billed
+(never an estimate), takes a `token_budget=` throttle and a `should_stop=`
+cancel, and keeps whatever it has produced when either trips. `method=` picks the output shape from that method's
 spec: `dpo` gives preference pairs, `grpo` gives scored trajectory groups,
 `more_plus` gives query-diverse paraphrase units. `format="otlp"` emits
 OpenTelemetry GenAI spans that round-trip through `traces.from_otlp` — so the

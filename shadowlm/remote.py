@@ -14,6 +14,9 @@ Endpoints (JSON over HTTP, optional Bearer auth):
     GET  /v1/finetunes/<id>/logs         → {logs: [...]}   the server's console
     POST /v1/finetunes/<id>/cancel       → {ok}
     GET  /v1/finetunes/<id>/artifact     → tar.gz of the trained adapter dir
+    POST /v1/synth                       → {synth_id}   generate a dataset
+    GET  /v1/synth[/<id>]                → run status + live phase counters
+    POST /v1/synth/<id>/cancel           → {ok}   keeps the rows already made
     POST /v1/generate                    → {text}
     POST /v1/chat                        → {text}
     GET  /v1/workers                     → {workers: [...]} connected devices

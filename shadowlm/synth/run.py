@@ -34,8 +34,17 @@ class SynthReport:
     repaired: int = 0             # rescued by the corrective retry
     mean_score: float | None = None
     teacher_calls: int = 0
+    # Straight from the provider's `usage` block. Zero for a local teacher, or
+    # any server that doesn't report it — never estimated.
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
     duration_s: float = 0.0
     note: str | None = None       # e.g. the more_plus_group_size to train with
+
+    @property
+    def tokens(self) -> int:
+        """What the run billed — the number to multiply by your rate card."""
+        return self.prompt_tokens + self.completion_tokens
 
     @property
     def balanced(self) -> bool:
@@ -46,6 +55,9 @@ class SynthReport:
 
     def summary(self) -> str:
         score = f" · mean score {self.mean_score:.2f}" if self.mean_score else ""
+        tokens = (f" · {self.tokens:,} tokens "
+                  f"({self.prompt_tokens:,} in / {self.completion_tokens:,} out)"
+                  if self.tokens else "")
         flat = f" · {self.rejected_flat} flat-group" if self.rejected_flat else ""
         surplus = f" · {self.surplus} surplus" if self.surplus else ""
         note = f"\n  note: {self.note}" if self.note else ""
@@ -55,7 +67,8 @@ class SynthReport:
             f"  rejected: {self.rejected_validation} invalid · "
             f"{self.rejected_dedup} duplicate · {self.rejected_judge} low-scoring"
             f"{flat}{surplus} · {self.repaired} repaired\n"
-            f"  {self.teacher_calls} teacher calls · {self.duration_s:.1f}s{score}{note}"
+            f"  {self.teacher_calls} teacher calls{tokens} · "
+            f"{self.duration_s:.1f}s{score}{note}"
         )
 
     def to_dict(self) -> dict:

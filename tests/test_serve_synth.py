@@ -96,6 +96,37 @@ def test_failures_are_reported_not_swallowed(monkeypatch):
         assert "teacher is down" in status["error"]
 
 
+def test_a_run_survives_a_restart_and_stale_ones_are_not_left_spinning(monkeypatch):
+    """Records outlive the process, like training jobs. A run still marked
+    running belongs to a thread that no longer exists."""
+    with tempfile.TemporaryDirectory() as tmp:
+        server = _server(tmp)
+        monkeypatch.setattr("shadowlm.models.load", lambda *a, **k: _Teacher())
+        started = server.start_synth({
+            "name": "kept-across-restart", "task": "t", "n": 4,
+            "teacher": {"kind": "local", "model": "stub"}})
+        _wait(server, started["synth_id"])
+
+        reopened = _server(tmp)   # same work_root, fresh process
+        record = reopened.synth_status(started["synth_id"])
+        assert record["status"] == "succeeded"
+        assert record["name"] == "kept-across-restart"
+
+        # a record left mid-flight is reported stopped, not running forever
+        path = Path(tmp) / "synth" / f"{started['synth_id']}.json"
+        stale = json.loads(path.read_text())
+        stale["status"] = "running"
+        path.write_text(json.dumps(stale))
+        after = _server(tmp).synth_status(started["synth_id"])
+        assert after["status"] == "stopped"
+        assert "restarted" in after["error"]
+
+
+def test_cancelling_an_unknown_run_says_so():
+    with tempfile.TemporaryDirectory() as tmp:
+        assert _server(tmp).cancel_synth("nope") is False
+
+
 def test_status_exposes_live_phase_counters(monkeypatch):
     """The UI polls this to move its bar; without phase/done/total it can only
     show kept, which stays 0 until a whole round lands."""

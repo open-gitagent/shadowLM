@@ -25,17 +25,25 @@ class FakeTeacher:
     name = "fake"
     parallelism = 1
 
-    def __init__(self, *, scenarios=8, scores=("0.9",), junk_replies=0):
+    def __init__(self, *, scenarios=8, scores=("0.9",), junk_replies=0,
+                 tokens_per_call=0):
         self.scenarios = scenarios
         self.scores = list(scores)
         self.junk_replies = junk_replies
         self.prompts = []
         self._conversations = 0
         self._scored = 0
+        # a teacher that meters usage, like a real provider; 0 means it reports
+        # none, which must read as zero rather than an estimate
+        self.tokens_per_call = tokens_per_call
+        self.prompt_tokens = self.completion_tokens = 0
 
     def chat(self, messages, **_):
         prompt = messages[-1]["content"]
         self.prompts.append(prompt)
+        if self.tokens_per_call:
+            self.prompt_tokens += int(self.tokens_per_call * 0.6)
+            self.completion_tokens += int(self.tokens_per_call * 0.4)
         if "0.0 to 1.0" in prompt:
             score = self.scores[self._scored % len(self.scores)]
             self._scored += 1
@@ -212,6 +220,67 @@ def test_a_student_supplies_the_rejected_side_when_given():
                      student=Student(), n=2, method="dpo", verbose=False)
     assert run.dataset.rows[0]["rejected"] == "the student's weaker answer"
     assert run.trajectories[0].metadata["rejected_from"] == "student"
+
+
+def test_cancelling_keeps_the_rows_already_paid_for():
+    """The studio's stop button. Rows already generated cost real money — the
+    run ends, it doesn't discard."""
+    stop = []
+
+    def watch(done, total, phase):
+        if phase == "generating":  # the user hits stop mid-run
+            stop.append(1)
+
+    run = synthesize(task="t", teacher=FakeTeacher(scenarios=8), n=40,
+                     verbose=False, should_stop=lambda: bool(stop),
+                     on_progress=watch)
+    assert 0 < run.report.kept < 40
+    assert "cancelled" in run.report.note
+    # and what survived was still scored, or it would fail the gate and the
+    # spend would have bought nothing
+    assert all(t.reward > 0 for t in run.trajectories)
+
+
+def test_a_token_budget_stops_the_run_and_says_so():
+    """The ceiling on what a run can spend, in the only unit that isn't a
+    guess — tokens the provider actually billed."""
+    teacher = FakeTeacher(scenarios=8, tokens_per_call=100)
+    run = synthesize(task="t", teacher=teacher, n=40, verbose=False,
+                     token_budget=1000)
+    assert 0 < run.report.kept < 40
+    assert run.report.tokens >= 1000
+    assert "token budget spent" in run.report.note
+
+
+def test_token_usage_is_reported_not_estimated():
+    teacher = FakeTeacher(tokens_per_call=100)
+    run = synthesize(task="t", teacher=teacher, n=4, verbose=False)
+    assert run.report.prompt_tokens == 60 * run.report.teacher_calls
+    assert run.report.completion_tokens == 40 * run.report.teacher_calls
+    assert run.report.tokens == run.report.prompt_tokens + run.report.completion_tokens
+    assert f"{run.report.tokens:,} tokens" in run.report.summary()
+
+
+def test_a_teacher_without_usage_reports_zero_rather_than_guessing():
+    run = synthesize(task="t", teacher=FakeTeacher(), n=4, verbose=False)
+    assert run.report.tokens == 0
+    assert "tokens" not in run.report.summary()
+
+
+def test_a_generation_outage_still_lets_judging_finish():
+    """The two phases fail independently: rows that were already generated
+    have been paid for, and must still be scored."""
+    class Flaky(FakeTeacher):
+        def chat(self, messages, **_):
+            if ("training conversation" in messages[-1]["content"]
+                    and self._conversations >= 2):
+                self._conversations += 1
+                raise RuntimeError("boom: connection reset")
+            return super().chat(messages)
+
+    run = synthesize(task="t", teacher=Flaky(scenarios=4), n=8, verbose=False)
+    assert len(run.dataset.rows) == 2
+    assert all(t.reward > 0 for t in run.trajectories), "judged despite the outage"
 
 
 def test_progress_ticks_per_job_not_per_round():

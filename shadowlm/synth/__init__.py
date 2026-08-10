@@ -96,6 +96,8 @@ def synthesize(
     min_score: float | None = 0.6,
     dedup_threshold: float = 0.7,
     per_scenario: int | None = None,
+    token_budget: int | None = None,
+    should_stop=None,
     seed: int = 3407,
     verbose: bool = True,
     on_progress=None,
@@ -118,6 +120,14 @@ def synthesize(
         least this much (token Jaccard).
     per_scenario: rows generated per scenario. Defaults to what the shape needs
         — see `default_per_scenario`.
+    token_budget: stop *generating* once the teacher has billed this many
+        tokens, keeping whatever was produced. A throttle, not a hard ceiling:
+        the total overshoots by the calls already in flight (up to the teacher's
+        parallelism) plus the scoring of rows already made, which is deliberate
+        — unscored rows fail the gate, wasting everything spent on them. Expect
+        the final figure to exceed the budget by a wide margin on small budgets.
+    should_stop: called between jobs; return True to end the run early and keep
+        what it has. How the studio's cancel button reaches in.
     on_progress: `(done, total, phase)` as work completes, where phase is
         "planning", "generating", "judging" or "kept". Called per finished job,
         not per round, so a caller can show real movement.
@@ -145,6 +155,38 @@ def synthesize(
     # One breaker per phase: generation failures must not pre-emptively cancel
     # the judging of rows that were already generated and paid for.
     gen_breaker, judge_breaker = _Breaker(), _Breaker()
+
+    def spent() -> int:
+        return teacher.tokens + (0 if scorer is teacher else scorer.tokens)
+
+    def generation_halted() -> str | None:
+        """Why generating should stop, or None to carry on: the caller asking,
+        the budget running out, or the teacher failing repeatedly."""
+        if should_stop is not None and should_stop():
+            return "cancelled"
+        if token_budget is not None and spent() >= token_budget:
+            return f"token budget spent ({spent():,} of {token_budget:,})"
+        if gen_breaker.open:
+            return f"the teacher kept failing ({gen_breaker.last_error})"
+        return None
+
+    def judging_halted() -> str | None:
+        """Judging stops only if the judge itself is failing.
+
+        A cancel or an exhausted budget deliberately doesn't reach here: those
+        rows have already been paid for, and leaving them unscored means they
+        fail the gate and the entire spend is wasted. Finishing the scoring
+        costs a small fraction of what generating them did, so overshooting a
+        budget slightly is the cheap side of that trade.
+        """
+        if judge_breaker.open:
+            return f"the judge kept failing ({judge_breaker.last_error})"
+        return None
+
+    def halted() -> str | None:
+        """Whether the run as a whole is finished early — either phase counts."""
+        return generation_halted() or judging_halted()
+
     kept: list = []
     rejected: list = []
     covered: list[str] = []
@@ -160,7 +202,7 @@ def synthesize(
         return lambda done, total: on_progress(done, total, phase)
 
     for round_no in range(1, _MAX_ROUNDS + 1):
-        if len(kept) >= n:
+        if len(kept) >= n or halted():
             break
         if on_progress:
             on_progress(0, 1, "planning")
@@ -173,9 +215,11 @@ def synthesize(
         covered.extend(leaf.scenario for leaf in leaves)
         outcomes = _generate(leaves, source, teacher, mode=mode, tools=tools,
                              student=student, per_scenario=per_scenario,
-                             breaker=gen_breaker, on_done=tick("generating"))
+                             breaker=gen_breaker, halted=generation_halted,
+                             on_done=tick("generating"))
         _score(outcomes, scorer, enabled=min_score is not None,
-               breaker=judge_breaker, on_done=tick("judging"))
+               breaker=judge_breaker, halted=judging_halted,
+               on_done=tick("judging"))
         before = len(kept)
         for outcome in outcomes:
             _absorb(outcome, report=report, dedup=dedup, min_score=gate,
@@ -185,8 +229,8 @@ def synthesize(
                   flush=True)
         if on_progress:
             on_progress(len(kept), n, "kept")
-        if gen_breaker.open or judge_breaker.open:
-            break  # the teacher is down — keep what we have rather than lose it
+        if halted():
+            break  # keep what we have rather than lose it
         if len(kept) == before:
             break  # a whole round survived nothing — stop spending teacher calls
 
@@ -195,11 +239,13 @@ def synthesize(
         # paraphrase units are left whole because MoRE+ groups by fixed size
         report.surplus = len(kept) - n
         kept = kept[:n]
-    failing = gen_breaker.last_error or judge_breaker.last_error
+    stop_reason = halted()
     if not kept:
+        if stop_reason == "cancelled":
+            raise RuntimeError("synthesis was cancelled before any row survived")
         gated = (f", {report.rejected_judge} below min_score={min_score}"
                  if gate is not None else "")
-        errors = f" Teacher errors: {failing}." if failing else ""
+        errors = f" Stopped: {stop_reason}." if stop_reason else ""
         raise RuntimeError(
             f"synthesis produced nothing usable — {report.rejected_validation} "
             f"invalid, {report.rejected_dedup} duplicate{gated}.{errors} Loosen "
@@ -212,12 +258,16 @@ def synthesize(
               if "judge_score" in t.metrics]
     report.mean_score = sum(scored) / len(scored) if scored else None
     report.teacher_calls = teacher.calls + (0 if scorer is teacher else scorer.calls)
+    report.prompt_tokens = teacher.prompt_tokens + (
+        0 if scorer is teacher else scorer.prompt_tokens)
+    report.completion_tokens = teacher.completion_tokens + (
+        0 if scorer is teacher else scorer.completion_tokens)
     report.duration_s = time.time() - started
     notes = []
     if mode == "paraphrases":
         notes.append(f"train with more_plus_group_size={per_scenario}")
-    if gen_breaker.open or judge_breaker.open:
-        notes.append(f"stopped early — the teacher kept failing ({failing})")
+    if stop_reason:
+        notes.append(f"stopped early — {stop_reason}")
     report.note = " · ".join(notes) or None
     if verbose:
         print(report.summary(), flush=True)
@@ -262,12 +312,13 @@ def resolve_output(method: str | None, fmt: str | None) -> tuple[str, str]:
 
 
 def _generate(leaves, source, teacher, *, mode, tools, student, per_scenario,
-              breaker, on_done=None):
+              breaker, halted, on_done=None):
     """One job per row wanted, run at the teacher's parallelism.
 
     A job that raises is counted as invalid, not fatal — the rows already kept
-    were paid for. Once the breaker opens, remaining jobs are skipped outright
-    (returning None, counted nowhere) instead of each burning a retry cycle.
+    were paid for. Once the run is halted (cancelled, out of budget, or the
+    teacher is down), remaining jobs are skipped outright — returning None,
+    counted nowhere — instead of each burning a retry cycle.
     """
     jobs = []
     for i, leaf in enumerate(leaves):
@@ -289,7 +340,7 @@ def _generate(leaves, source, teacher, *, mode, tools, student, per_scenario,
 
     def guarded(job):
         def run():
-            if breaker.open:
+            if halted():
                 return None
             try:
                 out = job()
@@ -305,7 +356,7 @@ def _generate(leaves, source, teacher, *, mode, tools, student, per_scenario,
     return [r for r in results if r is not None]
 
 
-def _score(outcomes, judge, *, enabled: bool, breaker, on_done=None) -> None:
+def _score(outcomes, judge, *, enabled: bool, breaker, halted, on_done=None) -> None:
     """Judge one row per outcome; a unit's rows share an answer, so one score
     speaks for all of them (and a conversation outcome is a single row anyway).
 
@@ -319,7 +370,7 @@ def _score(outcomes, judge, *, enabled: bool, breaker, on_done=None) -> None:
 
     def guarded(traj):
         def run():
-            if breaker.open:
+            if halted():
                 return
             try:
                 _judge(traj, judge)

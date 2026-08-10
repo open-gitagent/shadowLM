@@ -126,6 +126,13 @@ other; `tests/test_synth_otlp_roundtrip.py` is what holds them together.
 Nothing is dropped silently: `SynthReport` reconciles exactly, and
 `report.balanced` asserts it.
 
+A run costs money, so it is meterable and stoppable. Tokens come from the
+provider's own `usage` block — never estimated, and there is deliberately no
+price table to go stale. `token_budget=` and `should_stop=` end a run early
+while **keeping** what it produced; both gate *generation* only, because
+leaving already-generated rows unscored fails them at the gate and wastes the
+whole spend. Studio runs persist under `work_root/synth/` and are cancellable.
+
 ### Signature methods (MoRE)
 
 `more.py` / `more_plus.py` implement "mixture of retrieval experts" — facts fused

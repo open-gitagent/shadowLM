@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { Database, Search, Sparkles, Upload } from "lucide-react";
 import {
   addHFDataset, createDataset, deleteDataset, getDataset, getDatasets, getMethods,
-  getSynthRun, hfInfo, previewHF, startSynth,
+  cancelSynth, getSynthRun, hfInfo, previewHF, startSynth,
 } from "../api";
 import type { DatasetMeta, HFPreview, MethodInfo, SynthStatus } from "../api";
 import { Field, Modal, ModalHeader, PageHeader, btnGhost, btnPrimary } from "../ui";
@@ -248,6 +248,7 @@ function SynthForm({ onDone }: { onDone: () => void }) {
   const [key, setKey] = useState("");
   const [methods, setMethods] = useState<MethodInfo[]>([]);
   const [run, setRun] = useState<SynthStatus | null>(null);
+  const [cancelling, setCancelling] = useState(false);
   const [err, setErr] = useState("");
 
   useEffect(() => { getMethods().then((m) => setMethods(m.methods)).catch(() => {}); }, []);
@@ -297,6 +298,7 @@ function SynthForm({ onDone }: { onDone: () => void }) {
           </span>
           <span className="text-muted-foreground">
             {run.kept} / {run.requested} rows kept
+            {!!run.tokens && ` · ${run.tokens.toLocaleString()} tokens`}
           </span>
         </div>
         <div className="h-1.5 bg-muted rounded overflow-hidden">
@@ -310,7 +312,13 @@ function SynthForm({ onDone }: { onDone: () => void }) {
             {run.logs.join("\n")}
           </pre>
         )}
-        {run.status !== "running" && (
+        {run.status === "running" ? (
+          // stopping keeps the rows already generated, so this is safe to offer
+          <button onClick={() => { setCancelling(true); cancelSynth(run.synth_id).catch(() => {}); }}
+            disabled={cancelling} className={btnGhost}>
+            {cancelling ? "stopping…" : "stop and keep what's done"}
+          </button>
+        ) : (
           <button onClick={onDone} className={btnPrimary}>done ›</button>
         )}
       </div>

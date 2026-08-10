@@ -20,6 +20,7 @@ import urllib.request
 
 _RETRIES = 3
 _RETRY_AFTER_S = 1.0  # doubled ×4 per attempt: 1s, 4s
+_RETRY_AFTER_CAP = 60.0  # honour Retry-After, but never park a worker for long
 _RETRY_CODES = frozenset({408, 429, 500, 502, 503, 504})
 _OPENAI = "https://api.openai.com"
 
@@ -49,7 +50,14 @@ class OpenAIChatTeacher:
                 "base_url= at a local server (vLLM, Ollama) that needs no key.")
         self.parallelism = max(1, parallelism)
         self.timeout = timeout
-        self._json_ok = True  # flipped off the first time the server rejects it
+        self._json_ok = True   # flipped off the first time the server rejects it
+        self._token_arg = "max_tokens"  # newer models want max_completion_tokens
+        # Tokens the provider actually billed, straight from its `usage` block —
+        # ground truth, and the only honest basis for what a run cost. No price
+        # table here: those go stale and would quietly lie about money.
+        self.prompt_tokens = 0
+        self.completion_tokens = 0
+        self._usage_lock = threading.Lock()
 
     def chat(self, messages: list[dict], *, temperature: float = 0.7,
              max_new_tokens: int = 1024, json_only: bool = False, **_) -> str:
@@ -58,7 +66,7 @@ class OpenAIChatTeacher:
         source; a server that rejects it gets one plain retry and is never
         asked again."""
         payload = {"model": self.model, "messages": messages,
-                   "temperature": temperature, "max_tokens": max_new_tokens}
+                   "temperature": temperature, self._token_arg: max_new_tokens}
         if json_only and self._json_ok:
             payload["response_format"] = {"type": "json_object"}
         headers = {"Content-Type": "application/json"}
@@ -73,19 +81,33 @@ class OpenAIChatTeacher:
             try:
                 with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                     data = json.loads(resp.read())
+                self._record_usage(data.get("usage"))
                 return data["choices"][0]["message"].get("content") or ""
             except urllib.error.HTTPError as e:
-                if e.code == 400 and "response_format" in payload:
-                    # this server doesn't speak JSON mode — drop it for good
-                    # and retry plainly (doesn't consume a retry attempt)
-                    self._json_ok = False
-                    del payload["response_format"]
-                    continue
+                # Two capability mismatches a server reports as a plain 400.
+                # Adapt once, remember, and retry without consuming an attempt.
+                if e.code == 400:
+                    detail = e.read()[:400].decode("utf-8", "replace")
+                    if "response_format" in payload and "response_format" in detail:
+                        self._json_ok = False
+                        del payload["response_format"]
+                        continue
+                    if "max_completion_tokens" in detail and "max_tokens" in payload:
+                        # reasoning models rejected the older parameter name
+                        self._token_arg = "max_completion_tokens"
+                        payload[self._token_arg] = payload.pop("max_tokens")
+                        continue
+                    raise RuntimeError(
+                        f"teacher {self.name!r} returned HTTP 400: {detail[:200]}"
+                    ) from None
                 if final or e.code not in _RETRY_CODES:
                     detail = e.read()[:200].decode("utf-8", "replace")
                     raise RuntimeError(
                         f"teacher {self.name!r} returned HTTP {e.code}: {detail}"
                     ) from None
+                # A rate limiter that tells us how long to wait knows better
+                # than our backoff curve does.
+                delay = _retry_after(e.headers, delay)
             except (urllib.error.URLError, TimeoutError) as e:
                 if final:
                     raise RuntimeError(
@@ -94,6 +116,22 @@ class OpenAIChatTeacher:
             attempt += 1
             time.sleep(delay)
             delay *= 4
+
+    def _record_usage(self, usage) -> None:
+        if not isinstance(usage, dict):
+            return  # a server that doesn't report usage simply counts as zero
+        with self._usage_lock:
+            self.prompt_tokens += int(usage.get("prompt_tokens") or 0)
+            self.completion_tokens += int(usage.get("completion_tokens") or 0)
+
+
+def _retry_after(headers, fallback: float) -> float:
+    """The server's own Retry-After, in seconds, or our backoff if it said none."""
+    raw = headers.get("Retry-After") if headers else None
+    try:
+        return max(0.0, min(float(raw), _RETRY_AFTER_CAP))
+    except (TypeError, ValueError):
+        return fallback  # an HTTP-date form, or nothing — keep the curve
 
 
 class _ModelTeacher:
@@ -116,7 +154,7 @@ class _ModelTeacher:
 
 
 class CountingTeacher:
-    """Wraps a teacher to count calls for the run report."""
+    """Wraps a teacher to meter calls and tokens for the run report."""
 
     def __init__(self, inner) -> None:
         self._inner = inner
@@ -128,6 +166,20 @@ class CountingTeacher:
         with self._lock:
             self.calls += 1
         return self._inner.chat(messages, **kwargs)
+
+    # A teacher that doesn't report usage — a local model, or a server that
+    # omits the block — reads as zero rather than guessing.
+    @property
+    def prompt_tokens(self) -> int:
+        return getattr(self._inner, "prompt_tokens", 0)
+
+    @property
+    def completion_tokens(self) -> int:
+        return getattr(self._inner, "completion_tokens", 0)
+
+    @property
+    def tokens(self) -> int:
+        return self.prompt_tokens + self.completion_tokens
 
 
 def run_jobs(jobs, *, workers: int, on_done=None) -> list:

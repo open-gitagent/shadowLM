@@ -156,9 +156,10 @@ export const deleteDataset = (id: string) =>
 export interface SynthStatus {
   synth_id: string;
   name: string;
-  status: "running" | "succeeded" | "failed";
+  status: "running" | "succeeded" | "failed" | "stopped";
   kept: number;
   requested: number;
+  tokens?: number;   // what the provider billed — zero for a local teacher
   // live phase counters — a round's generating/judging batches tick as each
   // job lands, so the bar moves instead of waiting for the whole round
   phase?: "starting" | "planning" | "generating" | "judging" | "kept";
@@ -181,6 +182,8 @@ export interface SynthRequest {
 export const startSynth = (body: SynthRequest) =>
   api<{ synth_id: string }>("/v1/synth", { method: "POST", body: JSON.stringify(body) });
 export const getSynthRun = (id: string) => api<SynthStatus>(`/v1/synth/${id}`);
+export const cancelSynth = (id: string) =>
+  api<{ ok: boolean }>(`/v1/synth/${id}/cancel`, { method: "POST" });
 export const getModels = () =>
   api<{ catalog: CatalogModel[]; recent: string[]; server_backend: string }>("/v1/models");
 export const getDownloads = () =>
