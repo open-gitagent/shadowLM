@@ -348,6 +348,11 @@ def main() -> int:
     passed = sum(1 for _, s, _ in _RESULTS if s == "PASS")
     skipped = sum(1 for _, s, _ in _RESULTS if s == "SKIP")
     print(f" {passed} passed · {fails} failed · {skipped} skipped")
+    if not fails and not passed:
+        # every test skipped (no CUDA): exiting 0 here reads as "the GPU suite
+        # passed" when nothing ran at all.
+        print(" nothing ran — this suite needs a CUDA box (see `make gpu-test`)")
+        return 2
     return 1 if fails else 0
 
 

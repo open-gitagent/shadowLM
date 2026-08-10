@@ -38,7 +38,8 @@ export interface MethodInfo {
   description: string;
   default_lr: number;
   trainer: string;
-  adapter: string;  // lora | dora | more | bottleneck | bitfit | prompt | ptuning | none
+  // lora | dora | more | more_plus | bottleneck | bitfit | prompt | ptuning | none
+  adapter: string;
 }
 
 export interface JobSummary {
@@ -101,6 +102,8 @@ export interface AuthInfo { auth_required: boolean; mode: "password" | "apikey" 
 export const getAuthInfo = () =>
   fetch("/v1/auth").then((r) => r.json() as Promise<AuthInfo>);
 
+export interface LoginResponse { token: string; user: string; expires: number; }
+
 export async function login(username: string, password: string): Promise<void> {
   const r = await fetch("/v1/login", {
     method: "POST", headers: { "Content-Type": "application/json" },
@@ -110,14 +113,23 @@ export async function login(username: string, password: string): Promise<void> {
     const d = await r.json().catch(() => ({} as { error?: string }));
     throw new Error(d.error || "login failed");
   }
-  const { token } = (await r.json()) as { token: string };
+  const { token } = (await r.json()) as LoginResponse;
   apiKey.set(token);
 }
 
 export const logout = () => apiKey.clear();
 
-export const getHealth = () =>
-  api<{ ok: boolean; backend: string; version: string }>("/v1/health");
+// the server spreads capacity() into this — fleet depth, not just liveness
+export interface Health {
+  ok: boolean;
+  backend: string;
+  version: string;
+  gpus: number;
+  running: number;
+  pending: number;
+  workers: number;
+}
+export const getHealth = () => api<Health>("/v1/health");
 export const getDatasets = () =>
   api<{ datasets: DatasetMeta[] }>("/v1/datasets");
 export const getDataset = (id: string) => api<DatasetMeta>(`/v1/datasets/${id}`);
@@ -194,7 +206,22 @@ export const getCheckpoints = (id: string) =>
   api<{ checkpoints: Checkpoint[] }>(`/v1/finetunes/${id}/checkpoints`);
 export const cancelJob = (id: string) =>
   api<{ ok: boolean }>(`/v1/finetunes/${id}/cancel`, { method: "POST" });
-export const submitFinetune = (body: object) =>
+export interface DatasetPayload { rows: unknown[]; format?: string }
+
+// what POST /v1/finetunes accepts — either `dataset` rows or a `dataset_id`.
+// eval_dataset is rows, a holdout ("20%" or a 0–1 fraction), or null for none.
+export interface FinetuneRequest {
+  base_model: string;
+  config: Record<string, unknown>;
+  name?: string;
+  dataset?: DatasetPayload | null;
+  dataset_id?: string | null;
+  eval_dataset?: DatasetPayload | string | number | null;
+  worker?: string | null;
+  load_in_4bit?: boolean;
+  max_seq_length?: number;
+}
+export const submitFinetune = (body: FinetuneRequest) =>
   api<{ job_id: string }>("/v1/finetunes", { method: "POST", body: JSON.stringify(body) });
 export const prewarm = (model: string, adapter: string | null, checkpoint: number | null = null) =>
   api<{ ready: boolean; error?: string }>("/v1/prewarm", {

@@ -25,9 +25,29 @@ import subprocess
 import sys
 from pathlib import Path
 
+from .. import methods
 from ..data import Dataset
 from ..training import TrainConfig, resolve_total_steps
 from .base import Backend, Callbacks, FinetuneResult
+
+# VERL GRPO is full-parameter and drives its own optimizer, scheduler, and
+# batching through Hydra, so most of TrainConfig has nowhere to land. Say which
+# — a silently dropped hyperparameter is worse than an unsupported one.
+_UNMAPPED = (
+    "weight_decay", "max_grad_norm", "lr_scheduler_type", "optim",
+    "warmup_steps", "warmup_ratio", "per_device_train_batch_size",
+    "gradient_accumulation_steps", "seed", "save_steps", "eval_steps",
+    "logging_steps", "report_to", "packing", "use_rslora",
+    "resume_from_checkpoint", "lora_r", "lora_alpha", "lora_dropout",
+    "target_modules", "train_on_completions",
+)
+
+
+def _ignored_fields(config: TrainConfig) -> list[str]:
+    """The TrainConfig fields this run sets but VERL won't see."""
+    default = TrainConfig(method=config.method)
+    return [name for name in _UNMAPPED
+            if getattr(config, name, None) != getattr(default, name, None)]
 
 
 def _build_overrides(model: str, config: TrainConfig, *, train_parquet: str,
@@ -40,6 +60,9 @@ def _build_overrides(model: str, config: TrainConfig, *, train_parquet: str,
     """
     total = resolve_total_steps(config, n_rows)
     group = config.grpo_group_size or 8
+    # a direct Backend.finetune() bypasses the method-default resolution that
+    # models.py/serve.py do, so learning_rate can still be None here
+    lr = config.learning_rate or methods.get(config.method).default_learning_rate
     ov = [
         "algorithm.adv_estimator=grpo",
         f"data.train_files=[{train_parquet}]",
@@ -47,7 +70,7 @@ def _build_overrides(model: str, config: TrainConfig, *, train_parquet: str,
         f"data.max_response_length={config.grpo_max_completion_length or 512}",
         f"data.max_prompt_length={config.max_seq_length}",
         f"actor_rollout_ref.model.path={model}",
-        f"actor_rollout_ref.actor.optim.lr={config.learning_rate:g}",
+        f"actor_rollout_ref.actor.optim.lr={lr:g}",
         f"actor_rollout_ref.actor.kl_loss_coef={config.beta}",
         f"actor_rollout_ref.rollout.n={group}",
         "actor_rollout_ref.rollout.name=vllm",
@@ -135,20 +158,35 @@ class VerlBackend(Backend):
         # VERL loads the model inside its own workers; we just remember which one.
         self.model_name = name
         self._adapter = adapter
+        self.max_seq_length = max_seq_length  # reaches VERL as data.max_prompt_length
+        unhonored = [n for n, on in (("load_in_4bit", load_in_4bit),
+                                     ("adapter", adapter is not None)) if on]
+        if unhonored:
+            print(f"[verl] note: {', '.join(unhonored)} ignored — VERL loads the "
+                  "base model full-precision in its own workers", flush=True)
 
     def finetune(self, dataset: Dataset, config: TrainConfig, callbacks: Callbacks,
                  output_dir: str, eval_dataset: Dataset | None = None,
                  reward_fns: list | None = None) -> FinetuneResult:
-        if config.method != "grpo":
+        # Dispatch on the spec, never the name: any registered method whose
+        # trainer is grpo runs here.
+        spec = methods.get(config.method)
+        if spec.trainer != "grpo":
             raise ValueError(
-                f"the verl backend trains method='grpo' only (got {config.method!r}); "
-                "use backend='torch'/'mlx' for SFT/DPO/LoRA, or capture→judge→grpo here."
+                f"the verl backend runs grpo-trainer methods only (method="
+                f"{config.method!r} uses trainer={spec.trainer!r}); use "
+                "backend='torch'/'mlx' for SFT/DPO/LoRA, or capture→judge→grpo here."
             )
         if not reward_fns:
             raise ValueError(
                 "verl GRPO needs reward_fns=[...] — it generates rollouts and scores "
                 "them online (it can't learn from pre-collected trajectories)."
             )
+        ignored = _ignored_fields(config)
+        if ignored:
+            callbacks.log(f"[verl] note: {', '.join(ignored)} not mapped to a VERL "
+                          "override — ignored (see SHADOWLM_VERL_OVERRIDES to set "
+                          "VERL's own knobs directly)")
         if not self.is_available():
             raise RuntimeError("verl backend needs `pip install shadowlm[verl]` (verl + vllm + ray).")
 
@@ -193,9 +231,22 @@ class VerlBackend(Backend):
         callbacks.log(f"[verl] done · checkpoint {checkpoint}")
         return FinetuneResult(checkpoint=checkpoint, final_loss=last_loss)
 
+    # VERL owns the weights inside its own Ray workers, so nothing here can
+    # answer a prompt or write a portable adapter — point at the checkpoint.
+    _NO_INFERENCE = (
+        "the verl backend trains only — load the trained checkpoint for "
+        "{what} with backend='torch': slm.load(path, backend='torch')."
+    )
+
     def generate(self, prompt: str, *, max_new_tokens: int, temperature: float,
                  top_p: float, **kwargs) -> str:
-        raise NotImplementedError(
-            "the verl backend trains only — load the trained checkpoint for "
-            "inference with backend='torch': slm.load(path, backend='torch')."
-        )
+        raise NotImplementedError(self._NO_INFERENCE.format(what="inference"))
+
+    def chat(self, messages: list[dict], *, tools: list[dict] | None = None,
+             max_new_tokens: int, temperature: float, top_p: float, **kwargs) -> str:
+        raise NotImplementedError(self._NO_INFERENCE.format(what="chat"))
+
+    def save(self, path: str, *, fmt: str = "adapter") -> str:
+        raise NotImplementedError(self._NO_INFERENCE.format(
+            what="saving") + " VERL already wrote its checkpoints to the run's "
+            "output_dir (global_step_*).")

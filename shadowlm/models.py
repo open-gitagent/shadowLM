@@ -306,7 +306,8 @@ def load(
 ) -> Model:
     """Load a model.
 
-    backend: "auto" (CUDA→torch, Apple→mlx, else torch-CPU) | "mlx" | "torch".
+    backend: "auto" (CUDA→torch, Apple→mlx, else torch-CPU) | "mlx" | "torch" |
+        "remote" (a ShadowLM server) | "verl" (multi-GPU GRPO).
     accelerator: the shadow optimization layer — "auto" | "shadow" | "none".
     device: "auto" | "cuda" | "cpu" (torch backend; mlx is always the Metal GPU).
     adapter: path to a previously-trained LoRA checkpoint to attach.

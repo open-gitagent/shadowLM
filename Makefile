@@ -62,6 +62,11 @@ check:  ## compile the package + typecheck the frontend
 	$(PY) -m compileall -q shadowlm
 	cd frontend && npx tsc -b
 
+.PHONY: test
+test: $(PY)  ## the CPU test suite (what CI runs; tests/gpu needs a GPU box)
+	$(PIP) install -q pytest
+	$(PY) -m pytest tests/ --ignore=tests/gpu -q
+
 .PHONY: gpu-test
 gpu-test:  ## the CUDA verification suite (run on a GPU box)
 	$(PY) tests/gpu/test_cuda.py
