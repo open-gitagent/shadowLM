@@ -91,6 +91,36 @@ def _is_quantized(model) -> bool:
     return any(isinstance(m, nn.QuantizedLinear) for _, m in model.named_modules())
 
 
+def _distill_divergence_mx(student_logits, teacher_logits, alpha: float = 0.0,
+                           *, knob: str = "alpha"):
+    """Per-token divergence between full next-token distributions — the
+    self-distillation loss shared by the sdft and sdpo loops.
+
+    The mx twin of the torch backend's `_distill_divergence`, same semantics:
+    float32 logit slices (..., C, V) restricted to the completion positions;
+    alpha=0 → forward KL(teacher‖student), 1 → reverse KL, between → the
+    generalized JSD. Returns per-token divergences, shape (..., C).
+    """
+    import math  # noqa: PLC0415
+
+    import mlx.core as mx  # noqa: PLC0415
+
+    if not 0.0 <= alpha <= 1.0:
+        raise ValueError(
+            f"{knob} must be in [0, 1] (got {alpha!r}) — 0 is forward KL, "
+            "1 reverse KL, between generalized JSD"
+        )
+    s = student_logits - mx.logsumexp(student_logits, axis=-1, keepdims=True)
+    t = teacher_logits - mx.logsumexp(teacher_logits, axis=-1, keepdims=True)
+    if alpha == 0.0:
+        return (mx.exp(t) * (t - s)).sum(axis=-1)
+    if alpha == 1.0:
+        return (mx.exp(s) * (s - t)).sum(axis=-1)
+    m = mx.logaddexp(s + math.log(1.0 - alpha), t + math.log(alpha))
+    return (alpha * (mx.exp(t) * (t - m))
+            + (1.0 - alpha) * (mx.exp(s) * (s - m))).sum(axis=-1)
+
+
 class MLXBackend(Backend):
     name = "mlx"
 
@@ -258,6 +288,13 @@ class MLXBackend(Backend):
         if spec.trainer == "grpo":
             return self._finetune_grpo(dataset, config, callbacks, output_dir,
                                        eval_dataset, spec, shadow, iters, num_layers,
+                                       reward_fns)
+        if spec.trainer == "sdft":
+            return self._finetune_sdft(dataset, config, callbacks, output_dir,
+                                       eval_dataset, spec, num_layers)
+        if spec.trainer == "sdpo":
+            return self._finetune_sdpo(dataset, config, callbacks, output_dir,
+                                       eval_dataset, spec, num_layers,
                                        reward_fns)
 
         # Attach the trainable surface once. A repeated finetune (or a finetune
@@ -778,6 +815,496 @@ class MLXBackend(Backend):
         self._num_layers = num_layers
         self._tuned = True
         callbacks.log(f"[mlx] done · final pg loss {last_loss} · adapter {out}")
+        return FinetuneResult(checkpoint=str(out), final_loss=last_loss)
+
+    def _finetune_sdft(self, dataset: Dataset, config: TrainConfig,
+                       callbacks: Callbacks, output_dir: str,
+                       eval_dataset: Dataset | None, spec,
+                       num_layers: int) -> FinetuneResult:
+        """On-policy self-distillation from demonstrations (arXiv 2601.19897).
+
+        Per prompt: sample a completion from the student (LoRA active), then
+        match its per-token distributions to a frozen second copy of the base
+        reading the row's golden response in-context — there is no
+        disable-adapter trick once `linear_to_lora_layers` has rewritten the
+        modules, so the teacher is its own copy (the dpo/grpo pattern here;
+        two models resident in unified memory). Runs uncompiled — the
+        per-example teacher context isn't expressible in the stock trainer.
+        """
+        import random as _random  # noqa: PLC0415
+        import time as _time  # noqa: PLC0415
+
+        import mlx.core as mx  # noqa: PLC0415
+        import mlx.nn as nn  # noqa: PLC0415
+        import mlx.optimizers as optim  # noqa: PLC0415
+        from mlx.utils import tree_flatten, tree_map  # noqa: PLC0415
+        from mlx_lm import load as mlx_load  # noqa: PLC0415
+        from mlx_lm.generate import generate_step  # noqa: PLC0415
+        from mlx_lm.sample_utils import make_sampler  # noqa: PLC0415
+        from mlx_lm.tuner.utils import linear_to_lora_layers  # noqa: PLC0415
+
+        from ..sdft import (  # noqa: PLC0415
+            SDFT_TOP_P,
+            completion_slice,
+            split_demonstration,
+            teacher_messages,
+        )
+
+        model, tokenizer = self.model, self.tokenizer
+        if self._claim_surface(spec.adapter):
+            model.freeze()
+            linear_to_lora_layers(model, num_layers, self._lora_params(config),
+                                  use_dora=(spec.adapter == methods.ADAPTER_DORA))
+
+        if config.resume_from_checkpoint:
+            resume = Path(config.resume_from_checkpoint)
+            weights = resume / "adapters.safetensors" if resume.is_dir() else resume
+            if not weights.exists():
+                raise FileNotFoundError(
+                    f"no saved weights at {weights} — the run may have stopped "
+                    "before its first checkpoint. Set save_steps=N to checkpoint "
+                    "mid-run, or resume from a completed run."
+                )
+            model.load_weights(str(weights), strict=False)
+            callbacks.log(f"[mlx] resumed weights from {weights}")
+
+        if eval_dataset is not None and len(eval_dataset) > 0:
+            callbacks.log("[mlx] note: eval_dataset isn't supported by the "
+                          "sdft loop — ignored")
+        ignored = [name for name, off in (
+            ("optim", config.optim != "adamw_8bit"),
+            ("max_grad_norm", config.max_grad_norm is not None),
+            ("packing", config.packing),
+            ("use_rslora", config.use_rslora),
+            ("report_to", bool(config.report_to)),
+            ("train_on_completions", config.train_on_completions),  # implicit in sdft
+        ) if off]
+        if ignored:
+            callbacks.log(f"[mlx] note: {', '.join(ignored)} not supported on "
+                          "mlx — ignored")
+
+        try:
+            chat = dataset.as_chat()
+        except ValueError as e:
+            raise ValueError(
+                f"method='sdft' trains on chat/instruction rows (prompt + "
+                f"golden response) — {e}"
+            ) from None
+
+        examples, skipped = [], 0
+        for i, row in enumerate(chat.rows):
+            msgs = row["messages"]
+            _, demo = split_demonstration(msgs, row_index=i)
+            if not demo.strip():
+                skipped += 1
+                continue
+            s_ids = list(tokenizer.apply_chat_template(
+                msgs[:-1], add_generation_prompt=True))
+            t_ids = list(tokenizer.apply_chat_template(
+                teacher_messages(msgs, config.sdft_teacher_template, row_index=i),
+                add_generation_prompt=True))
+            # The teacher sequence is the longer one — clamp the rollout so it fits.
+            n_new = min(config.sdft_max_completion_length,
+                        config.max_seq_length - len(t_ids))
+            if n_new < 1:
+                skipped += 1
+                continue
+            examples.append((s_ids, t_ids, n_new))
+        if skipped:
+            callbacks.log(f"[mlx] sdft: skipped {skipped} row(s) — empty "
+                          "demonstration or teacher prompt ≥ max_seq_length")
+        if not examples:
+            raise ValueError(
+                "no usable sdft rows after tokenization — each row needs a user "
+                "turn, a non-empty assistant demonstration, and a teacher "
+                "prompt that fits max_seq_length"
+            )
+
+        with quiet_backend():
+            ref_model, _ = mlx_load(self.model_name)
+        ref_model.freeze()
+        callbacks.log("[mlx] sdft teacher = a frozen second copy of the base model")
+
+        total = resolve_total_steps(config, len(examples))  # optimizer steps
+        eb = max(1, config.per_device_train_batch_size
+                 * config.gradient_accumulation_steps)
+        # _build_lr converts iter-units → update-units by dividing out
+        # gradient_accumulation_steps; this loop counts updates directly, so
+        # hand it iter-units to land on `total` updates.
+        opt = optim.Adam(learning_rate=_build_lr(
+            config, total * max(1, config.gradient_accumulation_steps)))
+        sampler = make_sampler(temp=config.sdft_temperature, top_p=SDFT_TOP_P)
+        mx.random.seed(config.seed)
+        rng = _random.Random(config.seed)
+
+        def prompts():
+            while True:
+                order = list(range(len(examples)))
+                rng.shuffle(order)
+                yield from (examples[j] for j in order)
+
+        alpha = config.sdft_alpha
+
+        def sdft_loss(mdl, toks_s, t_slice, p_s):
+            logits = mdl(toks_s[None, :-1])
+            s_slice = logits[
+                0, completion_slice(p_s, toks_s.shape[0]), :].astype(mx.float32)
+            return _distill_divergence_mx(s_slice, t_slice, alpha,
+                                          knob="sdft_alpha").mean()
+
+        loss_and_grad = nn.value_and_grad(model, sdft_loss)
+        callbacks.log(
+            f"[mlx:{self.device}] sdft on {self.model_name} · "
+            f"{len(examples)} rows · {total} steps × {eb} prompts/step · "
+            f"alpha {alpha:g} · lr {config.learning_rate:g}"
+        )
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        start = _time.time()
+        stream = prompts()
+        cum_tokens = 0
+        last_loss = None
+        stop = False
+        for it in range(1, total + 1):
+            step_losses = []
+            grads_acc = None
+            for _ in range(eb):
+                if callbacks.stopped():  # generation dominates — check per prompt
+                    stop = True
+                    break
+                s_ids, t_ids, n_new = next(stream)
+                comp = []
+                for tok, _lp in generate_step(mx.array(s_ids), model,
+                                              max_tokens=n_new, sampler=sampler):
+                    comp.append(tok)
+                    if tok in tokenizer.eos_token_ids:
+                        break  # generate_step never stops itself; keep the eos
+                if not comp:
+                    continue
+                C = len(comp)
+                cum_tokens += C
+                t_in = mx.array(t_ids + comp)
+                t_logits = ref_model(t_in[None, :-1])
+                t_slice = t_logits[
+                    0, completion_slice(len(t_ids), len(t_ids) + C), :,
+                ].astype(mx.float32)
+                mx.eval(t_slice)  # materialize → the teacher graph frees now
+                loss, grads = loss_and_grad(model, mx.array(s_ids + comp),
+                                            t_slice, len(s_ids))
+                grads_acc = grads if grads_acc is None else tree_map(
+                    lambda a, b: a + b, grads_acc, grads)
+                mx.eval(loss, grads_acc)  # bound the lazy graph per prompt
+                step_losses.append(float(loss))
+            if stop or not step_losses:
+                break
+            n_micro = len(step_losses)
+            opt.update(model, tree_map(lambda g: g / n_micro, grads_acc))
+            mx.eval(model.parameters())
+            last_loss = round(sum(step_losses) / n_micro, 4)
+            if it % config.logging_steps == 0:
+                callbacks.step(Metric(step=it, loss=last_loss,
+                                      lr=float(opt.learning_rate),
+                                      tokens=cum_tokens,
+                                      elapsed_s=round(_time.time() - start, 2)))
+            if config.save_steps and it % config.save_steps == 0 and it < total:
+                mx.save_safetensors(str(out / f"{it:07d}_adapters.safetensors"),
+                                    dict(tree_flatten(model.trainable_parameters())))
+                callbacks.log(f"[mlx] checkpoint @ step {it}")
+            if callbacks.stopped():
+                break
+
+        mx.save_safetensors(str(out / "adapters.safetensors"),
+                            dict(tree_flatten(model.trainable_parameters())))
+        self._write_adapter_config(out, config, num_layers)
+        self._train_config = config
+        self._num_layers = num_layers
+        self._tuned = True
+        del ref_model
+        callbacks.log(f"[mlx] done · final sdft loss {last_loss} · adapter {out}")
+        return FinetuneResult(checkpoint=str(out), final_loss=last_loss)
+
+    def _finetune_sdpo(self, dataset: Dataset, config: TrainConfig,
+                       callbacks: Callbacks, output_dir: str,
+                       eval_dataset: Dataset | None, spec,
+                       num_layers: int, reward_fns: list | None) -> FinetuneResult:
+        """RL via self-distillation (arXiv 2601.20802).
+
+        Per prompt: sample a group of rollouts (LoRA active), score them with
+        the caller's reward fns, then match each rollout's per-token
+        distributions to the same model reading feedback in-context — a
+        successful sibling rollout and/or the fn's textual feedback. The
+        teacher is an EMA of the adapter weights swapped onto the same module
+        for its forwards — no second model copy (mx arrays are immutable, so
+        weight snapshots are free). Runs uncompiled, like its sdft sibling.
+        """
+        import random as _random  # noqa: PLC0415
+        import time as _time  # noqa: PLC0415
+
+        import mlx.core as mx  # noqa: PLC0415
+        import mlx.nn as nn  # noqa: PLC0415
+        import mlx.optimizers as optim  # noqa: PLC0415
+        from mlx.utils import tree_flatten, tree_map  # noqa: PLC0415
+        from mlx_lm.generate import generate_step  # noqa: PLC0415
+        from mlx_lm.sample_utils import make_sampler  # noqa: PLC0415
+        from mlx_lm.tuner.utils import linear_to_lora_layers  # noqa: PLC0415
+
+        from ..sdft import completion_slice  # noqa: PLC0415
+        from ..sdpo import pick_solution, score_group, teacher_prompt  # noqa: PLC0415
+
+        model, tokenizer = self.model, self.tokenizer
+        rows = dataset.rows
+        if len(rows) and "weight" in rows[0] and "messages" in rows[0]:
+            raise ValueError(
+                "method='sdpo' can't train on pre-collected trajectories — the "
+                "self-teacher rescores rollouts sampled from the current "
+                "policy, so it needs prompt rows + reward_fns (trajectory "
+                "groups train with method='grpo')"
+            )
+        if not reward_fns:
+            raise ValueError(
+                "method='sdpo' needs reward_fns=[...] — each fn is "
+                "fn(prompts, completions, answer, types=None) -> list of float "
+                "scores or (score, feedback) pairs"
+            )
+        if not len(rows) or "prompt" not in rows[0]:
+            raise ValueError("method='sdpo' needs rows with a 'prompt' column")
+        rate = config.sdpo_teacher_ema
+        if not 0.0 <= rate <= 1.0:
+            raise ValueError(
+                f"sdpo_teacher_ema must be in [0, 1] (got {rate!r}) — 0 is a "
+                "frozen initial teacher, 1 the live student"
+            )
+        group = max(1, config.sdpo_group_size)
+
+        if self._claim_surface(spec.adapter):
+            model.freeze()
+            linear_to_lora_layers(model, num_layers, self._lora_params(config),
+                                  use_dora=(spec.adapter == methods.ADAPTER_DORA))
+
+        if config.resume_from_checkpoint:
+            resume = Path(config.resume_from_checkpoint)
+            weights = resume / "adapters.safetensors" if resume.is_dir() else resume
+            if not weights.exists():
+                raise FileNotFoundError(
+                    f"no saved weights at {weights} — the run may have stopped "
+                    "before its first checkpoint. Set save_steps=N to checkpoint "
+                    "mid-run, or resume from a completed run."
+                )
+            model.load_weights(str(weights), strict=False)
+            callbacks.log(f"[mlx] resumed weights from {weights}")
+
+        if eval_dataset is not None and len(eval_dataset) > 0:
+            callbacks.log("[mlx] note: eval_dataset isn't supported by the "
+                          "sdpo loop — ignored")
+        ignored = [name for name, off in (
+            ("optim", config.optim != "adamw_8bit"),
+            ("max_grad_norm", config.max_grad_norm is not None),
+            ("packing", config.packing),
+            ("use_rslora", config.use_rslora),
+            ("report_to", bool(config.report_to)),
+            ("train_on_completions", config.train_on_completions),  # implicit in sdpo
+            ("beta", config.beta != 0.1),  # the EMA teacher regularizes instead
+        ) if off]
+        if ignored:
+            callbacks.log(f"[mlx] note: {', '.join(ignored)} not supported on "
+                          "mlx — ignored")
+
+        def ids(content):
+            return list(tokenizer.apply_chat_template(
+                [{"role": "user", "content": content}],
+                add_generation_prompt=True))
+
+        examples, skipped_rows = [], 0
+        for r in rows:
+            s_ids = ids(r["prompt"])
+            n_new = min(config.sdpo_max_completion_length,
+                        config.max_seq_length - len(s_ids))
+            if n_new < 1:
+                skipped_rows += 1
+                continue
+            examples.append((r["prompt"], r.get("answer", ""), s_ids, n_new))
+        if skipped_rows:
+            callbacks.log(f"[mlx] sdpo: skipped {skipped_rows} row(s) — "
+                          "prompt ≥ max_seq_length")
+        if not examples:
+            raise ValueError(
+                "no usable sdpo rows after tokenization — each row needs a "
+                "'prompt' that leaves room for a rollout within max_seq_length"
+            )
+
+        # Teacher = the same module with the EMA adapter snapshot swapped in.
+        # Captured parameter trees are true snapshots (mx arrays are immutable),
+        # so at rate 0 the teacher stays the initial adapters.
+        ema = model.trainable_parameters() if rate < 1.0 else None
+        callbacks.log(
+            "[mlx] sdpo teacher = the live student (stopgrad)" if rate == 1.0
+            else "[mlx] sdpo teacher = the frozen initial adapters" if rate == 0.0
+            else f"[mlx] sdpo teacher = EMA(rate {rate:g}) of the student adapters")
+
+        total = resolve_total_steps(config, len(examples))  # optimizer steps
+        eb = max(1, config.per_device_train_batch_size
+                 * config.gradient_accumulation_steps)
+        # _build_lr converts iter-units → update-units by dividing out
+        # gradient_accumulation_steps; this loop counts updates directly, so
+        # hand it iter-units to land on `total` updates.
+        opt = optim.Adam(learning_rate=_build_lr(
+            config, total * max(1, config.gradient_accumulation_steps)))
+        # The reference samples at plain temperature (top_p 1) — no nucleus.
+        sampler = make_sampler(temp=config.sdpo_temperature)
+        mx.random.seed(config.seed)
+        rng = _random.Random(config.seed)
+
+        def prompt_stream():
+            while True:
+                order = list(range(len(examples)))
+                rng.shuffle(order)
+                yield from (examples[j] for j in order)
+
+        alpha = config.sdpo_alpha
+
+        def sdpo_loss(mdl, toks_s, t_slice, p_s):
+            logits = mdl(toks_s[None, :-1])
+            s_slice = logits[
+                0, completion_slice(p_s, toks_s.shape[0]), :].astype(mx.float32)
+            return _distill_divergence_mx(s_slice, t_slice, alpha,
+                                          knob="sdpo_alpha").sum()
+
+        loss_and_grad = nn.value_and_grad(model, sdpo_loss)
+        fn_names = [getattr(f, "__name__", "reward") for f in reward_fns]
+        callbacks.log(
+            f"[mlx:{self.device}] sdpo on {self.model_name} · "
+            f"{len(examples)} prompts · {total} steps × {eb} prompts/step × "
+            f"{group} rollouts · alpha {alpha:g} · lr {config.learning_rate:g}"
+        )
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        start = _time.time()
+        stream = prompt_stream()
+        cum_tokens = 0
+        n_rollouts = n_distilled = n_solution = n_feedback = 0
+        last_loss = None
+        stop = False
+        for it in range(1, total + 1):
+            step_losses = []
+            grads_acc = None
+            for _ in range(eb):
+                if callbacks.stopped():  # generation dominates — check per prompt
+                    stop = True
+                    break
+                prompt, answer, s_ids, n_new = next(stream)
+
+                comps = []
+                for _g in range(group):
+                    comp = []
+                    for tok, _lp in generate_step(mx.array(s_ids), model,
+                                                  max_tokens=n_new,
+                                                  sampler=sampler):
+                        comp.append(tok)
+                        if tok in tokenizer.eos_token_ids:
+                            break  # generate_step never stops itself; keep the eos
+                    comps.append(comp)
+                texts = [tokenizer.decode(c, skip_special_tokens=True)
+                         for c in comps]
+                n_rollouts += len(comps)
+                cum_tokens += sum(len(c) for c in comps)
+
+                scores, feedbacks = score_group(
+                    [fn(prompts=[prompt] * group, completions=texts,
+                        answer=[answer] * group, types=None)
+                     for fn in reward_fns],
+                    group, fn_names=fn_names)
+
+                # Teacher contexts: a successful sibling and/or feedback.
+                # Neither → the rollout carries no signal and is skipped.
+                todo = []
+                for i, comp in enumerate(comps):
+                    if not comp:
+                        continue
+                    solution = pick_solution(i, scores, texts,
+                                             config.sdpo_success_threshold)
+                    if solution is not None:
+                        n_solution += 1
+                    if feedbacks[i] is not None:
+                        n_feedback += 1
+                    content = teacher_prompt(prompt, solution, feedbacks[i])
+                    if content is None:
+                        continue
+                    t_ids = ids(content)
+                    if len(t_ids) + len(comp) > config.max_seq_length:
+                        continue
+                    todo.append((comp, t_ids))
+                if not todo:
+                    continue
+
+                # Teacher pass under the EMA weights — swap in, forward,
+                # materialize, swap back.
+                if ema is not None:
+                    live = model.trainable_parameters()
+                    model.update(ema)
+                t_slices = []
+                for comp, t_ids in todo:
+                    t_in = mx.array(t_ids + comp)
+                    t_logits = model(t_in[None, :-1])
+                    t_slices.append(t_logits[
+                        0, completion_slice(len(t_ids), len(t_ids) + len(comp)),
+                        :].astype(mx.float32))
+                mx.eval(*t_slices)  # materialize before the weights swap back
+                if ema is not None:
+                    model.update(live)
+
+                # Student forwards — token-mean over the micro's rollouts,
+                # scaled for accumulation across eb prompts.
+                micro_tokens = sum(len(c) for c, _ in todo)
+                micro_sum = 0.0
+                scale = 1.0 / (micro_tokens * eb)
+                for (comp, _t), t_slice in zip(todo, t_slices):
+                    loss, grads = loss_and_grad(model, mx.array(s_ids + comp),
+                                                t_slice, len(s_ids))
+                    grads = tree_map(lambda g: g * scale, grads)
+                    grads_acc = grads if grads_acc is None else tree_map(
+                        lambda a, b: a + b, grads_acc, grads)
+                    mx.eval(loss, grads_acc)  # bound the lazy graph per rollout
+                    micro_sum += float(loss)
+                n_distilled += len(todo)
+                step_losses.append(micro_sum / micro_tokens)
+            if stop:
+                break
+            if not step_losses:
+                # A whole step of skipped rollouts (no solutions, no feedback)
+                # — nothing to learn from yet; keep sampling rather than stop.
+                continue
+            opt.update(model, grads_acc)  # grads already carry token-mean scaling
+            mx.eval(model.parameters())
+            if ema is not None and rate > 0.0:
+                ema = tree_map(lambda t, s: (1.0 - rate) * t + rate * s,
+                               ema, model.trainable_parameters())
+                mx.eval(ema)
+            last_loss = round(sum(step_losses) / len(step_losses), 4)
+            if it % config.logging_steps == 0:
+                callbacks.step(Metric(step=it, loss=last_loss,
+                                      lr=float(opt.learning_rate),
+                                      tokens=cum_tokens,
+                                      elapsed_s=round(_time.time() - start, 2)))
+            if config.save_steps and it % config.save_steps == 0 and it < total:
+                mx.save_safetensors(str(out / f"{it:07d}_adapters.safetensors"),
+                                    dict(tree_flatten(model.trainable_parameters())))
+                callbacks.log(f"[mlx] checkpoint @ step {it}")
+            if callbacks.stopped():
+                break
+
+        mx.save_safetensors(str(out / "adapters.safetensors"),
+                            dict(tree_flatten(model.trainable_parameters())))
+        self._write_adapter_config(out, config, num_layers)
+        self._train_config = config
+        self._num_layers = num_layers
+        self._tuned = True
+        if n_rollouts:
+            callbacks.log(
+                f"[mlx] sdpo rollouts: {n_rollouts} sampled · {n_distilled} "
+                f"distilled · {n_solution} saw a solution · {n_feedback} saw "
+                "feedback"
+            )
+        callbacks.log(f"[mlx] done · final sdpo loss {last_loss} · adapter {out}")
         return FinetuneResult(checkpoint=str(out), final_loss=last_loss)
 
     def _finetune_dpo(self, dataset: Dataset, config: TrainConfig, callbacks: Callbacks,

@@ -62,9 +62,12 @@ dependencies = [
     "typer>=0.12",
     "rich>=13",
     "pyyaml>=6",
-    # Apple-Silicon dev loop — installed automatically on arm64 macOS only
-    "mlx-lm>=0.20; sys_platform == 'darwin' and platform_machine == 'arm64'",
-    "mlx-lm-lora>=2.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    # Apple-Silicon dev loop — installed automatically on arm64 macOS only.
+    # Ceilings: mlx-lm 0.30+ needs transformers 5.x, excluded by the
+    # transformers<4.57 pin above; mlx-lm-lora 1.0.0 is the last release that
+    # allows mlx-lm<0.30 (0.9.x predates it, 1.0.1+ hard-pin mlx-lm 0.30.6+).
+    "mlx-lm>=0.20,<0.30; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "mlx-lm-lora==1.0.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
 ]
 
 [project.urls]

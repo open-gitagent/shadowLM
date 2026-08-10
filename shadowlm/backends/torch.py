@@ -37,6 +37,37 @@ def _has(mod: str) -> bool:
     return importlib.util.find_spec(mod) is not None
 
 
+def _distill_divergence(student_logits, teacher_logits, alpha: float = 0.0, *,
+                        knob: str = "alpha"):
+    """Per-token divergence between full next-token distributions — the
+    self-distillation loss shared by the sdft and sdpo loops.
+
+    Inputs are float32 logit slices (..., C, V) already restricted to the
+    completion positions — the same completion tokens for both. alpha=0 →
+    forward KL(teacher‖student); alpha=1 → reverse KL; between → the
+    generalized JSD trl's GKD uses (mixture m = (1−α)·student + α·teacher).
+    Returns per-token divergences, shape (..., C).
+    """
+    import math  # noqa: PLC0415
+
+    import torch  # noqa: PLC0415
+    import torch.nn.functional as F  # noqa: PLC0415
+
+    if not 0.0 <= alpha <= 1.0:
+        raise ValueError(
+            f"{knob} must be in [0, 1] (got {alpha!r}) — 0 is forward KL, "
+            "1 reverse KL, between generalized JSD"
+        )
+    s = F.log_softmax(student_logits, dim=-1)
+    t = F.log_softmax(teacher_logits, dim=-1)
+    if alpha == 0.0:
+        return (t.exp() * (t - s)).sum(-1)
+    if alpha == 1.0:
+        return (s.exp() * (s - t)).sum(-1)
+    m = torch.logaddexp(s + math.log(1.0 - alpha), t + math.log(alpha))
+    return (alpha * (t.exp() * (t - m)) + (1.0 - alpha) * (s.exp() * (s - m))).sum(-1)
+
+
 class TorchBackend(Backend):
     name = "torch"
 
@@ -208,6 +239,12 @@ class TorchBackend(Backend):
         if spec.trainer == "grpo":
             return self._finetune_grpo(dataset, config, callbacks, output_dir,
                                        spec, reward_fns)
+        if spec.trainer == "sdft":
+            return self._finetune_sdft(dataset, config, callbacks, output_dir,
+                                       eval_dataset, spec)
+        if spec.trainer == "sdpo":
+            return self._finetune_sdpo(dataset, config, callbacks, output_dir,
+                                       eval_dataset, spec, reward_fns)
         if spec.adapter == methods.ADAPTER_MORE:
             return self._finetune_more(dataset, config, callbacks, output_dir,
                                        eval_dataset)
@@ -495,6 +532,479 @@ class TorchBackend(Backend):
         self.model.save_pretrained(str(out))
         self.tokenizer.save_pretrained(str(out))
         callbacks.log(f"[torch:{self.device}] done · final pg loss {last_loss} · {out}")
+        return FinetuneResult(checkpoint=str(out), final_loss=last_loss)
+
+    def _finetune_sdft(self, dataset: Dataset, config: TrainConfig,
+                       callbacks: Callbacks, output_dir: str,
+                       eval_dataset: Dataset | None, spec) -> FinetuneResult:
+        """On-policy self-distillation from demonstrations (arXiv 2601.19897).
+
+        Per prompt: sample a completion from the student (adapters on), then
+        match its per-token distributions to the same model reading the row's
+        golden response in-context (adapters off). Eager custom loop — the
+        per-example teacher context isn't expressible in the stock trainers.
+        """
+        import random as _random  # noqa: PLC0415
+        import time as _time  # noqa: PLC0415
+
+        import torch  # noqa: PLC0415
+
+        from ..sdft import (  # noqa: PLC0415
+            SDFT_TOP_P,
+            completion_slice,
+            split_demonstration,
+            teacher_messages,
+        )
+
+        if eval_dataset is not None and len(eval_dataset) > 0:
+            callbacks.log("[torch] note: eval_dataset isn't supported by the "
+                          "sdft loop — ignored")
+        ignored = [name for name, off in (
+            ("optim", config.optim != "adamw_8bit"),
+            ("lr_scheduler_type", config.lr_scheduler_type != "linear"),
+            ("packing", config.packing),
+            ("train_on_completions", config.train_on_completions),  # implicit in sdft
+            ("report_to", bool(config.report_to)),
+        ) if off]
+        if ignored:
+            callbacks.log(f"[torch] note: {', '.join(ignored)} not honored by "
+                          "the sdft loop — ignored (constant lr, loss on the "
+                          "sampled completion only)")
+        if config.resume_from_checkpoint:
+            callbacks.log("[torch] note: resume_from_checkpoint isn't supported "
+                          "by the sdft loop — load the adapter instead: "
+                          "load(base, adapter=checkpoint)")
+
+        self._attach_trainable(spec, config, callbacks)
+        if getattr(self.model, "peft_config", None) is None:
+            raise RuntimeError(
+                "method='sdft' distills from the adapter-disabled base, so it "
+                "needs a LoRA-family adapter surface — load a fresh model and "
+                "register sdft variants with adapter='lora'."
+            )
+        # disable_adapter() disables every adapter, so when continuing from a
+        # loaded adapter the teacher is still the pristine base.
+        callbacks.log("[torch] sdft teacher = base model (adapters disabled)")
+
+        try:
+            chat = dataset.as_chat()
+        except ValueError as e:
+            raise ValueError(
+                f"method='sdft' trains on chat/instruction rows (prompt + "
+                f"golden response) — {e}"
+            ) from None
+
+        def ids(msgs):
+            out = self.tokenizer.apply_chat_template(
+                msgs, tokenize=True, return_dict=True, add_generation_prompt=True)
+            return list(out["input_ids"])
+
+        examples, skipped = [], 0
+        for i, row in enumerate(chat.rows):
+            msgs = row["messages"]
+            _, demo = split_demonstration(msgs, row_index=i)
+            if not demo.strip():
+                skipped += 1
+                continue
+            s_ids = ids(msgs[:-1])
+            t_ids = ids(teacher_messages(msgs, config.sdft_teacher_template,
+                                         row_index=i))
+            # The teacher sequence is the longer one — clamp the rollout so it fits.
+            n_new = min(config.sdft_max_completion_length,
+                        config.max_seq_length - len(t_ids))
+            if n_new < 1:
+                skipped += 1
+                continue
+            examples.append((s_ids, t_ids, n_new))
+        if skipped:
+            callbacks.log(f"[torch] sdft: skipped {skipped} row(s) — empty "
+                          "demonstration or teacher prompt ≥ max_seq_length")
+        if not examples:
+            raise ValueError(
+                "no usable sdft rows after tokenization — each row needs a user "
+                "turn, a non-empty assistant demonstration, and a teacher "
+                "prompt that fits max_seq_length"
+            )
+
+        device = next(self.model.parameters()).device
+        total = resolve_total_steps(config, len(examples))
+        eb = max(1, config.per_device_train_batch_size
+                 * config.gradient_accumulation_steps)
+        params = [p for p in self.model.parameters() if p.requires_grad]
+        opt = torch.optim.AdamW(params, lr=config.learning_rate,
+                                weight_decay=config.weight_decay)
+        torch.manual_seed(config.seed)  # the rollouts sample from the global RNG
+        rng = _random.Random(config.seed)
+
+        def prompts():
+            while True:
+                order = list(range(len(examples)))
+                rng.shuffle(order)
+                yield from (examples[j] for j in order)
+
+        sampling = ({"do_sample": True, "temperature": config.sdft_temperature,
+                     "top_p": SDFT_TOP_P}
+                    if config.sdft_temperature > 0 else {"do_sample": False})
+        callbacks.log(
+            f"[torch:{self.device}] sdft on {self.model_name} · "
+            f"{len(examples)} rows · {total} steps × {eb} prompts/step · "
+            f"alpha {config.sdft_alpha:g} · lr {config.learning_rate:g}"
+        )
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        start = _time.time()
+        stream = prompts()
+        cum_tokens = 0
+        last_loss = None
+        stop = False
+        opt.zero_grad()
+        for it in range(1, total + 1):
+            step_losses = []
+            for _ in range(eb):
+                if callbacks.stopped():  # generation dominates — check per prompt
+                    stop = True
+                    break
+                s_ids, t_ids, n_new = next(stream)
+
+                # On-policy rollout from the student — adapters active, eval()
+                # so lora_dropout doesn't perturb the sample.
+                self.model.eval()
+                in_ids = torch.tensor([s_ids], device=device)
+                with torch.no_grad():
+                    gen = self.model.generate(
+                        input_ids=in_ids,
+                        attention_mask=torch.ones_like(in_ids),
+                        max_new_tokens=n_new,
+                        pad_token_id=self.tokenizer.pad_token_id,
+                        **sampling,
+                    )
+                comp = gen[0][len(s_ids):].tolist()  # eos included when emitted
+                if not comp:
+                    continue
+                C = len(comp)
+                cum_tokens += C
+
+                # Teacher: the same completion after the demonstration-conditioned
+                # prompt, adapters disabled. Slice to the completion span BEFORE
+                # upcasting — fp32 full-sequence logits would be GBs.
+                t_in = torch.tensor([t_ids + comp], device=device)
+                with torch.no_grad(), self.model.disable_adapter():
+                    t_logits = self.model(t_in[:, :-1], use_cache=False).logits
+                t_slice = t_logits[
+                    :, completion_slice(len(t_ids), len(t_ids) + C), :].float()
+                del t_logits
+
+                self.model.train()
+                s_in = torch.tensor([s_ids + comp], device=device)
+                s_logits = self.model(s_in[:, :-1], use_cache=False).logits
+                s_slice = s_logits[
+                    :, completion_slice(len(s_ids), len(s_ids) + C), :].float()
+                loss = _distill_divergence(s_slice, t_slice, config.sdft_alpha,
+                                           knob="sdft_alpha").mean()
+                (loss / eb).backward()
+                step_losses.append(float(loss.detach()))
+            if stop or not step_losses:
+                break
+            grad_norm = None
+            if config.max_grad_norm is not None:
+                grad_norm = float(torch.nn.utils.clip_grad_norm_(
+                    params, config.max_grad_norm))
+            opt.step()
+            opt.zero_grad()
+            last_loss = round(sum(step_losses) / len(step_losses), 4)
+            if it % config.logging_steps == 0:
+                callbacks.step(Metric(step=it, loss=last_loss,
+                                      lr=config.learning_rate,
+                                      grad_norm=grad_norm, tokens=cum_tokens,
+                                      elapsed_s=round(_time.time() - start, 2)))
+            if config.save_steps and it % config.save_steps == 0 and it < total:
+                self.model.save_pretrained(str(out / f"checkpoint-{it}"))  # HF layout
+                callbacks.log(f"[torch] checkpoint @ step {it}")
+            if callbacks.stopped():
+                break
+        self._restore_inference_state()
+
+        self.model.save_pretrained(str(out))
+        self.tokenizer.save_pretrained(str(out))
+        callbacks.log(f"[torch:{self.device}] done · final sdft loss {last_loss} · {out}")
+        return FinetuneResult(checkpoint=str(out), final_loss=last_loss)
+
+    def _finetune_sdpo(self, dataset: Dataset, config: TrainConfig,
+                       callbacks: Callbacks, output_dir: str,
+                       eval_dataset: Dataset | None, spec,
+                       reward_fns: list | None) -> FinetuneResult:
+        """RL via self-distillation (arXiv 2601.20802).
+
+        Per prompt: sample a group of rollouts (adapters on), score them with
+        the caller's reward fns, then match each rollout's per-token
+        distributions to the same model reading feedback in-context — a
+        successful sibling rollout and/or the fn's textual feedback. The
+        teacher is an EMA of the adapter weights over the shared frozen base.
+        Eager custom loop, like its sdft sibling.
+        """
+        import random as _random  # noqa: PLC0415
+        import time as _time  # noqa: PLC0415
+
+        import torch  # noqa: PLC0415
+
+        from ..sdft import completion_slice  # noqa: PLC0415
+        from ..sdpo import pick_solution, score_group, teacher_prompt  # noqa: PLC0415
+
+        if eval_dataset is not None and len(eval_dataset) > 0:
+            callbacks.log("[torch] note: eval_dataset isn't supported by the "
+                          "sdpo loop — ignored")
+        ignored = [name for name, off in (
+            ("optim", config.optim != "adamw_8bit"),
+            ("lr_scheduler_type", config.lr_scheduler_type != "linear"),
+            ("packing", config.packing),
+            ("train_on_completions", config.train_on_completions),  # implicit in sdpo
+            ("report_to", bool(config.report_to)),
+            ("beta", config.beta != 0.1),  # the EMA teacher regularizes instead
+        ) if off]
+        if ignored:
+            callbacks.log(f"[torch] note: {', '.join(ignored)} not honored by "
+                          "the sdpo loop — ignored (constant lr, loss on the "
+                          "sampled rollouts only)")
+        if config.resume_from_checkpoint:
+            callbacks.log("[torch] note: resume_from_checkpoint isn't supported "
+                          "by the sdpo loop — load the adapter instead: "
+                          "load(base, adapter=checkpoint)")
+
+        rows = dataset.rows
+        if len(rows) and "weight" in rows[0] and "messages" in rows[0]:
+            raise ValueError(
+                "method='sdpo' can't train on pre-collected trajectories — the "
+                "self-teacher rescores rollouts sampled from the current "
+                "policy, so it needs prompt rows + reward_fns (trajectory "
+                "groups train with method='grpo')"
+            )
+        if not reward_fns:
+            raise ValueError(
+                "method='sdpo' needs reward_fns=[...] — each fn is "
+                "fn(prompts, completions, answer, types=None) -> list of float "
+                "scores or (score, feedback) pairs"
+            )
+        if not len(rows) or "prompt" not in rows[0]:
+            raise ValueError("method='sdpo' needs rows with a 'prompt' column")
+        rate = config.sdpo_teacher_ema
+        if not 0.0 <= rate <= 1.0:
+            raise ValueError(
+                f"sdpo_teacher_ema must be in [0, 1] (got {rate!r}) — 0 is a "
+                "frozen initial teacher, 1 the live student"
+            )
+        group = max(1, config.sdpo_group_size)
+
+        self._attach_trainable(spec, config, callbacks)
+        trainables = [(n, p) for n, p in self.model.named_parameters()
+                      if p.requires_grad]
+        # Teacher = base + EMA of the trainable params. The frozen base is
+        # shared, so tracking just the adapters equals the paper's full-model
+        # EMA — and at rate 0 the teacher stays the initial policy.
+        ema = ({n: p.detach().clone() for n, p in trainables}
+               if rate < 1.0 else None)
+        callbacks.log(
+            "[torch] sdpo teacher = the live student (stopgrad)" if rate == 1.0
+            else "[torch] sdpo teacher = the frozen initial adapters" if rate == 0.0
+            else f"[torch] sdpo teacher = EMA(rate {rate:g}) of the student adapters")
+
+        def ids(content):
+            out = self.tokenizer.apply_chat_template(
+                [{"role": "user", "content": content}],
+                tokenize=True, return_dict=True, add_generation_prompt=True)
+            return list(out["input_ids"])
+
+        examples, skipped_rows = [], 0
+        for r in rows:
+            s_ids = ids(r["prompt"])
+            n_new = min(config.sdpo_max_completion_length,
+                        config.max_seq_length - len(s_ids))
+            if n_new < 1:
+                skipped_rows += 1
+                continue
+            examples.append((r["prompt"], r.get("answer", ""), s_ids, n_new))
+        if skipped_rows:
+            callbacks.log(f"[torch] sdpo: skipped {skipped_rows} row(s) — "
+                          "prompt ≥ max_seq_length")
+        if not examples:
+            raise ValueError(
+                "no usable sdpo rows after tokenization — each row needs a "
+                "'prompt' that leaves room for a rollout within max_seq_length"
+            )
+
+        device = next(self.model.parameters()).device
+        total = resolve_total_steps(config, len(examples))
+        eb = max(1, config.per_device_train_batch_size
+                 * config.gradient_accumulation_steps)
+        params = [p for _, p in trainables]
+        opt = torch.optim.AdamW(params, lr=config.learning_rate,
+                                weight_decay=config.weight_decay)
+        torch.manual_seed(config.seed)  # the rollouts sample from the global RNG
+        rng = _random.Random(config.seed)
+
+        def prompt_stream():
+            while True:
+                order = list(range(len(examples)))
+                rng.shuffle(order)
+                yield from (examples[j] for j in order)
+
+        # Explicit top_p/top_k so a model-shipped generation_config can't leak
+        # its own sampling into the rollouts (the reference samples at top_p 1).
+        sampling = ({"do_sample": True, "temperature": config.sdpo_temperature,
+                     "top_p": 1.0, "top_k": 0}
+                    if config.sdpo_temperature > 0 else {"do_sample": False})
+        fn_names = [getattr(f, "__name__", "reward") for f in reward_fns]
+        callbacks.log(
+            f"[torch:{self.device}] sdpo on {self.model_name} · "
+            f"{len(examples)} prompts · {total} steps × {eb} prompts/step × "
+            f"{group} rollouts · alpha {config.sdpo_alpha:g} · "
+            f"lr {config.learning_rate:g}"
+        )
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        start = _time.time()
+        stream = prompt_stream()
+        cum_tokens = 0
+        n_rollouts = n_distilled = n_solution = n_feedback = 0
+        last_loss = None
+        stop = False
+        opt.zero_grad()
+        for it in range(1, total + 1):
+            step_losses = []
+            for _ in range(eb):
+                if callbacks.stopped():  # generation dominates — check per prompt
+                    stop = True
+                    break
+                prompt, answer, s_ids, n_new = next(stream)
+
+                # 1) The rollout group — adapters active, eval() so
+                # lora_dropout doesn't perturb the samples.
+                self.model.eval()
+                in_ids = torch.tensor([s_ids], device=device)
+                comps = []
+                with torch.no_grad():
+                    for _g in range(group):
+                        gen = self.model.generate(
+                            input_ids=in_ids,
+                            attention_mask=torch.ones_like(in_ids),
+                            max_new_tokens=n_new,
+                            pad_token_id=self.tokenizer.pad_token_id,
+                            **sampling,
+                        )
+                        comps.append(gen[0][len(s_ids):].tolist())  # eos kept
+                texts = [self.tokenizer.decode(c, skip_special_tokens=True)
+                         for c in comps]
+                n_rollouts += len(comps)
+                cum_tokens += sum(len(c) for c in comps)
+
+                # 2) Scores (+ optional feedback) from the caller's reward fns.
+                scores, feedbacks = score_group(
+                    [fn(prompts=[prompt] * group, completions=texts,
+                        answer=[answer] * group, types=None)
+                     for fn in reward_fns],
+                    group, fn_names=fn_names)
+
+                # 3) Teacher contexts: a successful sibling and/or feedback.
+                # Neither → the rollout carries no signal and is skipped.
+                todo = []
+                for i, comp in enumerate(comps):
+                    if not comp:
+                        continue
+                    solution = pick_solution(i, scores, texts,
+                                             config.sdpo_success_threshold)
+                    if solution is not None:
+                        n_solution += 1
+                    if feedbacks[i] is not None:
+                        n_feedback += 1
+                    content = teacher_prompt(prompt, solution, feedbacks[i])
+                    if content is None:
+                        continue
+                    t_ids = ids(content)
+                    if len(t_ids) + len(comp) > config.max_seq_length:
+                        continue
+                    todo.append((comp, t_ids))
+                if not todo:
+                    continue
+
+                # 4) Teacher log-probs under the EMA weights — swap the adapter
+                # tensors in, forward, swap back. Pointer swap, no copies; the
+                # optimizer keys off the param objects, which don't change.
+                t_slices = []
+                with torch.no_grad():
+                    if ema is not None:
+                        stash = {n: p.data for n, p in trainables}
+                        for n, p in trainables:
+                            p.data = ema[n]
+                    try:
+                        for comp, t_ids in todo:
+                            t_in = torch.tensor([t_ids + comp], device=device)
+                            t_logits = self.model(t_in[:, :-1],
+                                                  use_cache=False).logits
+                            t_slices.append(t_logits[
+                                :, completion_slice(len(t_ids),
+                                                    len(t_ids) + len(comp)),
+                                :].float())
+                            del t_logits
+                    finally:
+                        if ema is not None:
+                            for n, p in trainables:
+                                p.data = stash[n]
+
+                # 5) Student forwards + backward — token-mean over the micro's
+                # rollouts, scaled for accumulation across eb prompts.
+                self.model.train()
+                micro_tokens = sum(len(c) for c, _ in todo)
+                micro_sum = 0.0
+                for (comp, _t), t_slice in zip(todo, t_slices):
+                    s_in = torch.tensor([s_ids + comp], device=device)
+                    s_logits = self.model(s_in[:, :-1], use_cache=False).logits
+                    s_slice = s_logits[
+                        :, completion_slice(len(s_ids), len(s_ids) + len(comp)),
+                        :].float()
+                    div = _distill_divergence(s_slice, t_slice,
+                                              config.sdpo_alpha,
+                                              knob="sdpo_alpha").sum()
+                    (div / (micro_tokens * eb)).backward()
+                    micro_sum += float(div.detach())
+                n_distilled += len(todo)
+                step_losses.append(micro_sum / micro_tokens)
+            if stop:
+                break
+            if not step_losses:
+                # A whole step of skipped rollouts (no solutions, no feedback)
+                # — nothing to learn from yet; keep sampling rather than stop.
+                continue
+            grad_norm = None
+            if config.max_grad_norm is not None:
+                grad_norm = float(torch.nn.utils.clip_grad_norm_(
+                    params, config.max_grad_norm))
+            opt.step()
+            opt.zero_grad()
+            if ema is not None and rate > 0.0:
+                with torch.no_grad():
+                    for n, p in trainables:
+                        ema[n].mul_(1.0 - rate).add_(p.data, alpha=rate)
+            last_loss = round(sum(step_losses) / len(step_losses), 4)
+            if it % config.logging_steps == 0:
+                callbacks.step(Metric(step=it, loss=last_loss,
+                                      lr=config.learning_rate,
+                                      grad_norm=grad_norm, tokens=cum_tokens,
+                                      elapsed_s=round(_time.time() - start, 2)))
+            if config.save_steps and it % config.save_steps == 0 and it < total:
+                self.model.save_pretrained(str(out / f"checkpoint-{it}"))  # HF layout
+                callbacks.log(f"[torch] checkpoint @ step {it}")
+            if callbacks.stopped():
+                break
+        self._restore_inference_state()
+
+        self.model.save_pretrained(str(out))
+        self.tokenizer.save_pretrained(str(out))
+        if n_rollouts:
+            callbacks.log(
+                f"[torch] sdpo rollouts: {n_rollouts} sampled · {n_distilled} "
+                f"distilled · {n_solution} saw a solution · {n_feedback} saw "
+                "feedback"
+            )
+        callbacks.log(f"[torch:{self.device}] done · final sdpo loss {last_loss} · {out}")
         return FinetuneResult(checkpoint=str(out), final_loss=last_loss)
 
     def _train_dataset(self, dataset: Dataset, *, raw_text: bool = False):

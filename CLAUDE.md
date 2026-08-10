@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this is
 
 ShadowLM Trainer is a fine-tuning SDK: load any open model, train it with any of
-13 methods, on any hardware, then own the weights. The headline use case is
+15 methods, on any hardware, then own the weights. The headline use case is
 "shadowing" — moving one task off a rented frontier model onto a small model you
 own, by capturing real agent traffic (`slm.capture()`), judging episodes, and
 training on them — without modifying the agent (the model API is the only

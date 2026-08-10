@@ -39,8 +39,9 @@ class TrainingMethod:
     quantized_base: bool | None = None
     raw_text: bool = False
     # Which training loop drives this method: "sft" (supervised next-token),
-    # "dpo" (preference pairs), or "grpo" (reward functions / trajectories).
-    # Backends dispatch machinery on this, not names.
+    # "dpo" (preference pairs), "grpo" (reward functions / trajectories),
+    # "sdft" (self-distillation from demonstrations), or "sdpo" (RL via
+    # self-distillation). Backends dispatch machinery on this, not names.
     trainer: str = "sft"
 
     @property

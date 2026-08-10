@@ -5,7 +5,7 @@
 <p align="center">
   <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-E5484D">
   <img alt="Python 3.10+" src="https://img.shields.io/badge/python-3.10%2B-16120E">
-  <img alt="Methods" src="https://img.shields.io/badge/training_methods-13-E5484D">
+  <img alt="Methods" src="https://img.shields.io/badge/training_methods-15-E5484D">
   <img alt="Batteries included" src="https://img.shields.io/badge/install-batteries_included-16120E">
 </p>
 
@@ -31,8 +31,9 @@ print(model.generate("What is the capital of France?"))      # inference
 model.save("out/", fmt="adapter")                            # ship it
 ```
 
-Change `method="lora"` to `qlora`, `dora`, `full`, `dpo`, `grpo`, `more`, `bitfit`,
-`prompt`, `ptuning`, `adapter`, `cpt`, `more_plus` — and nothing else changes. That's the idea.
+Change `method="lora"` to `qlora`, `dora`, `full`, `dpo`, `grpo`, `sdft`, `sdpo`,
+`more`, `bitfit`, `prompt`, `ptuning`, `adapter`, `cpt`, `more_plus` — and nothing else
+changes. That's the idea.
 
 ## What ShadowLM is for
 
@@ -73,7 +74,7 @@ The whole **capture → judge → train → own a shadowLM** loop runs on these:
 |-------|--------------|-----|
 | **Capture proxy** | drop-in OpenAI endpoint that records your agent's traffic into trajectories — agent unchanged | `slm.capture()` |
 | **Trace ingestion** | already have OpenTelemetry GenAI spans? turn an OTLP dump into a training set, no proxy | `slm.traces.to_dataset()` |
-| **13 methods** | LoRA · QLoRA · DoRA · full · CPT · DPO · GRPO · MoRE · MoRE+ · BitFit · prompt · p-tuning · adapter | `method=` |
+| **15 methods** | LoRA · QLoRA · DoRA · full · CPT · DPO · GRPO · SDFT · SDPO · MoRE · MoRE+ · BitFit · prompt · p-tuning · adapter | `method=` |
 | **Judge → train** | score episodes with an LLM judge, train with trajectory-GRPO or DPO | `judge_group` |
 | **APO** | optimize the *prompt* instead of weights — same capture/judge front end, no GPU | `slm.optimize_prompt()` |
 | **VERL RL** | production multi-GPU GRPO (vLLM rollouts + FSDP) for cluster-scale RL | `backend="verl"` |
@@ -102,6 +103,8 @@ spec (adapter kind, base requirements, data rendering), never the method name.
 | `cpt`   | continued pretraining on raw domain text | either | 5e-5 |
 | `dpo`   | preference optimization on `{prompt, chosen, rejected}` | either | 5e-6 |
 | `grpo`  | RL from reward functions or scored `TrajectoryGroup`s | either | 5e-6 |
+| `sdft`  | **on-policy self-distillation** — the demo-conditioned model teaches itself; learns without forgetting | either | 1e-5 |
+| `sdpo`  | **RL via self-distillation** — the feedback-conditioned self-teacher densely rescores each rollout | either | 1e-5 |
 | `more`  | **mixture of retrieval experts** — facts fused into attention | either | 1e-4 |
 | `more_plus` | **decoupled MoE** — per-fact final-FFN LoRA experts, BM25+semantic routed, cache-safe merge | **unquantized** | 1e-4 |
 | `bitfit`| train only the bias terms (~0.1% of params) | **unquantized** | 5e-4 |
@@ -214,7 +217,7 @@ API — nothing reimplemented — to turn the blocks into a one-click migration:
 
 ```
 [x] SDK — datasets → finetune → inference on mlx / torch / remote
-[x] 13 methods incl. MoRE, MoRE+ (decoupled MoE), trajectory GRPO, judge rewards
+[x] 15 methods incl. SDFT (self-distillation), SDPO (RL via self-distillation), MoRE, MoRE+ (decoupled MoE), trajectory GRPO, judge rewards
 [x] Capture proxy · OTLP trace ingestion · shadow accelerator · any-hardware
 [x] Remote backend + reference server + the studio dashboard + CLI
 [x] Eval scorers (`slm.evaluate`, `shadowlm eval`) · worker fleet (`shadowlm worker`)
