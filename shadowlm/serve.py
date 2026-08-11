@@ -276,6 +276,11 @@ _MODEL_CATALOG = [
 
 # Sample JSONLs shipped in the wheel (shadowlm/_samples) — a fresh studio seeds
 # these so the Datasets page isn't empty on first spin.
+# Synthesis history is bounded on both axes: a run keeps its most recent log
+# lines, and the store keeps its most recent runs. Neither grows without end.
+_SYNTH_LOG_LINES = 200
+_SYNTH_KEEP = 100
+
 _SAMPLE_DIR = Path(__file__).resolve().parent / "_samples"
 _SAMPLE_NAMES = {
     "chat": "ShadowLM Q&A · chat",
@@ -494,6 +499,8 @@ class Server:
         self._infer_cache: dict[tuple, object] = {}  # (model, adapter) → Model
         self._infer_cache_cap = 3  # compare mode alternates base ↔ adapter
         self._downloads: dict[str, dict] = {}  # model id → prefetch status
+        self._synth: dict[str, dict] = {}      # synth id → status + log lines
+        self._synth_cancel: dict[str, threading.Event] = {}  # live runs only
         self._settings_path = work_root / "settings.json"
         self._custom_path = work_root / "custom_models.json"
         self._tokens_path = work_root / "tokens.json"
@@ -501,6 +508,7 @@ class Server:
         self._machine_tokens = self._load_tokens()  # name → {hash, created}
         self._load_settings()
         self._load_jobs()
+        self._load_synth()
         threading.Thread(target=self._worker, daemon=True).start()
 
     def capacity(self) -> dict:
@@ -664,6 +672,140 @@ class Server:
                 d["pct"] = round(100 * d["downloaded"] / total, 1) if total else None
             out[model] = d
         return out
+
+    # ---- synthesis: generate a dataset instead of uploading one --------------
+    def start_synth(self, body: dict) -> dict:
+        """Kick off a synthesis run in the background; poll `synth_status`.
+
+        Deliberately not on the training queue — synthesis is teacher calls and
+        would otherwise block the one training slot for the whole run.
+        """
+        from .synth import frontier, synthesize  # noqa: PLC0415
+
+        spec = body.get("teacher") or {}
+        synth_id = uuid.uuid4().hex[:10]
+        name = body.get("name") or f"synth-{synth_id[:4]}"
+        requested = int(body.get("n") or 100)
+        budget = int(body.get("token_budget") or 0) or None
+        cancel = threading.Event()
+        with self._lock:
+            self._synth[synth_id] = {
+                "synth_id": synth_id, "name": name, "status": "running",
+                "kept": 0, "requested": requested, "phase": "starting",
+                "done": 0, "total": 0, "tokens": 0, "logs": [],
+                "created": int(time.time()),
+            }
+            self._synth_cancel[synth_id] = cancel
+        self._persist_synth(synth_id)
+
+        def update(**fields) -> None:
+            with self._lock:
+                self._synth[synth_id].update(**fields)
+
+        def run() -> None:
+            def progress(done: int, total: int, phase: str) -> None:
+                with self._lock:
+                    entry = self._synth[synth_id]
+                    entry["phase"], entry["done"], entry["total"] = phase, done, total
+                    # Only a completed round is worth a log line; ticking once
+                    # per finished job would bury the report under hundreds.
+                    if phase == "kept":
+                        entry["kept"] = done
+                        entry["logs"].append(f"[synth] {done}/{total} rows kept")
+                        del entry["logs"][:-_SYNTH_LOG_LINES]
+
+            try:
+                # teacher and episodes resolve in here: loading a local model
+                # (or pulling an HF dataset) can take minutes, and the POST
+                # must return the synth_id immediately, not after the download
+                if spec.get("kind") == "local":
+                    from .models import load  # noqa: PLC0415
+                    teacher = load(spec["model"], backend=self.backend_name)
+                else:
+                    # the key is used for this run and never written to disk
+                    teacher = frontier(spec.get("model") or "gpt-4o",
+                                       base_url=spec.get("base_url") or None,
+                                       api_key=spec.get("api_key") or None)
+                episodes = (self.datasets.resolve(body["dataset_id"])
+                            if body.get("dataset_id") else None)
+                result = synthesize(
+                    teacher=teacher, task=body.get("task") or None,
+                    document=body.get("document") or None, episodes=episodes,
+                    n=requested, method=body.get("method") or None,
+                    # 0 from the UI means "no gate", same as the CLI
+                    min_score=body.get("min_score", 0.6) or None, verbose=False,
+                    token_budget=budget, should_stop=cancel.is_set,
+                    on_progress=progress)
+                meta = self.datasets.save(name, result.rows())
+                with self._lock:
+                    entry = self._synth[synth_id]
+                    # A cancelled run still saved its rows — report it as
+                    # stopped, not succeeded, so the number means something.
+                    entry.update(status="stopped" if cancel.is_set() else "succeeded",
+                                 kept=result.report.kept,
+                                 tokens=result.report.tokens,
+                                 dataset_id=meta["dataset_id"])
+                    entry["logs"].append(result.report.summary())
+                    del entry["logs"][:-_SYNTH_LOG_LINES]
+            except Exception as e:  # noqa: BLE001 — surfaced to the UI
+                update(status="stopped" if cancel.is_set() else "failed",
+                       error=f"{type(e).__name__}: {e}")
+            finally:
+                self._persist_synth(synth_id)
+                with self._lock:
+                    self._synth_cancel.pop(synth_id, None)
+
+        threading.Thread(target=run, daemon=True).start()
+        return {"synth_id": synth_id}
+
+    def cancel_synth(self, synth_id: str) -> bool:
+        """Ask a running synthesis to stop. It keeps the rows it already has."""
+        with self._lock:
+            event = self._synth_cancel.get(synth_id)
+        if event is None:
+            return False
+        event.set()
+        return True
+
+    def synth_status(self, synth_id: str | None = None) -> dict:
+        with self._lock:
+            if synth_id is not None:
+                entry = self._synth.get(synth_id)
+                return dict(entry) if entry else {}
+            recent = sorted(self._synth.values(),
+                            key=lambda e: e.get("created", 0), reverse=True)
+            return {"jobs": [{k: v for k, v in e.items() if k != "logs"}
+                             for e in recent]}
+
+    def _persist_synth(self, synth_id: str) -> None:
+        """Synth records outlive the process, like training jobs do."""
+        with self._lock:
+            entry = dict(self._synth.get(synth_id) or {})
+        if not entry:
+            return
+        root = self.work_root / "synth"
+        root.mkdir(parents=True, exist_ok=True)
+        (root / f"{synth_id}.json").write_text(json.dumps(entry))
+
+    def _load_synth(self) -> None:
+        """Reload past runs, newest first, capped so the store can't grow forever.
+
+        Anything still marked running belongs to a process that no longer
+        exists, so it is recorded as stopped rather than left spinning.
+        """
+        records = sorted(self.work_root.glob("synth/*.json"),
+                         key=lambda p: p.stat().st_mtime, reverse=True)
+        for path in records[:_SYNTH_KEEP]:
+            try:
+                entry = json.loads(path.read_text())
+            except (json.JSONDecodeError, OSError):
+                continue
+            if entry.get("status") == "running":
+                entry["status"] = "stopped"
+                entry["error"] = "the server restarted while this run was going"
+            self._synth[entry["synth_id"]] = entry
+        for path in records[_SYNTH_KEEP:]:
+            path.unlink(missing_ok=True)
 
     # ---- persistence: jobs survive restarts ----------------------------------
     def _persist(self, job: _Job) -> None:
@@ -1356,6 +1498,14 @@ def make_handler(server: Server, auth: "Auth"):
                                  "server_backend": server.backend_name})
             elif parts == ["v1", "models", "downloads"]:
                 self._send(200, {"downloads": server.download_status()})
+            elif parts == ["v1", "synth"]:
+                self._send(200, server.synth_status())
+            elif len(parts) == 3 and parts[:2] == ["v1", "synth"]:
+                status = server.synth_status(parts[2])
+                if status:
+                    self._send(200, status)
+                else:
+                    self._error(404, f"unknown synth run {parts[2]!r}")
             elif parts == ["v1", "vram"]:
                 self._send(200, {"used_mb": server._gpu_used_mb(),
                                  "cached_models": len(server._infer_cache)})
@@ -1463,6 +1613,18 @@ def make_handler(server: Server, auth: "Auth"):
                     if not b.get("model"):
                         return self._error(422, "provide a 'model' id")
                     self._send(202, server.start_download(b["model"]))
+                elif parts == ["v1", "synth"]:
+                    b = self._body()
+                    if not (b.get("task") or b.get("document") or b.get("dataset_id")):
+                        return self._error(
+                            422, "provide a 'task', a 'document', or a 'dataset_id'")
+                    self._send(202, server.start_synth(b))
+                elif len(parts) == 4 and parts[:2] == ["v1", "synth"] \
+                        and parts[3] == "cancel":
+                    if server.cancel_synth(parts[2]):
+                        self._send(200, {"ok": True})
+                    else:
+                        self._error(404, f"no synthesis running as {parts[2]!r}")
                 elif parts == ["v1", "vram", "clear"]:
                     self._send(200, server.clear_vram())
                 elif parts == ["v1", "models", "custom"]:

@@ -163,6 +163,39 @@ export const addHFDataset = (
                            eval_split: evalSplit || null }) });
 export const deleteDataset = (id: string) =>
   api<{ ok: boolean }>(`/v1/datasets/${id}`, { method: "DELETE" });
+
+// ---- synthesis: make a dataset instead of bringing one ----------------------
+export interface SynthStatus {
+  synth_id: string;
+  name: string;
+  status: "running" | "succeeded" | "failed" | "stopped";
+  kept: number;
+  requested: number;
+  tokens?: number;   // what the provider billed — zero for a local teacher
+  // live phase counters — a round's generating/judging batches tick as each
+  // job lands, so the bar moves instead of waiting for the whole round
+  phase?: "starting" | "planning" | "generating" | "judging" | "kept";
+  done?: number;
+  total?: number;
+  dataset_id?: string;
+  error?: string;
+  logs?: string[];
+}
+export interface SynthRequest {
+  name: string;
+  n: number;
+  method?: string;
+  min_score?: number;
+  task?: string;
+  document?: string;
+  dataset_id?: string;
+  teacher: { kind: "openai" | "local"; model: string; base_url?: string; api_key?: string };
+}
+export const startSynth = (body: SynthRequest) =>
+  api<{ synth_id: string }>("/v1/synth", { method: "POST", body: JSON.stringify(body) });
+export const getSynthRun = (id: string) => api<SynthStatus>(`/v1/synth/${id}`);
+export const cancelSynth = (id: string) =>
+  api<{ ok: boolean }>(`/v1/synth/${id}/cancel`, { method: "POST" });
 export const getModels = () =>
   api<{ catalog: CatalogModel[]; recent: string[]; server_backend: string }>("/v1/models");
 export const getDownloads = () =>

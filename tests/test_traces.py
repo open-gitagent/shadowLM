@@ -6,13 +6,21 @@ import shadowlm as slm
 from shadowlm import traces
 
 
-def _llm_span(trace_id, ts, prompt, completion, *, model="gpt-4o", reward=None):
+_WEATHER_TOOL = {"type": "function", "function": {
+    "name": "get_weather", "description": "Current weather for a city",
+    "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}}}
+
+
+def _llm_span(trace_id, ts, prompt, completion, *, model="gpt-4o", reward=None,
+              tools=None):
     """A chat span in OTel GenAI indexed-attribute form."""
     attrs = {"gen_ai.response.model": model}
     for i, m in enumerate(prompt):
         _put_message(attrs, f"gen_ai.prompt.{i}", m)
     for i, m in enumerate(completion):
         _put_message(attrs, f"gen_ai.completion.{i}", m)
+    if tools is not None:
+        attrs["gen_ai.request.tools"] = json.dumps(tools)
     if reward is not None:
         attrs["eval.score"] = reward
     return {"trace_id": trace_id, "start_time": ts, "name": "chat", "attributes": attrs}
@@ -41,8 +49,9 @@ def _agent_run(trace_id):
     tool_res = {"role": "tool", "tool_call_id": "call_0", "content": "18C, sunny"}
     final = {"role": "assistant", "content": "It's 18°C and sunny in Paris."}
     return [
-        _llm_span(trace_id, 1.0, [sys, user], [tool_call]),
-        _llm_span(trace_id, 2.0, [sys, user, tool_call, tool_res], [final], reward=1.0),
+        _llm_span(trace_id, 1.0, [sys, user], [tool_call], tools=[_WEATHER_TOOL]),
+        _llm_span(trace_id, 2.0, [sys, user, tool_call, tool_res], [final],
+                  tools=[_WEATHER_TOOL], reward=1.0),
     ]
 
 
@@ -81,6 +90,25 @@ def test_to_dataset_is_chat_format():
     assert ds.format == "chat"
     assert len(ds.rows) == 1
     assert "messages" in ds.rows[0]
+
+
+def test_tool_schemas_are_recovered_from_spans():
+    traj = traces.from_spans(_agent_run("t1"))[0]
+    assert traj.tools == [_WEATHER_TOOL]
+    # and they ride through to the training rows, where the model needs them
+    assert traces.to_dataset([traj]).rows[0]["tools"] == [_WEATHER_TOOL]
+
+
+def test_openinference_tool_schemas_and_bare_schemas_are_wrapped():
+    bare = _WEATHER_TOOL["function"]
+    span = {"trace_id": "oi", "start_time": 1.0, "name": "chat", "attributes": {
+        "llm.input_messages.0.message.role": "user",
+        "llm.input_messages.0.message.content": "Weather in Paris?",
+        "llm.output_messages.0.message.role": "assistant",
+        "llm.output_messages.0.message.content": "18C.",
+        "llm.tools.0.tool.json_schema": json.dumps(bare),
+    }}
+    assert traces.from_spans([span])[0].tools == [_WEATHER_TOOL]
 
 
 def test_min_reward_filters():

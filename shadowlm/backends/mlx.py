@@ -16,7 +16,7 @@ from .. import accel, methods
 from .._quiet import quiet_backend
 from ..data import CHAT, INSTRUCTION, SHAREGPT, TEXT, Dataset
 from ..training import ATTENTION_MODULES, MLP_MODULES, Metric, TrainConfig, resolve_total_steps
-from .base import Backend, Callbacks, FinetuneResult
+from .base import Backend, Callbacks, FinetuneResult, warn_dropped_tools
 
 DEFAULT_LORA_LAYERS = 16  # how many transformer blocks get LoRA adapters
 
@@ -236,6 +236,8 @@ class MLXBackend(Backend):
         shadow = accel.plan(self.accelerator, backend="mlx", n_layers=len(model.layers))
         if self.accelerator != "none":
             callbacks.log(shadow.note)
+
+        warn_dropped_tools(dataset, callbacks)
 
         # The method spec drives everything below: base requirements, trainable
         # surface, and data rendering. Backends never branch on the method name.

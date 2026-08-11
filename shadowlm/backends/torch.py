@@ -20,7 +20,7 @@ from .. import accel, methods
 from .._quiet import quiet_backend
 from ..data import Dataset
 from ..training import Metric, TrainConfig, resolve_total_steps
-from .base import Backend, Callbacks, FinetuneResult
+from .base import Backend, Callbacks, FinetuneResult, warn_dropped_tools
 
 _REQUIRED = ("torch", "transformers", "trl", "peft", "datasets")
 
@@ -193,6 +193,8 @@ class TorchBackend(Backend):
             callbacks.log(shadow.note)
         if shadow.fused_kernels:
             self._apply_liger(callbacks)
+
+        warn_dropped_tools(dataset, callbacks)
 
         # The method spec drives base requirements and the trainable surface —
         # no branching on method names here.

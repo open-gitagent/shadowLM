@@ -65,6 +65,36 @@ run = model.finetune([group], method="grpo") # 3. train the shadowLM on them
 No reward math, no rewriting the agent into an RL framework — the model API is
 the one boundary every agent already has, so ShadowLM trains from it.
 
+## No data yet? Synthesize it
+
+Capture needs a running agent and traces need one that already ran. When you
+have neither, describe the task — a teacher model writes the training set:
+
+```python
+run = slm.synthesize(                          # or document="handbook.md",
+    task="Triage billing emails: classify urgency, draft a reply, "  # or episodes=[...]
+         "escalate refunds over $200.",
+    teacher=slm.synth.frontier("gpt-4o"),      # or any slm.load(...) model
+    n=200, method="lora")                      # the method picks the shape
+print(run.report.summary())                    # kept 200/243 · 18 invalid · 19 dup · 6 low-scoring
+model.finetune(run.dataset, method="lora")
+```
+
+The teacher expands your task into distinct scenarios before writing anything,
+so you get coverage instead of one example rewritten 200 times. Every row is
+validated, deduplicated and judged, and **every rejection is counted** — the
+report reconciles exactly.
+
+`method=` picks the output shape from that method's spec: `dpo` gives preference
+pairs, `grpo` gives scored trajectory groups, `more_plus` gives query-diverse
+paraphrase units. `format="otlp"` emits OpenTelemetry GenAI spans that
+round-trip through `traces.from_otlp` — so the output injects into any stack
+that speaks OTel, not just this one.
+
+A run calls a paid API in a loop, so it reports the tokens the provider actually
+billed (never an estimate), and takes a `token_budget=` throttle and a
+`should_stop=` cancel. Both keep whatever the run has already produced.
+
 ## What you get today
 
 The whole **capture → judge → train → own a shadowLM** loop runs on these:
@@ -73,6 +103,7 @@ The whole **capture → judge → train → own a shadowLM** loop runs on these:
 |-------|--------------|-----|
 | **Capture proxy** | drop-in OpenAI endpoint that records your agent's traffic into trajectories — agent unchanged | `slm.capture()` |
 | **Trace ingestion** | already have OpenTelemetry GenAI spans? turn an OTLP dump into a training set, no proxy | `slm.traces.to_dataset()` |
+| **Data synthesizer** | no traffic yet? describe the task, point at a document, or amplify a few real episodes — emitted in the shape your method takes, or as OTel spans | `slm.synthesize()` |
 | **13 methods** | LoRA · QLoRA · DoRA · full · CPT · DPO · GRPO · MoRE · MoRE+ · BitFit · prompt · p-tuning · adapter | `method=` |
 | **Judge → train** | score episodes with an LLM judge, train with trajectory-GRPO or DPO | `judge_group` |
 | **APO** | optimize the *prompt* instead of weights — same capture/judge front end, no GPU | `slm.optimize_prompt()` |
@@ -178,6 +209,7 @@ Run output (mlx, a 0.5B model, ~3.5s):
 ## CLI & studio
 
 ```bash
+shadowlm synth --task "triage billing email" --teacher gpt-4o -n 200 -o data.jsonl
 shadowlm finetune data.jsonl --model Qwen/Qwen2.5-0.5B-Instruct --method lora
 shadowlm finetune --config run.yaml --dry-run   # reproducible runs, preview first
 shadowlm chat out/adapter/                       # talk to what you trained
@@ -187,8 +219,8 @@ shadowlm serve                                   # studio UI + API on one port
 Headline hyperparameters are typed flags; every other `TrainConfig` field is
 reachable via `--set field=value` or a `--config` file (flags override config
 override defaults). `shadowlm serve` opens the **studio** at `http://127.0.0.1:8329`
-— Datasets (upload + HuggingFace) → Models → guided Train → live Runs (loss
-charts + training console) → Playground (compare base ↔ finetuned). It's the
+— Datasets (upload + HuggingFace + synthesize) → Models → guided Train → live
+Runs (loss charts + training console) → Playground (compare base ↔ finetuned). It's the
 built React app, shipped in the wheel; the same JSON protocol powers
 `backend="remote"`.
 
@@ -215,7 +247,7 @@ API — nothing reimplemented — to turn the blocks into a one-click migration:
 ```
 [x] SDK — datasets → finetune → inference on mlx / torch / remote
 [x] 13 methods incl. MoRE, MoRE+ (decoupled MoE), trajectory GRPO, judge rewards
-[x] Capture proxy · OTLP trace ingestion · shadow accelerator · any-hardware
+[x] Capture proxy · OTLP trace ingestion · data synthesizer · shadow accelerator
 [x] Remote backend + reference server + the studio dashboard + CLI
 [x] Eval scorers (`slm.evaluate`, `shadowlm eval`) · worker fleet (`shadowlm worker`)
 [ ] Studio orchestration — decision inbox · cost gates · shadow router · switch

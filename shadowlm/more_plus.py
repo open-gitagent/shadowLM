@@ -236,13 +236,17 @@ def _surrogate(row: dict) -> str:
 
 
 def split_units(dataset, group_size: int = 1) -> list[tuple[str, list[dict]]]:
-    """Partition rows into (surrogate_text, rows) units — one expert per unit."""
+    """Partition rows into (surrogate_text, rows) units — one expert per unit.
+
+    The surrogate joins every row's query side, so a unit holding several
+    phrasings of one fact is routable by all of them, not just the first.
+    """
     rows = list(getattr(dataset, "rows", dataset))
     g = max(1, int(group_size))
     units = []
     for i in range(0, len(rows), g):
         grp = rows[i:i + g]
-        units.append((_surrogate(grp[0]), grp))
+        units.append((" ".join(s for s in map(_surrogate, grp) if s), grp))
     return units
 
 
