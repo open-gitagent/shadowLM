@@ -256,3 +256,61 @@ def test_sample_export_file_end_to_end():
             ["system", "user", "assistant", "tool", "assistant"]
     ds = traces.to_dataset(eps, min_reward=0.5)
     assert ds.format == "chat" and len(ds.rows) == 2
+
+
+# A reward describes the episode, not one model call. An evaluator that scores
+# a whole trace writes it on the root span — which is not a model call, so a
+# reader that filtered to calls before reading the key dropped it silently and
+# left the trajectory at 0.0. A zero reward looks exactly like a bad episode,
+# which is what made the loss invisible.
+def _root_span(trace_id, reward):
+    return {
+        "trace_id": trace_id,
+        "start_time": 0.0,
+        "name": "AgentExecutor",
+        "attributes": {"openinference.span.kind": "AGENT", "eval.score": reward},
+    }
+
+
+def test_a_reward_on_the_root_span_reaches_the_trajectory():
+    spans = [_root_span("t1", 1.0), *_agent_run("t1")]
+    # Strip the reward off the model call, so the root is the only source.
+    spans[-1]["attributes"].pop("eval.score")
+
+    trajs = traces.from_spans(spans, reward_key="eval.score")
+    assert len(trajs) == 1
+    assert trajs[0].reward == 1.0
+
+
+def test_a_root_reward_still_filters_a_dataset():
+    spans = [_root_span("t1", 0.25), *_agent_run("t1")]
+    spans[-1]["attributes"].pop("eval.score")
+
+    assert len(traces.to_dataset(spans, reward_key="eval.score", min_reward=0.2)) == 1
+    try:
+        traces.to_dataset(spans, reward_key="eval.score", min_reward=0.5)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("min_reward above the root's score should keep nothing")
+
+
+def test_a_conversation_id_keys_the_reward_the_same_way_it_keys_the_calls():
+    # gen_ai.conversation.id wins over trace_id when present, and the reward
+    # reader has to agree with the call builder or they key different episodes.
+    spans = _agent_run("t1")
+    for span in spans:
+        span["attributes"]["gen_ai.conversation.id"] = "conv-9"
+    spans[-1]["attributes"].pop("eval.score")
+    root = _root_span("t-other", 1.0)
+    root["attributes"]["gen_ai.conversation.id"] = "conv-9"
+
+    trajs = traces.from_spans([root, *spans], reward_key="eval.score")
+    assert len(trajs) == 1
+    assert trajs[0].reward == 1.0
+
+
+def test_an_unparseable_reward_is_ignored_not_fatal():
+    spans = [_root_span("t1", "not-a-number"), *_agent_run("t1")]
+    spans[-1]["attributes"].pop("eval.score")
+    assert traces.from_spans(spans, reward_key="eval.score")[0].reward == 0.0

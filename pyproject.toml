@@ -62,9 +62,13 @@ dependencies = [
     "typer>=0.12",
     "rich>=13",
     "pyyaml>=6",
-    # Apple-Silicon dev loop — installed automatically on arm64 macOS only
-    "mlx-lm>=0.20; sys_platform == 'darwin' and platform_machine == 'arm64'",
-    "mlx-lm-lora>=2.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    # Apple-Silicon dev loop — installed automatically on arm64 macOS only.
+    #
+    # Capped below 0.30 on purpose: mlx-lm 0.30+ pins `transformers==5.0.0rc*`,
+    # which cannot coexist with the <4.57 ceiling above, and pip reports that
+    # as an unsolvable base install rather than as the version clash it is.
+    # 0.29.x is the last line that takes `transformers>=4.39.3` unbounded.
+    "mlx-lm>=0.20,<0.30; sys_platform == 'darwin' and platform_machine == 'arm64'",
 ]
 
 [project.urls]
@@ -90,13 +94,31 @@ verl = [
 dev = [
     "pytest>=8",
 ]
+# Preference training on Apple Silicon (DPO/GRPO via the mlx backend).
+#
+# Separate because it cannot share an environment with the torch path: every
+# published mlx-lm-lora requires `mlx_lm>=0.30.6`, which requires
+# `transformers==5.0.0rc*`, and the torch trainer needs `transformers<4.57`
+# (see the ceiling above). Installing this into the base environment makes the
+# whole install unsolvable, which is why it is not a base dependency.
+#
+# Use it in an environment of its own:
+#
+#     pip install shadowlm[preference] --no-deps
+#     pip install "mlx-lm-lora>=2.0"
+#
+# Everything else — LoRA, QLoRA, DoRA, CPT, SFT from traces — works in the base
+# install with no extra.
+preference = [
+    "mlx-lm-lora>=2.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
+]
+
 # Back-compat aliases — the training stack now ships in the base install, so
 # these resolve to nothing but keep older `shadowlm[all]` / `[torch]` commands working.
 all = []
 mlx-all = []
 torch = []
 mlx = []
-preference = []
 retrieval = []
 cli = []
 

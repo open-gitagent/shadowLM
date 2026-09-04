@@ -335,6 +335,22 @@ class _Call:
         self.tools, self.model = tools, model
 
 
+def _trace_of(span: dict, attrs: dict) -> str:
+    """The episode a span belongs to.
+
+    `gen_ai.conversation.id` wins where it is set: one conversation can span
+    several OTel traces, and the episode is the conversation. Shared by the
+    call builder and the reward reader so both key the same episode.
+    """
+    return str(
+        attrs.get(_CONVERSATION)
+        or span.get("trace_id")
+        or span.get("traceId")
+        or span.get("span_id")
+        or ""
+    )
+
+
 def _span_call(span: dict) -> _Call | None:
     """An LLM/chat span → a (prompt, response) call, or None if it isn't one.
 
@@ -354,8 +370,7 @@ def _span_call(span: dict) -> _Call | None:
     if sysmsgs and not (prompt and prompt[0].get("role") == "system"):
         prompt = sysmsgs + prompt
     model = attrs.get(_RESP_MODEL) or attrs.get(_REQ_MODEL) or attrs.get("llm.model_name")
-    trace = (attrs.get(_CONVERSATION) or span.get("trace_id") or span.get("traceId")
-             or span.get("span_id") or "")
+    trace = _trace_of(span, attrs)
     ts = span.get("start_time") or span.get("startTimeUnixNano") or 0
     try:
         ts = float(ts)
@@ -410,7 +425,9 @@ def from_spans(
     and, for grouping, a `trace_id`. `builder` is "conversation" (default — fold
     each trace's agent loop into one multi-turn episode) or "per_request" (one
     episode per model call). `reward_key`, if given, reads a per-trace scalar
-    from that span attribute and sets it as the trajectory `reward`.
+    from that span attribute and sets it as the trajectory `reward` — from any
+    span in the trace, including the root, since a reward describes the
+    episode rather than one model call.
     """
     if builder not in ("conversation", "per_request"):
         raise ValueError(f"unknown builder {builder!r} (conversation | per_request)")
@@ -418,17 +435,26 @@ def from_spans(
     by_trace: dict[str, list[_Call]] = {}
     rewards: dict[str, float] = {}
     for span in spans:
+        # The reward is read before the span is filtered, because it describes
+        # the episode rather than the model call. An evaluator that scores a
+        # whole trace naturally writes it on the root — and the root is not a
+        # model call, so reading it only from calls silently dropped it and
+        # left the trajectory at 0.0. A zero reward is indistinguishable from
+        # a bad episode, so that loss was invisible.
+        if reward_key is not None:
+            attrs = _flatten(span.get("attributes", {}))
+            if reward_key in attrs:
+                trace_id = _trace_of(span, attrs)
+                if trace_id:
+                    try:
+                        rewards[trace_id] = float(attrs[reward_key])
+                    except (TypeError, ValueError):
+                        pass
+
         call = _span_call(span)
         if call is None:
             continue
         by_trace.setdefault(call.trace, []).append(call)
-        if reward_key is not None:
-            attrs = _flatten(span.get("attributes", {}))
-            if reward_key in attrs:
-                try:
-                    rewards[call.trace] = float(attrs[reward_key])
-                except (TypeError, ValueError):
-                    pass
 
     out: list[Trajectory] = []
     for trace, calls in by_trace.items():
