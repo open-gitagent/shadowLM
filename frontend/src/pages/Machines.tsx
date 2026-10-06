@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
+import { allows, needs } from "@/lib/embed";
 
 function CopyBtn({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
@@ -49,7 +50,8 @@ function ConnectCmd() {
 
   return (
     <div className="grid gap-3">
-      <div className="flex items-center gap-2">
+      {!allows("admin") && <p className="text-sm text-muted-foreground">{needs("admin")}</p>}
+      <div className={allows("admin") ? "flex items-center gap-2" : "hidden"}>
         <Input value={name} onChange={(e) => setName(e.target.value)}
                onKeyDown={(e) => e.key === "Enter" && mint()}
                placeholder="Machine name, e.g. macbook"
@@ -83,11 +85,13 @@ function ConnectCmd() {
               <span className="ml-auto text-xs text-muted-foreground">
                 created {new Date(t.created * 1000).toLocaleDateString()}
               </span>
-              <Button variant="ghost" size="icon-sm" title="Revoke" aria-label={`Revoke ${t.name}`}
-                      className="text-muted-foreground hover:text-destructive"
-                      onClick={() => revokeToken(t.name).then(refresh)}>
-                <Trash2 />
-              </Button>
+              {allows("admin") && (
+                <Button variant="ghost" size="icon-sm" title="Revoke" aria-label={`Revoke ${t.name}`}
+                        className="text-muted-foreground hover:text-destructive"
+                        onClick={() => revokeToken(t.name).then(refresh, () => {})}>
+                  <Trash2 />
+                </Button>
+              )}
             </li>
           ))}
         </ul>

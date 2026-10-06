@@ -12,7 +12,9 @@
 // call. The host's menu replaces the studio's sidebar.
 //
 //   host → frame   init {pass, role, path, api_base, api_url} · pass {pass} · theme {theme} · navigate {path}
+//                  · action {id}, taken from the menu the studio sent
 //   frame → host   ready · pass (one now, please) · route {path} · title {title} · toast {level, message}
+//                  · menu {menu}, the studio's menu for the host to show in place of its own
 
 import { useSyncExternalStore } from "react";
 
@@ -126,6 +128,9 @@ export function startEmbed(navigate: (path: string) => void): Promise<string> {
         case "navigate":
           if (isPage(m.path)) navigate(m.path);
           break;
+        case "action":
+          if (typeof m.id === "string") actions.forEach((a) => a(m.id as string));
+          break;
       }
     });
     // The parent's origin is not known yet, and may be any port of a listed
@@ -146,6 +151,19 @@ export const embedApiBase = () => state.apiBase;
 // host's proxy decides what is allowed.
 export const embedRole = () => state.role;
 
+const ranks: EmbedRole[] = ["viewer", "operator", "admin"];
+
+// allows reports whether to show a control whose change needs the role
+// need: on its own, the studio's sign-in decides, so always; embedded, by
+// the person's role in the host. Through opencontroller, operators add
+// datasets and models, train and use the playground, and administrators
+// mint machine tokens. Showing only: the host's proxy decides.
+export const allows = (need: EmbedRole) => !embedded || ranks.indexOf(state.role) >= ranks.indexOf(need);
+
+// needs says why a control is not there, for a page that would be empty
+// without it.
+export const needs = (need: EmbedRole) => `This needs the ${need} role in the console the studio is shown in.`;
+
 // renewPass asks the host for a pass now, after a refusal, and waits for
 // it, or five seconds.
 export function renewPass(): Promise<void> {
@@ -164,6 +182,37 @@ export const reportRoute = (path: string) => isPage(path) && post({ type: "route
 
 // reportTitle tells the host what the page shows, as its subtitle.
 export const reportTitle = (title: string) => post({ type: "title", title: title.slice(0, 120) });
+
+// A menu item, as the host shows it: a page of the studio, an action the
+// studio takes when the host says it was chosen, or a link elsewhere (https
+// only). Icons are lucide's, by name.
+export interface MenuItem {
+  label: string;
+  icon: string;
+  hint?: string;
+  path?: string;
+  action?: string;
+  href?: string;
+}
+
+export interface Menu {
+  groups: { title?: string; items: MenuItem[] }[];
+  foot: MenuItem[];
+}
+
+// reportMenu gives the host the studio's menu, to show in place of its own.
+export const reportMenu = (menu: Menu) => post({ type: "menu", menu });
+
+const actions = new Set<(id: string) => void>();
+
+// onHostAction runs a when the host says an action of the studio's menu was
+// chosen; it returns how to stop.
+export function onHostAction(a: (id: string) => void): () => void {
+  actions.add(a);
+  return () => {
+    actions.delete(a);
+  };
+}
 
 // toast asks the host to show a notification.
 export const hostToast = (level: "success" | "error" | "info", message: string) =>

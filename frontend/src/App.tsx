@@ -22,7 +22,9 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { embedded, hashToPage, reportRoute, reportTitle, useEmbedTheme } from "@/lib/embed";
+import {
+  allows, embedded, hashToPage, type MenuItem, onHostAction, reportMenu, reportRoute, reportTitle, useEmbedTheme,
+} from "@/lib/embed";
 import { cn } from "@/lib/utils";
 import Dashboard from "@/pages/Dashboard";
 import Datasets from "@/pages/Datasets";
@@ -73,6 +75,13 @@ const sections: Section[] = [
 ];
 const machinesItem: NavItem = { hash: "machines", label: "Machines", icon: MonitorSmartphone };
 const allItems = [...sections.flatMap((s) => s.items), machinesItem];
+
+// glyphs are the menu's icons by name, for a host that draws the menu itself
+// (HostMenu): lucide's names, which the host knows.
+const glyphs = new Map<LucideIcon, string>([
+  [LayoutDashboard, "layout-dashboard"], [MessagesSquare, "messages-square"], [Database, "database"],
+  [Box, "box"], [Cpu, "cpu"], [History, "history"], [MonitorSmartphone, "monitor-smartphone"],
+]);
 
 // The repository; its README is the documentation.
 const repo = "https://github.com/open-gitagent/shadowLM";
@@ -263,6 +272,7 @@ function Studio({ onSignOut, embeddedIn }: { onSignOut?: () => void; embeddedIn?
     return (
       <main className="@container flex h-full min-h-0 flex-col overflow-y-auto bg-canvas px-6 pt-6 pb-8 *:shrink-0">
         {page}
+        <HostMenu />
       </main>
     );
   }
@@ -487,9 +497,10 @@ function ThemeToggle() {
   );
 }
 
-// HfTokenButton sets the Hugging Face token the server uses for gated and
-// private models.
-function HfTokenButton({ open: islandOpen }: { open: boolean }) {
+// useHfToken is the Hugging Face token the server uses for gated and private
+// models: whether one is set, and its dialog, opened from the island
+// (HfTokenButton) or, embedded, from the host's menu (HostMenu).
+function useHfToken() {
   const [open, setOpen] = useState(false);
   const [isSet, setIsSet] = useState(false);
   const [value, setValue] = useState("");
@@ -515,38 +526,47 @@ function HfTokenButton({ open: islandOpen }: { open: boolean }) {
     }
   }
 
+  const dialog = (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogContent className="sm:max-w-md">
+        <form onSubmit={save} className="grid gap-4">
+          <DialogHeader>
+            <DialogTitle>Hugging Face token</DialogTitle>
+            <DialogDescription>
+              For gated and private models. It is stored on this server, never in the browser.
+              {isSet && " A token is set; saving replaces it."}
+            </DialogDescription>
+          </DialogHeader>
+          <Input type="password" autoFocus placeholder="hf_…" value={value} onChange={(e) => setValue(e.target.value)} />
+          {err && <p className="text-sm text-destructive">{err}</p>}
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
+            <Button type="submit" disabled={!value.trim() || busy}>{busy ? "Saving…" : "Save token"}</Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+  return { isSet, setOpen, dialog };
+}
+
+function HfTokenButton({ open: islandOpen }: { open: boolean }) {
+  const hf = useHfToken();
   return (
     <>
       <ActionRow open={islandOpen} icon={KeyRound} label="Hugging Face token"
-                 hint={isSet ? "set" : "not set"}
+                 hint={hf.isSet ? "set" : "not set"}
                  title="The token the server uses for gated and private models"
-                 onClick={() => setOpen(true)} />
-      <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="sm:max-w-md">
-          <form onSubmit={save} className="grid gap-4">
-            <DialogHeader>
-              <DialogTitle>Hugging Face token</DialogTitle>
-              <DialogDescription>
-                For gated and private models. It is stored on this server, never in the browser.
-                {isSet && " A token is set; saving replaces it."}
-              </DialogDescription>
-            </DialogHeader>
-            <Input type="password" autoFocus placeholder="hf_…" value={value} onChange={(e) => setValue(e.target.value)} />
-            {err && <p className="text-sm text-destructive">{err}</p>}
-            <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
-              <Button type="submit" disabled={!value.trim() || busy}>{busy ? "Saving…" : "Save token"}</Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
+                 onClick={() => hf.setOpen(true)} />
+      {hf.dialog}
     </>
   );
 }
 
 // VramButton unloads cached models and frees GPU memory; beside it, how
 // much is in use, and after a clean, what it came down to.
-function VramButton({ open }: { open: boolean }) {
+// useVram is the GPU memory cached models hold, and freeing it.
+function useVram() {
   const [hint, setHint] = useState("");
   const [busy, setBusy] = useState(false);
   const gb = (mb: number) => `${(mb / 1024).toFixed(1)} GB`;
@@ -566,11 +586,44 @@ function VramButton({ open }: { open: boolean }) {
       setBusy(false);
     }
   }
+  return { hint: busy ? "clearing…" : hint, busy, clean };
+}
 
+function VramButton({ open }: { open: boolean }) {
+  const vram = useVram();
   return (
-    <ActionRow open={open} icon={busy ? LoaderCircle : Zap} label="Clean VRAM"
-               hint={busy ? "clearing…" : hint}
+    <ActionRow open={open} icon={vram.busy ? LoaderCircle : Zap} label="Clean VRAM"
+               hint={vram.hint}
                title="Unload cached models and free GPU memory"
-               onClick={clean} />
+               onClick={vram.clean} />
   );
+}
+
+// HostMenu is the studio's menu for a host console that shows its own in
+// place of the island (lib/embed.ts): the same sections, the island's
+// actions the person's role in the host allows, and its links. The host
+// says when an action is chosen; it runs here, where its dialog is.
+function HostMenu() {
+  const hf = useHfToken();
+  const vram = useVram();
+  const admin = allows("admin");
+  const operator = allows("operator");
+  const { setOpen } = hf;
+  const { clean } = vram;
+
+  useEffect(() => {
+    const item = (i: NavItem): MenuItem => ({ label: i.label, icon: glyphs.get(i.icon) ?? "", path: hashToPage(i.hash) });
+    const foot: MenuItem[] = [item(machinesItem)];
+    if (admin) foot.push({ label: "Hugging Face token", icon: "key-round", hint: hf.isSet ? "set" : "not set", action: "hf-token" });
+    if (operator) foot.push({ label: "Clean VRAM", icon: vram.busy ? "loader-circle" : "zap", hint: vram.hint || undefined, action: "clear-vram" });
+    foot.push({ label: "Docs", icon: "book-open", href: `${repo}#readme` }, { label: "GitHub", icon: "external-link", href: repo });
+    reportMenu({ groups: sections.map((s) => ({ title: s.title, items: s.items.map(item) })), foot });
+  }, [admin, operator, hf.isSet, vram.busy, vram.hint]);
+
+  useEffect(() => onHostAction((id) => {
+    if (id === "hf-token" && admin) setOpen(true);
+    if (id === "clear-vram" && operator) void clean();
+  }), [admin, operator, setOpen, clean]);
+
+  return hf.dialog;
 }

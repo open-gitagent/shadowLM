@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { CircleAlert, Download, History, MessagesSquare, PackageOpen, Search, Square, TerminalSquare } from "lucide-react";
-import { apiFetch, cancelJob, getCheckpoints, getJob, getJobs, getLogs, getMetrics } from "@/api";
+import { apiFetch, cancelJob, failure, getCheckpoints, getJob, getJobs, getLogs, getMetrics } from "@/api";
 import type { Checkpoint, JobDetail, JobSummary, StepMetric } from "@/api";
 import { ChartLegend, LossChart, Sparkline } from "@/components/charts";
 import { EmptyState, Mono, PageHeader, Stat, StatStrip, StatusBadge } from "@/components/common";
@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
+import { allows, embedded, hostToast } from "@/lib/embed";
 
 export default function Runs({ initialId }: { initialId?: string }) {
   const [jobs, setJobs] = useState<JobSummary[]>([]);
@@ -163,7 +164,11 @@ function RunDetail({ run }: { run: JobSummary }) {
 
   async function downloadAdapter() {
     const r = await apiFetch(`/v1/finetunes/${run.job_id}/artifact`);
-    if (!r.ok) return alert("artifact not ready");
+    if (!r.ok) {
+      // A framed page cannot alert (the host's sandbox), so the host says it.
+      const why = (await failure(r)).message;
+      return embedded ? (r.status !== 403 && hostToast("error", why)) : alert(why);
+    }
     const blob = await r.blob();
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
@@ -196,8 +201,8 @@ function RunDetail({ run }: { run: JobSummary }) {
             </p>
           </div>
           <div className="flex items-center gap-2">
-            {(job?.status === "running" || job?.status === "pending") && (
-              <Button variant="destructive" onClick={() => cancelJob(run.job_id)}>
+            {(job?.status === "running" || job?.status === "pending") && allows("operator") && (
+              <Button variant="destructive" onClick={() => cancelJob(run.job_id).catch(() => {})}>
                 <Square /> Cancel
               </Button>
             )}
@@ -206,9 +211,11 @@ function RunDetail({ run }: { run: JobSummary }) {
                 <Button variant="outline" onClick={toPlayground}>
                   <MessagesSquare /> Playground
                 </Button>
-                <Button variant="outline" onClick={downloadAdapter}>
-                  <Download /> Adapter
-                </Button>
+                {allows("operator") && (
+                  <Button variant="outline" onClick={downloadAdapter}>
+                    <Download /> Adapter
+                  </Button>
+                )}
               </>
             )}
           </div>
@@ -282,9 +289,11 @@ function RunDetail({ run }: { run: JobSummary }) {
                       Load it back: <code className="font-mono text-foreground/80">slm.load("{run.base_model}", adapter="…")</code>
                     </div>
                   </div>
-                  <Button variant="outline" onClick={downloadAdapter}>
-                    <Download /> tar.gz
-                  </Button>
+                  {allows("operator") && (
+                    <Button variant="outline" onClick={downloadAdapter}>
+                      <Download /> tar.gz
+                    </Button>
+                  )}
                 </div>
                 {ckpts.length > 1 && (
                   <div className="border-t border-border">

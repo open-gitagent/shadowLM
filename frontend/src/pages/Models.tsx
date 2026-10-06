@@ -11,6 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { allows } from "@/lib/embed";
 
 const fmtGB = (b?: number) => (b ? `${(b / 1e9).toFixed(b < 1e9 ? 2 : 1)} GB` : "");
 
@@ -84,12 +85,13 @@ export default function Models() {
       <PageHeader
         title="Models"
         description={`Any open model on the Hugging Face hub works; these are good starting points. Server backend: ${backend}.`}
-        actions={
+        actions={allows("operator") && (
           <form className="flex gap-2" onSubmit={(e) => { e.preventDefault(); addModel(free); }}>
             <Input value={free} onChange={(e) => setFree(e.target.value)}
                    placeholder="org/model, any HF id" className="w-56 font-mono" />
             <Button type="submit" disabled={!free.trim()}><Plus /> Add</Button>
           </form>
+        )
         }
       />
 
@@ -137,7 +139,7 @@ export default function Models() {
                         HF token
                       </Badge>
                     )}
-                    {m.custom && (
+                    {m.custom && allows("operator") && (
                       <Button variant="ghost" size="icon-xs" title="Remove from library" aria-label={`Remove ${m.id}`}
                               className="text-muted-foreground hover:text-destructive"
                               onClick={() => removeModel(m.id)}>
@@ -178,7 +180,7 @@ export default function Models() {
                   <Button variant="outline" onClick={() => pick("model", m.id, "#playground")}>
                     Try
                   </Button>
-                  {!onDisk && !downloading && (
+                  {!onDisk && !downloading && allows("operator") && (
                     <Button variant="outline" size="icon" title="Prefetch weights to disk"
                             aria-label={`Download ${m.id}`} onClick={() => startDownload(m.id)}>
                       <Download />

@@ -9,6 +9,7 @@ import { Dots } from "@/components/common";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
+import { allows, needs } from "@/lib/embed";
 
 type Msg = { role: "user" | "assistant"; content: string };
 
@@ -34,6 +35,9 @@ export default function Playground() {
   // Prewarm the picked model(s) so no chat request ever hits a cold load —
   // proxies (Cloudflare) cut requests around 100s, and a cold 8B takes longer.
   useEffect(() => {
+    // Warming a model up spends the studio's machines: only for someone who
+    // may ask it.
+    if (!allows("operator")) return;
     let stop = false;
     setWarmErr("");
     const targets: (string | null)[] = compare && adapter ? [adapter, null]
@@ -308,10 +312,12 @@ export default function Playground() {
           <textarea ref={inputRef} value={input} rows={1} data-slot="composer"
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
-            placeholder={warming ? "Warming up the model — first load can take a couple of minutes…"
-                                 : "Say something to the shadow…"}
+            placeholder={!allows("operator") ? needs("operator")
+                         : warming ? "Warming up the model — first load can take a couple of minutes…"
+                                   : "Say something to the shadow…"}
+            disabled={!allows("operator")}
             className="field-sizing-content max-h-40 min-h-9 min-w-0 grow resize-none rounded-lg border border-input bg-transparent px-3 py-2 text-[13px] outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50" />
-          <Button size="icon" className="size-9" aria-label="Send" onClick={send} disabled={!input.trim() || busy || warming}>
+          <Button size="icon" className="size-9" aria-label="Send" onClick={send} disabled={!input.trim() || busy || warming || !allows("operator")}>
             {busy ? <LoaderCircle className="size-3.5 animate-spin" /> : <ArrowUp className="size-4" />}
           </Button>
         </div>
