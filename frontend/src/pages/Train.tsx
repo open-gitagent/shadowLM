@@ -14,6 +14,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
+import { allows, needs } from "@/lib/embed";
 
 const STEPS = ["Data", "Model", "Method", "Tune"] as const;
 const recommend = (format?: string): string[] =>
@@ -487,9 +488,13 @@ export default function Train({ methods }: { methods: MethodInfo[] }) {
                 <SummaryRow label="Eval" value={evalSplit ? `${evalPct}% held out` : "off"} />
               </dl>
               <div className="space-y-2 px-4 pt-1 pb-4">
-                <Button size="lg" onClick={start} disabled={!ready || busy} className="h-10 w-full">
-                  {busy ? <LoaderCircle className="animate-spin" /> : <Play />} {busy ? "Starting…" : "Start training"}
-                </Button>
+                {allows("operator") ? (
+                  <Button size="lg" onClick={start} disabled={!ready || busy} className="h-10 w-full">
+                    {busy ? <LoaderCircle className="animate-spin" /> : <Play />} {busy ? "Starting…" : "Start training"}
+                  </Button>
+                ) : (
+                  <p className="text-center text-xs text-muted-foreground">{needs("operator")}</p>
+                )}
                 <p className="text-center text-[11px] text-muted-foreground">
                   This exact config runs — nothing hidden.
                 </p>

@@ -1,5 +1,5 @@
 // The ShadowLM remote protocol, typed. Same endpoints the SDK speaks.
-import { embedApiBase, embedded, embedToken, renewPass } from "@/lib/embed";
+import { embedApiBase, embedded, embedToken, hostToast, renewPass } from "@/lib/embed";
 
 export interface DatasetMeta {
   dataset_id: string;
@@ -112,14 +112,22 @@ export async function apiFetch(path: string, opts: RequestInit = {}): Promise<Re
   return r;
 }
 
+// failure is why a call failed, as its answer says: the studio's own
+// {error}, or the problem a host's proxy answers ({detail}, {title}, RFC
+// 9457). Embedded, a change the host refuses (its roles, not the studio's)
+// is also said in the host, so it is seen even where a page drops errors.
+export async function failure(r: Response): Promise<Error> {
+  const b = await r.json().catch(() => ({} as { error?: string; detail?: string; title?: string }));
+  const message = b.error || b.detail || b.title || r.statusText || `HTTP ${r.status}`;
+  if (embedded && r.status === 403) hostToast("error", message);
+  return new Error(message);
+}
+
 export async function api<T>(path: string, opts: RequestInit = {}): Promise<T> {
   const r = await apiFetch(path, {
     ...opts, headers: { "Content-Type": "application/json", ...(opts.headers as Record<string, string> | undefined) },
   });
-  if (!r.ok) {
-    const detail = await r.json().catch(() => ({} as { error?: string }));
-    throw new Error(detail.error || r.statusText);
-  }
+  if (!r.ok) throw await failure(r);
   return r.json() as Promise<T>;
 }
 

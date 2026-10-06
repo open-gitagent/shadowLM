@@ -14,6 +14,7 @@ import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
+import { allows } from "@/lib/embed";
 
 const FORMAT_COLORS: Record<string, string> = {
   chat: "border-primary/20 bg-primary/10 text-primary",
@@ -82,7 +83,7 @@ export default function Datasets() {
       <PageHeader
         title="Datasets"
         description="Upload JSONL, or reference a Hugging Face dataset. Chat, instruction, preference, or raw text — the format is auto-detected."
-        actions={
+        actions={allows("operator") && (
           <>
             <Button variant="outline" onClick={() => setTab("hf")}>
               <Database /> Hugging Face
@@ -91,6 +92,7 @@ export default function Datasets() {
               <Upload /> Upload
             </Button>
           </>
+        )
         }
       />
 
@@ -183,10 +185,12 @@ export default function Datasets() {
                         onClick={() => previewRow(d)}>
                         {previewing === d.dataset_id ? <><LoaderCircle className="animate-spin" /> Loading…</> : "Preview"}
                       </Button>
-                      <Button size="sm" variant="ghost" className="text-destructive hover:bg-destructive/10 hover:text-destructive"
-                        onClick={() => deleteDataset(d.dataset_id).then(refresh)}>
-                        Delete
-                      </Button>
+                      {allows("operator") && (
+                        <Button size="sm" variant="ghost" className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+                          onClick={() => deleteDataset(d.dataset_id).then(refresh, () => {})}>
+                          Delete
+                        </Button>
+                      )}
                     </div>
                   </TableCell>
                 </TableRow>

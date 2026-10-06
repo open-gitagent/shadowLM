@@ -140,7 +140,13 @@ routing; its run progress is one step per unit (see `resolve_total_steps`).
   run **embedded** in a host console over the `oc-embed/1` postMessage bridge
   (`frontend/src/lib/embed.ts`): framed by an origin `serve.py`'s
   `frame_ancestors()` lists, it drops its shell, follows the host's theme, and
-  sends every call to the host's proxy with the host's pass.
+  sends every call to the host's proxy with the host's pass. It shows only the
+  controls the host's role allows (`allows()` in `lib/embed.ts`: operators
+  change and train, administrators mint machine tokens), and says a refusal
+  from the host's proxy as a toast in the host (`failure()` in `api.ts`). The
+  host shows the studio's own menu in place of the island: `HostMenu` in
+  `App.tsx` sends it (`menu`), and runs the island's actions the host says
+  were chosen (`action`), so a change to the menu needs no change in the host.
 
 ### The shadow accelerator (`accel.py`)
 
