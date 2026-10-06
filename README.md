@@ -201,6 +201,15 @@ frame holds no session of its own. Only listed origins may frame it:
 yours with `SHADOWLM_FRAME_ANCESTORS="https://console.example.com"`
 (space- or comma-separated). Opened on its own, the studio is unchanged.
 
+To connect it to opencontroller, open **Settings → Fine-tuning** there and give
+the studio's address and a bearer token: its `SHADOWLM_API_KEY`, or better a
+machine token minted for opencontroller (**Machines → Create machine token**),
+which you can revoke on its own. opencontroller then shows the studio under
+**Fine-tuning**, with its own menu in place of the studio's. Its roles decide
+what each person may do, and the studio hides what theirs would be refused:
+viewers read, operators add datasets and models, train and use the
+playground, and administrators mint machine tokens.
+
 ## The shadow accelerator
 
 `accelerator="shadow"` turns on the optimizations that are safe for your model
