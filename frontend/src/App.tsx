@@ -45,11 +45,17 @@ function useHash(): string {
 interface NavItem { hash: string; label: string; icon: LucideIcon }
 type Section = { title?: string; items: NavItem[] };
 
-// The navigation follows the shadowing loop: bring data and a base model,
-// train, watch the run, then talk to what you own. Machines, where training
-// runs, is setup, so it sits apart at the foot.
+// The navigation leads with the Playground, where you talk to what you own,
+// then follows the shadowing loop: bring data and a base model, train, watch
+// the run. Machines, where training runs, is setup, so it sits apart at the
+// foot.
 const sections: Section[] = [
-  { items: [{ hash: "", label: "Overview", icon: LayoutDashboard }] },
+  {
+    items: [
+      { hash: "playground", label: "Playground", icon: MessagesSquare },
+      { hash: "", label: "Overview", icon: LayoutDashboard },
+    ],
+  },
   {
     title: "Build",
     items: [
@@ -64,7 +70,6 @@ const sections: Section[] = [
       { hash: "runs", label: "Runs", icon: History },
     ],
   },
-  { title: "Use", items: [{ hash: "playground", label: "Playground", icon: MessagesSquare }] },
 ];
 const machinesItem: NavItem = { hash: "machines", label: "Machines", icon: MonitorSmartphone };
 const allItems = [...sections.flatMap((s) => s.items), machinesItem];
