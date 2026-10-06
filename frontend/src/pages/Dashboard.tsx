@@ -1,25 +1,15 @@
 // The workspace at a glance — all real data from the server.
 import { useEffect, useState } from "react";
-import { ArrowUpRight, Cpu, Database, MonitorSmartphone, Zap } from "lucide-react";
-import { getDatasets, getJobs, getMetrics, getModels, getWorkers } from "../api";
-import type { DatasetMeta, JobSummary, WorkerInfo } from "../api";
-import { PageHeader, Sparkline, StatusBadge, btnPrimary } from "../ui";
+import { ArrowRight, History, Zap } from "lucide-react";
 
-function Stat({ label, value, sub, icon: Icon }: {
-  label: string; value: string; sub: string;
-  icon: React.ComponentType<{ className?: string }>;
-}) {
-  return (
-    <div className="rounded-lg border border-border bg-card p-5">
-      <div className="flex items-center justify-between text-muted-foreground">
-        <span className="text-[10px] font-mono uppercase tracking-[0.18em]">{label}</span>
-        <Icon className="size-4" />
-      </div>
-      <div className="mt-3 text-2xl font-semibold font-mono tracking-tight">{value}</div>
-      <div className="mt-1 text-xs text-muted-foreground">{sub}</div>
-    </div>
-  );
-}
+import { getDatasets, getJobs, getMetrics, getModels, getWorkers } from "@/api";
+import type { DatasetMeta, JobSummary, WorkerInfo } from "@/api";
+import { Sparkline } from "@/components/charts";
+import { EmptyState, Mono, PageHeader, Stat, StatStrip, StatusBadge } from "@/components/common";
+import { Button } from "@/components/ui/button";
+import { Card, CardAction, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { cn } from "@/lib/utils";
 
 export default function Dashboard() {
   const [jobs, setJobs] = useState<JobSummary[]>([]);
@@ -52,128 +42,138 @@ export default function Dashboard() {
 
   const running = jobs.filter((j) => j.status === "running" || j.status === "pending");
   const recent = jobs.slice(0, 5);
+  const online = workers.filter((w) => w.online).length;
 
   return (
     <>
       <PageHeader
-        eyebrow="Workspace"
-        title="ShadowLM Studio"
+        title="Overview"
         description="Train any open model with any method. Then run it in the shadow of the frontier model behind your agent — until you own the weights."
         actions={
-          <a href="#train" className={`${btnPrimary} no-underline`}>
-            <Zap className="size-3.5" /> New training run
-          </a>
+          <Button asChild>
+            <a href="#train"><Zap /> New training run</a>
+          </Button>
         }
       />
 
-      <div className="px-8 py-6 space-y-6 max-w-[1400px]">
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          <Stat label="Models" value={String(recentModels)} sub="catalog + trained here" icon={Cpu} />
-          <Stat label="Active runs" value={String(running.length)} sub={running.length ? "currently training" : "idle"} icon={Zap} />
-          <Stat label="Datasets" value={String(datasets.length)} sub="uploaded to this server" icon={Database} />
-        </div>
+      <StatStrip className="@2xl:grid-cols-4">
+        <Stat label="Models" value={recentModels} sub="Catalog + trained here" href="#models" />
+        <Stat label="Active runs" value={running.length} sub={running.length ? "Currently training" : "Idle"} href="#runs" />
+        <Stat label="Datasets" value={datasets.length} sub="Uploaded to this server" href="#datasets" />
+        <Stat label="Machines" value={workers.length ? `${online}/${workers.length}` : 0}
+              sub={workers.length ? "Online" : "Only this machine"} href="#machines" />
+      </StatStrip>
+
+      {running.length > 0 && (
+        <>
+          <h2 className="mt-8 mb-3 text-sm font-medium text-muted-foreground">Active training</h2>
+          <div className="border">
+            <ul className="divide-y divide-border">
+              {running.map((r) => (
+                <li key={r.job_id}>
+                  <a href={`#runs/${r.job_id}`}
+                     className="flex items-center gap-4 px-4 py-3 transition-colors hover:bg-subtle">
+                    <StatusBadge status={r.status} />
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-sm font-medium">{r.base_model}</div>
+                      <div className="text-xs text-muted-foreground">
+                        {r.method ?? "?"} · {r.steps} steps so far
+                      </div>
+                    </div>
+                    <span className="text-primary">
+                      <Sparkline data={curves[r.job_id] ?? []} width={120} height={32} />
+                    </span>
+                  </a>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </>
+      )}
+
+      <div className={`mt-8 grid items-start gap-4 ${workers.length > 0 ? "@4xl:grid-cols-3" : ""}`}>
+        <section className={workers.length > 0 ? "@4xl:col-span-2" : ""}>
+          <div className="mb-3 flex items-center justify-between">
+            <h2 className="text-sm font-medium text-muted-foreground">Recent runs</h2>
+            <Button variant="ghost" size="sm" asChild>
+              <a href="#runs">All runs <ArrowRight /></a>
+            </Button>
+          </div>
+          {recent.length === 0 ? (
+            <EmptyState icon={History} title="No runs yet">
+              Start one from <a href="#train" className="text-primary hover:underline">New run</a>.
+            </EmptyState>
+          ) : (
+            <div className="border">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Run</TableHead>
+                    <TableHead>Model</TableHead>
+                    <TableHead className="hidden @2xl:table-cell">Method</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead className="text-right">Loss</TableHead>
+                    <TableHead className="hidden text-right @2xl:table-cell">Curve</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {recent.map((r) => (
+                    <TableRow key={r.job_id} className="cursor-pointer"
+                              onClick={() => (window.location.hash = `#runs/${r.job_id}`)}>
+                      <TableCell className="max-w-40 truncate">
+                        <Mono className="text-muted-foreground">{r.name?.trim() || r.job_id.slice(0, 10)}</Mono>
+                      </TableCell>
+                      <TableCell className="max-w-64 truncate">{(r.base_model || "").split("/").pop()}</TableCell>
+                      <TableCell className="hidden text-muted-foreground @2xl:table-cell">{r.method ?? "?"}</TableCell>
+                      <TableCell><StatusBadge status={r.status} /></TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {r.final_loss != null ? r.final_loss.toFixed(4) : "—"}
+                      </TableCell>
+                      <TableCell className="hidden @2xl:table-cell">
+                        <div className="flex justify-end text-primary">
+                          <Sparkline data={curves[r.job_id] ?? []} width={100} height={28} />
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          )}
+        </section>
 
         {workers.length > 0 && (
-          <section className="rounded-lg border border-border bg-card overflow-hidden">
-            <div className="px-5 py-3 border-b border-border flex items-center gap-2">
-              <MonitorSmartphone className="size-4 text-primary" />
-              <h2 className="text-sm font-semibold">Machines</h2>
-              <a href="#machines" className="text-xs text-primary hover:underline inline-flex items-center gap-1 no-underline ml-auto">
-                {workers.filter((w) => w.online).length}/{workers.length} online <ArrowUpRight className="size-3" />
-              </a>
-            </div>
-            <div className="divide-y divide-border">
+          <Card size="sm">
+            <CardHeader>
+              <CardTitle>Machines</CardTitle>
+              <CardDescription>{online} of {workers.length} online</CardDescription>
+              <CardAction>
+                <Button variant="ghost" size="sm" asChild>
+                  <a href="#machines">All <ArrowRight /></a>
+                </Button>
+              </CardAction>
+            </CardHeader>
+            <ul className="divide-y divide-border border-t border-border">
               {workers.map((w) => (
-                <div key={w.name} className="px-5 py-3 flex items-center gap-3 text-sm">
-                  <span className={`size-2 rounded-full shrink-0 ${
-                    w.online ? "bg-emerald-500" : "bg-muted-foreground/40"}`} />
-                  <span className="font-medium font-mono">{w.name}</span>
-                  <span className="text-xs text-muted-foreground font-mono">
-                    {w.backend} · {w.gpu_name || w.device}
-                    {w.vram_gb ? ` · ${w.vram_gb} GB` : ""}
-                  </span>
-                  <span className="text-xs text-muted-foreground font-mono ml-auto">
+                <li key={w.name} className="flex items-center gap-3 px-3 py-2.5 text-sm">
+                  <span className={cn("size-1.5 shrink-0 rounded-full", w.online ? "bg-good" : "bg-muted-foreground/40")} />
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate font-medium">{w.name}</div>
+                    <div className="truncate text-xs text-muted-foreground">
+                      {w.backend} · {w.gpu_name || w.device}
+                      {w.vram_gb ? ` · ${w.vram_gb} GB` : ""}
+                    </div>
+                  </div>
+                  <span className="shrink-0 text-xs text-muted-foreground">
                     {w.online
                       ? (w.queued ? `${w.queued} queued` : "idle")
                       : `last seen ${new Date(w.last_seen * 1000).toLocaleTimeString()}`}
                   </span>
-                </div>
+                </li>
               ))}
-            </div>
-          </section>
+            </ul>
+          </Card>
         )}
-
-        {running.length > 0 && (
-          <section className="rounded-lg border border-border bg-card overflow-hidden">
-            <div className="px-5 py-3 border-b border-border">
-              <div className="text-[10px] font-mono uppercase tracking-[0.18em] text-primary">Live</div>
-              <h2 className="text-sm font-semibold mt-0.5">Active training</h2>
-            </div>
-            <div className="divide-y divide-border">
-              {running.map((r) => (
-                <a key={r.job_id} href={`#runs/${r.job_id}`}
-                   className="px-5 py-4 flex items-center gap-4 no-underline text-foreground hover:bg-accent/30">
-                  <StatusBadge status={r.status} />
-                  <div className="min-w-0 flex-1">
-                    <div className="text-sm font-medium truncate">{r.base_model}</div>
-                    <div className="text-xs text-muted-foreground font-mono">
-                      {r.method ?? "?"} · {r.steps} steps so far
-                    </div>
-                  </div>
-                  <span className="text-primary">
-                    <Sparkline data={curves[r.job_id] ?? []} width={120} height={32} />
-                  </span>
-                </a>
-              ))}
-            </div>
-          </section>
-        )}
-
-        <section className="rounded-lg border border-border bg-card overflow-hidden">
-          <div className="flex items-center justify-between px-5 py-3 border-b border-border">
-            <h2 className="text-sm font-semibold">Recent runs</h2>
-            <a href="#runs" className="text-xs text-primary hover:underline inline-flex items-center gap-1 no-underline">
-              All runs <ArrowUpRight className="size-3" />
-            </a>
-          </div>
-          {recent.length === 0 ? (
-            <div className="px-5 py-8 text-sm text-muted-foreground text-center">
-              No runs yet — start one from <a href="#train" className="text-primary">Train</a>.
-            </div>
-          ) : (
-            <table className="w-full text-sm">
-              <thead className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">
-                <tr className="border-b border-border">
-                  <th className="text-left px-5 py-2.5 font-normal">Run</th>
-                  <th className="text-left px-3 py-2.5 font-normal">Model</th>
-                  <th className="text-left px-3 py-2.5 font-normal">Method</th>
-                  <th className="text-left px-3 py-2.5 font-normal">Status</th>
-                  <th className="text-right px-3 py-2.5 font-normal">Loss</th>
-                  <th className="text-right px-5 py-2.5 font-normal">Curve</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-border">
-                {recent.map((r) => (
-                  <tr key={r.job_id} className="hover:bg-accent/30 cursor-pointer"
-                      onClick={() => (window.location.hash = `#runs/${r.job_id}`)}>
-                    <td className="px-5 py-3 font-mono text-xs text-muted-foreground truncate max-w-[160px]">{r.name?.trim() || r.job_id.slice(0, 10)}</td>
-                    <td className="px-3 py-3 truncate max-w-[260px]">{(r.base_model || "").split("/").pop()}</td>
-                    <td className="px-3 py-3 font-mono text-xs uppercase">{r.method ?? "?"}</td>
-                    <td className="px-3 py-3"><StatusBadge status={r.status} /></td>
-                    <td className="px-3 py-3 text-right font-mono">
-                      {r.final_loss != null ? r.final_loss.toFixed(4) : "—"}
-                    </td>
-                    <td className="px-5 py-3">
-                      <div className="flex justify-end text-primary">
-                        <Sparkline data={curves[r.job_id] ?? []} width={100} height={28} />
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </section>
       </div>
     </>
   );

@@ -1,11 +1,14 @@
-// Playground — a clean chat. The model picker is a command palette (slm❯): one
+// Playground — a clean chat. The model picker is a command palette: one
 // search across base open models AND your shadows, grouped. Pick a shadow and a
 // quiet "shadow mode" toggle appears — the shadow answers next to its base.
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowUp, ChevronDown } from "lucide-react";
-import { chat, getCheckpoints, getJobs, getModels, prewarm } from "../api";
-import type { CatalogModel, Checkpoint, JobSummary } from "../api";
-import { Dots } from "../ui";
+import { ArrowUp, Check, ChevronDown, ChevronRight, LoaderCircle, MessagesSquare, RotateCcw, Search, TriangleAlert } from "lucide-react";
+import { chat, getCheckpoints, getJobs, getModels, prewarm } from "@/api";
+import type { CatalogModel, Checkpoint, JobSummary } from "@/api";
+import { Dots } from "@/components/common";
+import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
+import { cn } from "@/lib/utils";
 
 type Msg = { role: "user" | "assistant"; content: string };
 
@@ -143,32 +146,33 @@ export default function Playground() {
   const empty = msgs.length === 0;
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div className="flex min-h-0 flex-1 !shrink flex-col overflow-hidden border border-border bg-card">
       {/* model selector */}
-      <div className="relative flex items-center gap-3 px-6 py-4">
+      <div className="flex h-14 shrink-0 items-center gap-3 border-b border-border px-4">
+        <MessagesSquare className="size-4 shrink-0 text-muted-foreground" strokeWidth={1.75} />
         <button onClick={() => { setPop((v) => !v); setQ(""); }}
-          className="flex items-center gap-2 text-base font-semibold hover:text-primary transition-colors">
-          <span className="font-mono text-primary">{adapter ? "shadow❯" : "base❯"}</span>
-          <span className={adapter ? "text-primary" : ""}>{label}</span>
-          <ChevronDown className="size-4 text-muted-foreground" />
+          className="flex min-w-0 items-center gap-2 rounded-md px-1.5 py-1 text-sm font-semibold transition-colors hover:bg-surface-2">
+          <span className="text-xs font-normal text-muted-foreground">{adapter ? "Shadow" : "Base"}</span>
+          <span className={cn("truncate", adapter && "text-primary")}>{label}</span>
+          <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
         </button>
         {adapter && (
-          <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer">
-            <input type="checkbox" checked={compare} className="w-auto"
+          <label className="flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
+            <input type="checkbox" checked={compare}
                    onChange={(e) => setCompare(e.target.checked)} />
-            shadow mode <span className="text-muted-foreground/60">(base ↔ shadow)</span>
+            Shadow mode <span className="text-muted-foreground/70">(base ↔ shadow)</span>
           </label>
         )}
         {adapter && ckpts.length > 1 && (
-          <div className="flex items-center gap-1 rounded-full border border-border bg-card p-0.5 font-mono text-[11px]">
+          <div className="flex items-center gap-0.5 rounded-lg border border-border p-0.5 font-mono text-[11px]">
             <span className="px-1.5 text-muted-foreground select-none">ckpt</span>
             {ckpts.map((c) => {
               const on = c.final ? ckptStep === null : ckptStep === c.step;
               return (
                 <button key={c.path} title={c.path}
                   onClick={() => setCkptStep(c.final ? null : c.step)}
-                  className={`rounded-full px-2 py-0.5 transition-colors ${
-                    on ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}>
+                  className={cn("rounded-md px-2 py-0.5 transition-colors",
+                    on ? "bg-primary/10 text-primary" : "text-muted-foreground hover:text-foreground")}>
                   {c.final ? "final" : c.step}
                 </button>
               );
@@ -176,125 +180,122 @@ export default function Playground() {
           </div>
         )}
         {msgs.length > 0 && (
-          <button className="ml-auto text-xs text-muted-foreground hover:text-foreground"
-                  onClick={() => { setMsgs([]); setBase([]); }}>clear</button>
+          <Button variant="ghost" size="sm" className="ml-auto text-muted-foreground"
+                  onClick={() => { setMsgs([]); setBase([]); }}>
+            <RotateCcw /> Clear
+          </Button>
         )}
-
       </div>
 
       {/* model picker — a command palette, not a dropdown: one search across
-          base models AND your shadows, grouped, terminal-styled. */}
-      {pop && (
-        <div className="fixed inset-0 z-50 flex items-start justify-center bg-background/55 backdrop-blur-sm px-4"
-             onMouseDown={() => setPop(false)}>
-          <div onMouseDown={(e) => e.stopPropagation()}
-               className="mt-[11vh] w-full max-w-2xl rounded-xl border border-border bg-card shadow-[0_32px_80px_#0004] overflow-hidden">
-            {/* prompt line */}
-            <div className="flex items-center gap-2.5 px-4 py-3.5 border-b border-border font-mono">
-              <span className="text-primary font-bold select-none">slm❯</span>
-              <input autoFocus value={q} onChange={(e) => setQ(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Escape") setPop(false);
-                  if (e.key === "Enter") {
-                    if (hubRows[0] && (!tunedRows.length || q)) pickHub(hubRows[0].id);
-                    else if (tunedRows[0]) pickTuned(tunedRows[0]);
-                  }
-                }}
-                placeholder="filter base models or your shadows · paste any HF id"
-                className="flex-1 border-0 bg-transparent p-0 text-sm focus:outline-none focus:ring-0" />
-              <kbd className="text-[10px] text-muted-foreground border border-border rounded px-1.5 py-0.5">esc</kbd>
-            </div>
-
-            <div className="max-h-[58vh] overflow-auto scrollbar-thin py-1.5">
-              {/* base models */}
-              <div className="px-4 pt-2 pb-1 flex items-center gap-2">
-                <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">base · open models</span>
-                <span className="h-px flex-1 bg-border" />
-              </div>
-              {hubRows.map((m) => {
-                const on = m.id === model && !adapter;
-                return (
-                  <button key={m.id} onClick={() => pickHub(m.id)}
-                    className="group w-full flex items-center gap-3 px-4 py-2 text-sm hover:bg-accent/40 text-left font-mono">
-                    <span className={`w-3 shrink-0 ${on ? "text-primary" : "text-muted-foreground/40 group-hover:text-primary"}`}>
-                      {on ? "●" : "›"}
-                    </span>
-                    <span className={`truncate flex-1 ${on ? "text-primary" : ""}`}>{m.id}</span>
-                    <span className="text-[11px] text-muted-foreground shrink-0">
-                      {m.dev ? "dev pick" : m.gated ? "HF token" : m.params ?? m.note ?? ""}
-                    </span>
-                  </button>
-                );
-              })}
-
-              {/* shadows */}
-              <div className="px-4 pt-3 pb-1 flex items-center gap-2">
-                <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-primary">shadow · your runs</span>
-                <span className="h-px flex-1 bg-border" />
-              </div>
-              {tunedRows.length ? tunedRows.map((j) => {
-                const on = j.job_id === adapter;
-                return (
-                  <button key={j.job_id} onClick={() => pickTuned(j)}
-                    className="group w-full flex items-center gap-3 px-4 py-2 text-sm hover:bg-accent/40 text-left font-mono">
-                    <span className={`w-3 shrink-0 ${on ? "text-primary" : "text-muted-foreground/40 group-hover:text-primary"}`}>
-                      {on ? "●" : "›"}
-                    </span>
-                    <span className={`truncate flex-1 ${on ? "text-primary" : ""}`}>
-                      {j.name?.trim() || j.job_id.slice(0, 10)} <span className="text-muted-foreground">· {j.method}</span>
-                    </span>
-                    <span className="text-[11px] text-muted-foreground shrink-0">
-                      shadows {(j.base_model || "").split("/").pop()}
-                    </span>
-                  </button>
-                );
-              }) : (
-                <div className="px-4 py-3 font-mono text-xs text-muted-foreground/70">
-                  no shadows yet — <a href="#train" className="text-primary">train one</a> to see it here
-                </div>
-              )}
-            </div>
+          base models AND your shadows, grouped. */}
+      <Dialog open={pop} onOpenChange={setPop}>
+        <DialogContent showCloseButton={false}
+          className="top-[11vh] translate-y-0 gap-0 overflow-hidden p-0 sm:max-w-2xl data-open:zoom-in-100 data-closed:zoom-out-100">
+          <DialogTitle className="sr-only">Pick a model</DialogTitle>
+          <DialogDescription className="sr-only">Filter base models or your shadows, or paste any Hugging Face id.</DialogDescription>
+          {/* prompt line */}
+          <div className="flex items-center gap-2.5 border-b border-border px-4 py-3">
+            <Search className="size-4 shrink-0 text-muted-foreground" />
+            <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} data-slot="palette-input"
+              onKeyDown={(e) => {
+                if (e.key === "Escape") setPop(false);
+                if (e.key === "Enter") {
+                  if (hubRows[0] && (!tunedRows.length || q)) pickHub(hubRows[0].id);
+                  else if (tunedRows[0]) pickTuned(tunedRows[0]);
+                }
+              }}
+              placeholder="Filter base models or your shadows · paste any HF id"
+              className="flex-1 border-0 bg-transparent p-0 text-sm outline-none placeholder:text-muted-foreground" />
+            <kbd className="rounded border border-border px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">esc</kbd>
           </div>
-        </div>
-      )}
+
+          <div className="max-h-[58vh] overflow-auto py-1.5 scrollbar-thin">
+            {/* base models */}
+            <div className="px-4 pt-2 pb-1 text-[11px] font-medium text-muted-foreground">Base · open models</div>
+            {hubRows.map((m) => {
+              const on = m.id === model && !adapter;
+              return (
+                <button key={m.id} onClick={() => pickHub(m.id)}
+                  className="group flex w-full items-center gap-3 px-4 py-2 text-left text-sm hover:bg-subtle">
+                  <span className="w-3.5 shrink-0">
+                    {on ? <Check className="size-3.5 text-primary" />
+                        : <ChevronRight className="size-3.5 text-muted-foreground/40 group-hover:text-primary" />}
+                  </span>
+                  <span className={cn("flex-1 truncate font-mono text-[13px]", on && "text-primary")}>{m.id}</span>
+                  <span className="shrink-0 text-xs text-muted-foreground">
+                    {m.dev ? "dev pick" : m.gated ? "HF token" : m.params ?? m.note ?? ""}
+                  </span>
+                </button>
+              );
+            })}
+
+            {/* shadows */}
+            <div className="mt-1.5 border-t border-border px-4 pt-3 pb-1 text-[11px] font-medium text-muted-foreground">Shadows · your runs</div>
+            {tunedRows.length ? tunedRows.map((j) => {
+              const on = j.job_id === adapter;
+              return (
+                <button key={j.job_id} onClick={() => pickTuned(j)}
+                  className="group flex w-full items-center gap-3 px-4 py-2 text-left text-sm hover:bg-subtle">
+                  <span className="w-3.5 shrink-0">
+                    {on ? <Check className="size-3.5 text-primary" />
+                        : <ChevronRight className="size-3.5 text-muted-foreground/40 group-hover:text-primary" />}
+                  </span>
+                  <span className={cn("flex-1 truncate", on && "text-primary")}>
+                    {j.name?.trim() || <span className="font-mono text-[13px]">{j.job_id.slice(0, 10)}</span>}
+                    <span className="text-muted-foreground"> · {j.method}</span>
+                  </span>
+                  <span className="shrink-0 text-xs text-muted-foreground">
+                    shadows {(j.base_model || "").split("/").pop()}
+                  </span>
+                </button>
+              );
+            }) : (
+              <div className="px-4 py-3 text-sm text-muted-foreground">
+                No shadows yet. <a href="#train" className="font-medium text-primary hover:underline">Train one</a> to see it here.
+              </div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* transcript or greeting */}
-      <div ref={logRef} className="flex-1 overflow-auto scrollbar-thin px-6"
+      <div ref={logRef} className="min-h-0 flex-1 overflow-auto px-6 scrollbar-thin"
            onClick={() => pop && setPop(false)}>
         {empty ? (
-          <div className="flex h-full flex-col items-center justify-center gap-4 text-center">
+          <div className="flex h-full flex-col items-center justify-center gap-2 text-center">
+            {/* The brain: red on the light theme, white on the dark one. */}
             <img src="/logo.png" alt=""
-                 className="size-28 [filter:drop-shadow(0_0_40px_#e5484d55)_drop-shadow(0_0_14px_#e5484d44)]" />
-            <div>
-              <div className="mb-1.5 font-mono text-[11px] uppercase tracking-[0.25em] text-primary">slm♥ playground</div>
-              <h1 className="text-2xl font-semibold tracking-tight">
-                {adapter ? "Does it cast the same shadow?" : "Talk to a model"}
-              </h1>
-            </div>
-            <p className="font-mono text-sm text-muted-foreground">
-              base <span className="text-foreground">{model.split("/").pop()}</span>
-              {adapter && <> &nbsp;·&nbsp; shadow <span className="text-primary">{adapter.slice(0, 8)}</span></>}
+                 className="mb-2 size-28 dark:hidden [filter:drop-shadow(0_0_40px_#e5484d55)_drop-shadow(0_0_14px_#e5484d44)]" />
+            <img src="/logo1.png" alt=""
+                 className="mb-2 hidden size-28 dark:block [filter:drop-shadow(0_0_40px_#ffffff33)_drop-shadow(0_0_14px_#ffffff22)]" />
+            <h1 className="text-xl font-semibold tracking-[-0.015em]">
+              {adapter ? "Does it cast the same shadow?" : "Talk to a model"}
+            </h1>
+            <p className="text-[13px] text-muted-foreground">
+              Base <span className="font-mono text-foreground">{model.split("/").pop()}</span>
+              {adapter && <> · shadow <span className="font-mono text-primary">{adapter.slice(0, 8)}</span></>}
             </p>
-            <div className="text-[10px] text-muted-foreground/70">from Lyzr Research Labs</div>
           </div>
         ) : compare && adapter ? (
-          <div className="mx-auto max-w-4xl py-6 space-y-4">
+          <div className="mx-auto max-w-4xl space-y-4 py-6">
             {msgs.map((m, i) => m.role === "user" ? (
               <UserBubble key={i} text={m.content} />
             ) : (
               <div key={i} className="grid grid-cols-2 gap-3">
-                <Pane tone="tuned" label="shadow ♥" text={m.content} />
-                <Pane tone="base" label="base" text={base[i]?.content} />
+                <Pane tone="tuned" label="Shadow" text={m.content} />
+                <Pane tone="base" label="Base" text={base[i]?.content} />
               </div>
             ))}
-            {busy && <div className="grid grid-cols-2 gap-3"><Pane tone="tuned" label="shadow ♥" /><Pane tone="base" label="base" /></div>}
+            {busy && <div className="grid grid-cols-2 gap-3"><Pane tone="tuned" label="Shadow" /><Pane tone="base" label="Base" /></div>}
           </div>
         ) : (
-          <div className="mx-auto max-w-3xl py-6 space-y-4">
+          <div className="mx-auto flex max-w-3xl flex-col gap-4 py-6">
             {msgs.map((m, i) => m.role === "user"
               ? <UserBubble key={i} text={m.content} />
-              : <div key={i} className="text-sm leading-relaxed whitespace-pre-wrap">
-                  <span className="font-mono font-bold text-primary">slm♥ › </span>{m.content}
+              : <div key={i} className="text-[13px] leading-relaxed">
+                  <div className="mb-1 font-mono text-[11px] text-muted-foreground">{label}</div>
+                  <div className="whitespace-pre-wrap">{m.content}</div>
                 </div>)}
             {busy && <Dots />}
           </div>
@@ -302,24 +303,22 @@ export default function Playground() {
       </div>
 
       {/* input */}
-      <div className="px-6 pb-6 pt-2">
-        <div className="mx-auto flex max-w-3xl items-end gap-2.5 rounded-[26px] border border-border bg-card py-2.5 pl-5 pr-2.5 shadow-sm focus-within:border-primary/50 focus-within:shadow-[0_0_0_1px_#e5484d33] transition-all">
-          <span className="select-none py-1.5 font-mono text-sm font-bold text-primary">you ›</span>
-          <textarea ref={inputRef} value={input} rows={1}
+      <div className="shrink-0 border-t border-border p-3">
+        <div className="mx-auto flex max-w-3xl items-end gap-2">
+          <textarea ref={inputRef} value={input} rows={1} data-slot="composer"
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
-            placeholder={warming ? "warming up the model — first load can take a couple of minutes…"
-                                 : "say something to the shadow…"}
-            className="flex-1 resize-none border-0 bg-transparent py-1.5 text-sm focus:outline-none max-h-40" />
-          <button onClick={send} disabled={!input.trim() || busy || warming}
-            className="grid size-9 shrink-0 place-items-center rounded-full bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-40 transition-colors">
-            <ArrowUp className="size-4" />
-          </button>
+            placeholder={warming ? "Warming up the model — first load can take a couple of minutes…"
+                                 : "Say something to the shadow…"}
+            className="field-sizing-content max-h-40 min-h-9 min-w-0 grow resize-none rounded-lg border border-input bg-transparent px-3 py-2 text-[13px] outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50" />
+          <Button size="icon" className="size-9" aria-label="Send" onClick={send} disabled={!input.trim() || busy || warming}>
+            {busy ? <LoaderCircle className="size-3.5 animate-spin" /> : <ArrowUp className="size-4" />}
+          </Button>
         </div>
-        <div className="mx-auto mt-1.5 max-w-3xl text-center text-[10px] text-muted-foreground/70">
-          {warmErr ? <span className="text-red-500">⚠ can't load this model here: {warmErr}</span>
-            : warming ? <span className="text-primary">⏳ loading weights onto the GPU — send unlocks when it's hot</span>
-            : "runs shadow"}
+        <div className="mx-auto mt-1.5 max-w-3xl text-center text-[11px] text-muted-foreground">
+          {warmErr ? <span className="inline-flex items-center gap-1 text-destructive"><TriangleAlert className="size-3" /> Can't load this model here: {warmErr}</span>
+            : warming ? <span className="inline-flex items-center gap-1 text-primary"><LoaderCircle className="size-3 animate-spin" /> Loading weights onto the GPU — send unlocks when it's hot</span>
+            : "Enter to send · Shift+Enter for a new line"}
         </div>
       </div>
     </div>
@@ -329,17 +328,17 @@ export default function Playground() {
 function UserBubble({ text }: { text: string }) {
   return (
     <div className="flex justify-end">
-      <div className="max-w-[80%] rounded-2xl bg-primary px-4 py-2 text-sm text-primary-foreground whitespace-pre-wrap">{text}</div>
+      <div className="max-w-[85%] border border-border bg-subtle px-3 py-2 text-[13px] whitespace-pre-wrap">{text}</div>
     </div>
   );
 }
 
 function Pane({ tone, label, text }: { tone: "tuned" | "base"; label: string; text?: string }) {
   return (
-    <div className={`rounded-xl border bg-card px-3.5 py-2.5 text-sm ${
-      tone === "tuned" ? "border-primary/40" : "border-border"}`}>
-      <b className={`mb-1.5 block text-[10px] uppercase tracking-[0.12em] ${
-        tone === "tuned" ? "text-primary" : "text-muted-foreground"}`}>{label}</b>
+    <div className={cn("border bg-card px-3.5 py-2.5 text-[13px] leading-relaxed",
+      tone === "tuned" ? "border-primary/30" : "border-border")}>
+      <div className={cn("mb-1.5 text-[11px] font-medium",
+        tone === "tuned" ? "text-primary" : "text-muted-foreground")}>{label}</div>
       <span className="whitespace-pre-wrap">{text == null ? <Dots /> : text}</span>
     </div>
   );

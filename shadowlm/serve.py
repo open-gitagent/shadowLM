@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import hmac
+import html
 import io
 import json
 import os
@@ -26,6 +27,7 @@ import re
 import tarfile
 import threading
 import time
+import urllib.parse
 import uuid
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -103,6 +105,55 @@ _NO_BUILD_PAGE = """<!doctype html><meta charset="utf-8">
 <p>…then reload. Or <code>shadowlm serve --dev</code> for hot reload.
  (pip installs ship the built UI — you only see this from source.)</p>
 </body>"""
+
+# ---- embedding: a host console may show the studio in a frame ---------------
+# A host console such as opencontroller shows the studio inside its own, in a
+# frame, speaking the "oc-embed/1" bridge (frontend/src/lib/embed.ts). Two
+# kinds of origin may frame it: the built-in ones (opencontroller on
+# studio-dev, and localhost on any port for development), plus whatever
+# SHADOWLM_FRAME_ANCESTORS lists (space- or comma-separated origins). Every
+# response sends that list as frame-ancestors, and the studio page carries it
+# in a meta tag so, once framed, it talks to nothing else.
+_FRAME_ANCESTORS_ENV = "SHADOWLM_FRAME_ANCESTORS"
+_BUILTIN_FRAME_ANCESTORS = (
+    "https://dev.opencontroller.sh",
+    "http://localhost:*",
+    "https://localhost:*",
+)
+
+
+def _parse_origins(raw: str) -> list[str]:
+    """Plain http(s) origins from a space/comma list; anything else (a path,
+    a query, credentials, another scheme) is dropped, so framing is never
+    opened wider than meant."""
+    out: list[str] = []
+    for f in re.split(r"[\s,]+", raw or ""):
+        if not f:
+            continue
+        u = urllib.parse.urlsplit(f)
+        if (u.scheme not in ("http", "https") or not u.netloc or "@" in u.netloc
+                or u.path not in ("", "/") or u.query or u.fragment):
+            continue
+        origin = f"{u.scheme}://{u.netloc.lower()}"
+        if origin not in out:
+            out.append(origin)
+    return out
+
+
+def frame_ancestors() -> list[str]:
+    """Origins that may frame the studio: built-ins, then the env's."""
+    out = list(_BUILTIN_FRAME_ANCESTORS)
+    for o in _parse_origins(os.environ.get(_FRAME_ANCESTORS_ENV, "")):
+        if o not in out:
+            out.append(o)
+    return out
+
+
+def _with_embed_parents(page: bytes, origins: list[str]) -> bytes:
+    """The studio page with the framing origins in a meta tag, for embed.ts."""
+    meta = ('<meta name="shadowlm-embed-parents" content="'
+            + html.escape(" ".join(origins)) + '">').encode()
+    return page.replace(b"</head>", meta + b"</head>", 1)
 
 
 @dataclass
@@ -1227,7 +1278,15 @@ class Auth:
 def make_handler(server: Server, auth: "Auth"):
     throttle = LoginThrottle()
 
+    ancestors = frame_ancestors()
+    frame_policy = "frame-ancestors 'self' " + " ".join(ancestors)
+
     class Handler(BaseHTTPRequestHandler):
+        def end_headers(self):
+            # Only the listed host consoles may frame anything this serves.
+            self.send_header("Content-Security-Policy", frame_policy)
+            super().end_headers()
+
         def log_message(self, fmt, *args):  # quiet; job logs print directly
             pass
 
@@ -1291,7 +1350,8 @@ def make_handler(server: Server, auth: "Auth"):
             if parts == [""]:  # the React studio shell — no auth for the page;
                 static_index = Path(__file__).parent / "_static" / "index.html"
                 if static_index.exists():  # the API itself stays authed
-                    self._send(200, static_index.read_bytes(),
+                    self._send(200, _with_embed_parents(
+                        static_index.read_bytes(), ancestors),
                                ctype="text/html; charset=utf-8")
                 else:  # only on an unbuilt source checkout — build it or use --dev
                     self._send(200, _NO_BUILD_PAGE.encode(),

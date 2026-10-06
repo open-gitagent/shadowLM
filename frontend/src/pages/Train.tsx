@@ -2,11 +2,18 @@
 // The data ranks the methods; the method shapes the form — each method exposes
 // exactly its own hyperparameters (LoRA rank for adapters, beta for DPO, …).
 import { useEffect, useMemo, useState } from "react";
-import { Check, ChevronLeft, ChevronRight, Play, Search } from "lucide-react";
-import { getDatasets, getModels, getWorkers, submitFinetune } from "../api";
-import type { WorkerInfo } from "../api";
-import type { CatalogModel, DatasetMeta, MethodInfo } from "../api";
-import { Field, PageHeader, btnGhost, btnPrimary } from "../ui";
+import type { ReactNode } from "react";
+import { Check, ChevronDown, ChevronLeft, ChevronRight, Database, LoaderCircle, Play, Search } from "lucide-react";
+import { getDatasets, getModels, getWorkers, submitFinetune } from "@/api";
+import type { WorkerInfo } from "@/api";
+import type { CatalogModel, DatasetMeta, MethodInfo } from "@/api";
+import { EmptyState, Field, Mono, PageHeader, SectionHeader } from "@/components/common";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
+import { cn } from "@/lib/utils";
 
 const STEPS = ["Data", "Model", "Method", "Tune"] as const;
 const recommend = (format?: string): string[] =>
@@ -257,26 +264,28 @@ export default function Train({ methods }: { methods: MethodInfo[] }) {
         description="Four decisions, in the order they depend on each other — the data ranks the methods, the method shapes the form."
       />
 
-      <div className="px-8 py-6 grid grid-cols-1 xl:grid-cols-[1fr_360px] gap-6 max-w-[1400px]">
-        <div className="space-y-6 min-w-0">
-          {/* stepper */}
-          <ol className="flex items-center gap-2 rounded-lg border border-border bg-card p-2">
+      <div className="grid max-w-[1400px] grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
+        <div className="min-w-0 space-y-6">
+          {/* stepper — one band split by hairlines */}
+          <ol className="grid grid-cols-2 gap-px overflow-hidden border border-border bg-border @2xl:grid-cols-4">
             {STEPS.map((s, i) => {
               const isActive = i === step, isDone = i < step;
               return (
-                <li key={s} className="flex items-center gap-2 flex-1">
+                <li key={s} className="bg-card">
                   <button onClick={() => (isDone || isActive) && setStep(i)}
-                    className={`flex items-center gap-2.5 px-3 py-2 rounded-md text-sm flex-1 transition-colors ${
-                      isActive ? "bg-primary/10 text-foreground border border-primary/30"
-                               : "text-muted-foreground hover:bg-accent/40"}`}>
-                    <span className={`size-6 grid place-items-center rounded-full text-[11px] font-mono ${
-                      isActive ? "bg-primary text-primary-foreground"
-                      : isDone ? "bg-success/20 text-success" : "bg-muted text-muted-foreground"}`}>
+                    aria-current={isActive ? "step" : undefined}
+                    disabled={!isDone && !isActive}
+                    className={cn(
+                      "flex w-full items-center gap-2.5 px-4 py-3 text-left text-sm transition-colors disabled:cursor-default",
+                      isActive ? "bg-primary/10 text-primary" : isDone ? "text-foreground hover:bg-surface" : "text-muted-foreground")}>
+                    <span className={cn(
+                      "grid size-5 shrink-0 place-items-center rounded-full border text-[11px] tabular-nums",
+                      isActive ? "border-primary/30 bg-primary/10"
+                      : isDone ? "border-good/30 bg-good/10 text-good" : "border-border")}>
                       {isDone ? <Check className="size-3" /> : i + 1}
                     </span>
                     <span className="font-medium">{s}</span>
                   </button>
-                  {i < STEPS.length - 1 && <ChevronRight className="size-4 text-muted-foreground/50 shrink-0" />}
                 </li>
               );
             })}
@@ -284,102 +293,76 @@ export default function Train({ methods }: { methods: MethodInfo[] }) {
 
           {/* step 1 — Data */}
           {step === 0 && (
-            <section className="rounded-lg border border-border bg-card p-5">
-              <div className="text-sm font-semibold mb-1">Dataset</div>
-              <p className="text-xs text-muted-foreground mb-4">
-                The data decides what training even means — formats are auto-detected
-                and steer the method choice.</p>
+            <Panel>
+              <SectionHeader title="Dataset"
+                description="The data decides what training even means — formats are auto-detected and steer the method choice." />
               {datasets.length === 0 ? (
-                <div className="text-sm text-muted-foreground py-6 text-center">
-                  no datasets on this server yet —{" "}
-                  <a href="#datasets" className="text-primary">upload one</a> first
-                </div>
+                <EmptyState icon={Database} title="No datasets on this server yet">
+                  <a href="#datasets" className="text-primary hover:underline">Upload one</a> first.
+                </EmptyState>
               ) : (
-                <div className="border border-border rounded-md max-h-72 overflow-auto scrollbar-thin divide-y divide-border">
+                <PickList>
                   {datasets.map((d) => (
-                    <button key={d.dataset_id} onClick={() => setDs(d.dataset_id)}
-                      className={`w-full text-left px-3 py-2.5 flex items-center gap-3 hover:bg-accent/40 transition-colors ${
-                        ds === d.dataset_id ? "bg-accent/60" : ""}`}>
-                      <div className="flex-1 min-w-0">
-                        <div className="text-sm font-medium truncate">{d.name}</div>
-                        <div className="text-xs text-muted-foreground font-mono">
-                          {d.format}{d.rows != null ? ` · ${d.rows.toLocaleString()} rows` : ""}</div>
-                      </div>
-                      {ds === d.dataset_id &&
-                        <div className="text-[10px] font-mono uppercase tracking-wider text-primary">Selected</div>}
-                    </button>
+                    <PickRow key={d.dataset_id} selected={ds === d.dataset_id} onClick={() => setDs(d.dataset_id)}
+                      title={d.name}
+                      sub={`${d.format}${d.rows != null ? ` · ${d.rows.toLocaleString()} rows` : ""}`} />
                   ))}
-                </div>
+                </PickList>
               )}
-            </section>
+            </Panel>
           )}
 
           {/* step 2 — Model */}
           {step === 1 && (
-            <section className="rounded-lg border border-border bg-card p-5">
-              <div className="text-sm font-semibold mb-1">Base model</div>
-              <p className="text-xs text-muted-foreground mb-4">
-                The catalog, models trained here before, or any HF hub id.</p>
+            <Panel>
+              <SectionHeader title="Base model" description="The catalog, models trained here before, or any HF hub id." />
               <div className="relative mb-2">
-                <Search className="size-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-                <input value={search} onChange={(e) => setSearch(e.target.value)}
-                       placeholder="Search models…" className="w-full pl-9 pr-3 py-2 text-sm" />
+                <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
+                <Input value={search} onChange={(e) => setSearch(e.target.value)}
+                       placeholder="Search models…" className="pl-8" />
               </div>
-              <div className="border border-border rounded-md max-h-64 overflow-auto scrollbar-thin divide-y divide-border">
+              <PickList className="max-h-64">
                 {filteredModels.map((m) => (
-                  <button key={m.id} onClick={() => setModel(m.id)}
-                    className={`w-full text-left px-3 py-2.5 flex items-center gap-3 hover:bg-accent/40 transition-colors ${
-                      model === m.id ? "bg-accent/60" : ""}`}>
-                    <div className="flex-1 min-w-0">
-                      <div className="text-sm font-medium truncate">{m.id}</div>
-                      <div className="text-xs text-muted-foreground font-mono">
-                        {m.params ?? ""}{m.note ? ` · ${m.note}` : ""}
-                        {m.gated ? " · needs HF token" : ""}</div>
-                    </div>
-                    {model === m.id &&
-                      <div className="text-[10px] font-mono uppercase tracking-wider text-primary">Selected</div>}
-                  </button>
+                  <PickRow key={m.id} selected={model === m.id} onClick={() => setModel(m.id)}
+                    title={m.id}
+                    sub={`${m.params ?? ""}${m.note ? ` · ${m.note}` : ""}${m.gated ? " · needs HF token" : ""}`} />
                 ))}
-              </div>
+              </PickList>
               <form className="mt-3 flex gap-2"
                     onSubmit={(e) => { e.preventDefault(); if (free.trim()) setModel(free.trim()); }}>
-                <input value={free} onChange={(e) => setFree(e.target.value)}
-                       placeholder="org/model-name — any HF hub id" className="flex-1 text-sm font-mono" />
-                <button className={btnGhost}>use custom</button>
+                <Input value={free} onChange={(e) => setFree(e.target.value)}
+                       placeholder="org/model-name — any HF hub id" className="flex-1 font-mono" />
+                <Button type="submit" variant="outline">Use custom</Button>
               </form>
-            </section>
+            </Panel>
           )}
 
           {/* step 3 — Method */}
           {step === 2 && (
-            <section className="rounded-lg border border-border bg-card p-5">
-              <div className="text-sm font-semibold mb-1">Method</div>
-              <p className="text-xs text-muted-foreground mb-4">
-                your dataset is <b className="text-foreground">{meta?.format ?? "?"}</b> — recommended methods first.
-              </p>
-              <div className="space-y-4">
+            <Panel>
+              <SectionHeader title="Method"
+                description={<>Your dataset is <span className="font-medium text-foreground">{meta?.format ?? "?"}</span> — recommended methods first.</>} />
+              <div className="space-y-5">
                 {FAMILY_ORDER.map((fam) => {
                   const items = ordered.filter((m) => familyOf(m.name) === fam);
                   if (!items.length) return null;
                   return (
                     <div key={fam}>
-                      <div className="text-[10px] font-mono uppercase tracking-[0.18em] text-muted-foreground mb-1.5">
-                        {FAMILY_LABEL[fam]}
-                      </div>
-                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
+                      <p className="mb-1.5 text-xs font-medium text-muted-foreground">{FAMILY_LABEL[fam]}</p>
+                      <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3">
                         {items.map((m) => (
                           <button key={m.name} onClick={() => pickMethod(m.name)}
                             title={m.description}
-                            className={`text-left px-3 py-2 rounded-md border text-sm transition-colors ${
+                            className={cn(
+                              "rounded-md border px-3 py-2 text-left text-sm transition-colors",
                               method === m.name
-                                ? "border-primary bg-primary/10 text-foreground"
-                                : "border-border bg-card hover:border-primary/40"}`}>
-                            <div className="flex items-center justify-between">
-                              <span className="font-medium">{m.name}</span>
-                              {rec.includes(m.name) &&
-                                <span className="text-[9px] font-mono uppercase text-primary">rec</span>}
+                                ? "border-primary/40 bg-primary/5"
+                                : "border-border bg-card hover:bg-surface")}>
+                            <div className="flex items-center justify-between gap-2">
+                              <span className={cn("font-medium", method === m.name && "text-primary")}>{m.name}</span>
+                              {rec.includes(m.name) && <Badge variant="default" className="h-4 px-1.5 text-[10px]">rec</Badge>}
                             </div>
-                            <div className="text-[10px] text-muted-foreground font-mono mt-0.5">
+                            <div className="mt-0.5 font-mono text-[11px] text-muted-foreground">
                               lr {m.default_lr} · {m.trainer}</div>
                           </button>
                         ))}
@@ -389,29 +372,26 @@ export default function Train({ methods }: { methods: MethodInfo[] }) {
                 })}
               </div>
               {methodInfo && (
-                <p className="mt-3 text-xs text-muted-foreground">{methodInfo.description}</p>
+                <p className="mt-4 text-sm text-muted-foreground">{methodInfo.description}</p>
               )}
-            </section>
+            </Panel>
           )}
 
           {/* step 4 — Tune (every knob this method actually uses) */}
           {step === 3 && (
-            <section className="rounded-lg border border-border bg-card p-5 space-y-5">
-              <div>
-                <label className="text-sm font-semibold mb-1 block">Name this shadow</label>
-                <input value={name} onChange={(e) => setName(e.target.value)}
+            <Panel className="space-y-6">
+              <Field label="Name this shadow" htmlFor="run-name"
+                hint="What it'll be called in Runs & the playground — optional, the run id is the fallback.">
+                <Input id="run-name" value={name} onChange={(e) => setName(e.target.value)}
                   placeholder={`e.g. ${method ?? "support"}-${(model ?? "").split("/").pop()?.split("-")[0]?.toLowerCase() || "v1"}`}
-                  className="w-full font-mono text-sm" />
-                <p className="text-[11px] text-muted-foreground mt-1.5">
-                  what it'll be called in Runs &amp; the playground — optional, the run id is the fallback.
-                </p>
-              </div>
+                  className="font-mono" />
+              </Field>
 
               {workers.length > 0 && (
-                <div className="pt-4 border-t border-border">
-                  <label className="text-sm font-semibold mb-1 block">Train on</label>
-                  <select value={device} onChange={(e) => setDevice(e.target.value)}
-                          className="w-full font-mono text-sm">
+                <Field label="Train on" htmlFor="run-device"
+                  hint="Connected devices (`shadowlm worker`) — the run streams back here either way.">
+                  <select id="run-device" value={device} onChange={(e) => setDevice(e.target.value)}
+                          className="w-full font-mono">
                     <option value="">this server</option>
                     {workers.map((w) => (
                       <option key={w.name} value={w.name} disabled={!w.online}>
@@ -420,54 +400,47 @@ export default function Train({ methods }: { methods: MethodInfo[] }) {
                       </option>
                     ))}
                   </select>
-                  <p className="text-[11px] text-muted-foreground mt-1.5">
-                    connected devices (`shadowlm worker`) — the run streams back here either way.
-                  </p>
-                </div>
+                </Field>
               )}
 
-              <div className="pt-4 border-t border-border">
-                <div className="text-sm font-semibold mb-1">Hyperparameters</div>
-                <p className="text-xs text-muted-foreground">
-                  everything <b className="text-foreground">{method ?? "this method"}</b> uses —
-                  defaults are sensible, the {method}-specific knobs are highlighted.
-                </p>
+              <div className="border-t border-border pt-5">
+                <SectionHeader title="Hyperparameters"
+                  description={<>Everything <span className="font-medium text-foreground">{method ?? "this method"}</span> uses — defaults are sensible, the {method}-specific knobs are set apart below.</>} />
+                <ParamGrid params={CORE} vals={vals} setVal={setVal} methodInfo={methodInfo} method={method} />
               </div>
 
-              <ParamGrid params={CORE} vals={vals} setVal={setVal} methodInfo={methodInfo} method={method} />
-
               {extraParams.length > 0 && (
-                <div className="pt-4 border-t border-border">
-                  <div className="text-xs font-semibold text-primary mb-3 uppercase tracking-wider font-mono">
-                    {method} settings
-                  </div>
+                <div className="border-t border-border pt-5">
+                  <p className="mb-3 text-xs font-medium text-primary">{method} settings</p>
                   <ParamGrid params={extraParams} vals={vals} setVal={setVal} />
                 </div>
               )}
 
-              <div className="pt-4 border-t border-border">
-                <button onClick={() => setAdvanced((v) => !v)}
-                        className="text-xs text-muted-foreground hover:text-foreground mb-3">
-                  {advanced ? "▾" : "▸"} Advanced — optimizer{methodInfo?.trainer === "sft" ? " & data" : ""}
+              <div className="border-t border-border pt-5">
+                <button onClick={() => setAdvanced((v) => !v)} aria-expanded={advanced}
+                        className="mb-3 inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground">
+                  <ChevronDown className={cn("size-3.5 transition-transform", !advanced && "-rotate-90")} />
+                  Advanced — optimizer{methodInfo?.trainer === "sft" ? " & data" : ""}
                 </button>
                 {advanced && <ParamGrid params={advParams} vals={vals} setVal={setVal} />}
               </div>
 
               {meta?.eval_split ? (
-                <div className="pt-4 border-t border-border text-sm text-muted-foreground">
-                  eval uses the dataset's own <b className="text-foreground">{meta.eval_split}</b> split
+                <div className="border-t border-border pt-5 text-sm text-muted-foreground">
+                  Eval uses the dataset's own <span className="font-medium text-foreground">{meta.eval_split}</span> split.
                 </div>
               ) : methodInfo?.trainer === "grpo" ? null : (
-                <div className="pt-4 border-t border-border space-y-2">
-                  <label className="flex items-center gap-2 text-sm text-muted-foreground">
-                    <input type="checkbox" checked={evalSplit} className="w-auto"
-                           onChange={(e) => setEvalSplit(e.target.checked)} />
-                    hold out a slice for eval — watch for overfitting, not just training loss
-                  </label>
+                <div className="space-y-3 border-t border-border pt-5">
+                  <div className="flex items-center gap-2.5">
+                    <Switch id="eval-split" checked={evalSplit} onCheckedChange={setEvalSplit} />
+                    <Label htmlFor="eval-split" className="font-normal text-muted-foreground">
+                      Hold out a slice for eval — watch for overfitting, not just training loss
+                    </Label>
+                  </div>
                   {evalSplit && (
-                    <div className="flex items-center gap-2 pl-6 text-sm text-muted-foreground">
-                      hold out
-                      <input type="number" min={1} max={50} value={evalPct}
+                    <div className="flex items-center gap-2 pl-11 text-sm text-muted-foreground">
+                      Hold out
+                      <Input type="number" min={1} max={50} value={evalPct}
                              onChange={(e) => setEvalPct(e.target.value)}
                              className="w-16 text-center font-mono" />
                       % of the data for evaluation
@@ -475,34 +448,32 @@ export default function Train({ methods }: { methods: MethodInfo[] }) {
                   )}
                 </div>
               )}
-            </section>
+            </Panel>
           )}
 
           {/* step nav */}
           <div className="flex items-center justify-between gap-3">
-            <button onClick={() => setStep(Math.max(0, step - 1))} disabled={step === 0}
-                    className={btnGhost}>
-              <ChevronLeft className="size-3.5" /> Back
-            </button>
+            <Button variant="outline" onClick={() => setStep(Math.max(0, step - 1))} disabled={step === 0}>
+              <ChevronLeft /> Back
+            </Button>
             {step < STEPS.length - 1 && (
-              <button onClick={() => canNext && setStep(step + 1)} disabled={!canNext}
-                      className={btnPrimary}>
-                Next: {STEPS[step + 1]} <ChevronRight className="size-3.5" />
-              </button>
+              <Button onClick={() => canNext && setStep(step + 1)} disabled={!canNext}>
+                Next: {STEPS[step + 1]} <ChevronRight />
+              </Button>
             )}
           </div>
         </div>
 
         {/* right rail — live summary + generated CLI */}
-        <aside className="space-y-4">
-          <div className="sticky top-4 space-y-4">
-            <div className="rounded-lg border border-border bg-card overflow-hidden">
-              <div className="px-4 py-3 border-b border-border">
-                <div className="text-[10px] font-mono uppercase tracking-[0.18em] text-muted-foreground">Run summary</div>
-                <div className="text-sm font-semibold mt-1">
-                  {ready ? "Ready to launch" : "Working through the steps…"}</div>
-              </div>
-              <div className="px-4 py-3 space-y-2 text-xs">
+        <aside>
+          <div className="sticky top-0 space-y-4">
+            <section className="border border-border bg-card">
+              <header className="border-b border-border px-4 py-3">
+                <p className="text-xs text-muted-foreground">Run summary</p>
+                <p className="mt-0.5 text-sm font-semibold">
+                  {ready ? "Ready to launch" : "Working through the steps…"}</p>
+              </header>
+              <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-2 px-4 py-3 text-xs">
                 <SummaryRow label="Dataset" value={meta ? (meta.rows != null ? `${meta.name} (${meta.rows})` : meta.name) : "—"} />
                 <SummaryRow label="Model" value={model ? model.split("/").pop()! : "—"} />
                 <SummaryRow label="Method" value={method ?? "—"} />
@@ -514,24 +485,22 @@ export default function Train({ methods }: { methods: MethodInfo[] }) {
                     value={summaryVal(p.key) || p.def} />
                 ))}
                 <SummaryRow label="Eval" value={evalSplit ? `${evalPct}% held out` : "off"} />
+              </dl>
+              <div className="space-y-2 px-4 pt-1 pb-4">
+                <Button size="lg" onClick={start} disabled={!ready || busy} className="h-10 w-full">
+                  {busy ? <LoaderCircle className="animate-spin" /> : <Play />} {busy ? "Starting…" : "Start training"}
+                </Button>
+                <p className="text-center text-[11px] text-muted-foreground">
+                  This exact config runs — nothing hidden.
+                </p>
+                {err && <p className="text-xs text-destructive">{err}</p>}
               </div>
-              <div className="px-4 pb-4 pt-2 space-y-2">
-                <button onClick={start} disabled={!ready || busy}
-                  className={`${btnPrimary} w-full justify-center py-2.5 text-sm`}>
-                  <Play className="size-4" /> {busy ? "starting…" : "Start training"}
-                </button>
-                <div className="text-[10px] font-mono text-muted-foreground text-center">
-                  this exact config runs — nothing hidden
-                </div>
-                {err && <div className="text-xs text-destructive">{err}</div>}
-              </div>
-            </div>
+            </section>
 
-            <div className="rounded-lg border border-border bg-card p-4">
-              <div className="text-[10px] font-mono uppercase tracking-[0.18em] text-muted-foreground mb-2">
-                The same run, from your shell</div>
-              <pre className="text-[11px] font-mono text-foreground/80 leading-relaxed whitespace-pre-wrap break-all">{cli}</pre>
-            </div>
+            <section className="border border-border bg-card p-4">
+              <p className="mb-2 text-xs text-muted-foreground">The same run, from your shell</p>
+              <pre className="rounded-md bg-surface p-3 font-mono text-[11px] leading-relaxed whitespace-pre-wrap break-all text-foreground/80">{cli}</pre>
+            </section>
           </div>
         </aside>
       </div>
@@ -539,12 +508,42 @@ export default function Train({ methods }: { methods: MethodInfo[] }) {
   );
 }
 
+// A step's frame: hairline, card fill, room to breathe.
+function Panel({ children, className }: { children: ReactNode; className?: string }) {
+  return <section className={cn("border border-border bg-card p-5", className)}>{children}</section>;
+}
+
+// A scrolling list of choices, one selected.
+function PickList({ children, className }: { children: ReactNode; className?: string }) {
+  return (
+    <div className={cn("max-h-72 divide-y divide-border overflow-auto border border-border scrollbar-thin", className)}>
+      {children}
+    </div>
+  );
+}
+
+function PickRow({ selected, onClick, title, sub }: {
+  selected: boolean; onClick: () => void; title: string; sub: string;
+}) {
+  return (
+    <button onClick={onClick} aria-pressed={selected}
+      className={cn("flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors",
+        selected ? "bg-primary/5" : "hover:bg-subtle")}>
+      <div className="min-w-0 flex-1">
+        <div className={cn("truncate text-sm font-medium", selected && "text-primary")}>{title}</div>
+        <Mono className="text-muted-foreground">{sub}</Mono>
+      </div>
+      {selected && <Check className="size-4 shrink-0 text-primary" />}
+    </button>
+  );
+}
+
 function SummaryRow({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex items-center justify-between gap-3">
-      <span className="text-muted-foreground">{label}</span>
-      <span className="font-mono truncate text-right">{value}</span>
-    </div>
+    <>
+      <dt className="text-muted-foreground">{label}</dt>
+      <dd className="truncate text-right font-mono">{value}</dd>
+    </>
   );
 }
 
@@ -554,30 +553,34 @@ function ParamGrid({ params, vals, setVal, methodInfo, method }: {
   methodInfo?: MethodInfo; method?: string | null;
 }) {
   return (
-    <div className="grid grid-cols-2 gap-3">
+    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
       {params.map((p) => {
         const hint = p.key === "learning_rate" && methodInfo
           ? `default for ${method}: ${methodInfo.default_lr}` : p.hint;
+        const id = `param-${p.key}`;
         if (p.kind === "bool") {
           return (
-            <label key={p.key} className="flex items-center gap-2 text-sm self-end pb-2">
-              <input type="checkbox" checked={vals[p.key] === "true"} className="w-auto"
-                     onChange={(e) => setVal(p.key, e.target.checked ? "true" : "false")} />
-              <span>{p.label}{hint && <span className="text-muted-foreground"> · {hint}</span>}</span>
-            </label>
+            <div key={p.key} className="flex items-start gap-2.5 self-end pb-1.5">
+              <Switch id={id} checked={vals[p.key] === "true"}
+                      onCheckedChange={(on) => setVal(p.key, on ? "true" : "false")} className="mt-0.5" />
+              <Label htmlFor={id} className="grid gap-0.5 font-normal">
+                <span className="text-sm">{p.label}</span>
+                {hint && <span className="text-xs text-muted-foreground">{hint}</span>}
+              </Label>
+            </div>
           );
         }
         return (
-          <Field key={p.key} label={p.label} hint={hint}>
+          <Field key={p.key} label={p.label} hint={hint} htmlFor={id}>
             {p.kind === "select" ? (
-              <select value={vals[p.key] ?? p.def} className="w-full font-mono text-sm"
+              <select id={id} value={vals[p.key] ?? p.def} className="w-full font-mono"
                       onChange={(e) => setVal(p.key, e.target.value)}>
                 {p.options!.map((o) => <option key={o} value={o}>{o}</option>)}
               </select>
             ) : (
-              <input value={vals[p.key] ?? ""} placeholder={p.def || "method default"}
+              <Input id={id} value={vals[p.key] ?? ""} placeholder={p.def || "method default"}
                      inputMode={p.kind === "int" ? "numeric" : "decimal"}
-                     className="w-full font-mono text-sm"
+                     className="font-mono"
                      onChange={(e) => setVal(p.key, e.target.value)} />
             )}
           </Field>

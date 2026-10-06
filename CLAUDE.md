@@ -135,6 +135,12 @@ routing; its run progress is one step per unit (see `resolve_total_steps`).
   are the capture→train→own loop as a UI. Auth has three modes — `password`,
   `apikey`, or `none` (`GET /v1/auth` reports which) — plus long-lived, hashed,
   individually-revocable **machine tokens** that workers authenticate with.
+  The UI uses the opencontroller console's design system (shadcn primitives in
+  `frontend/src/components/ui/`, tokens in `index.css`, light + dark) and can
+  run **embedded** in a host console over the `oc-embed/1` postMessage bridge
+  (`frontend/src/lib/embed.ts`): framed by an origin `serve.py`'s
+  `frame_ancestors()` lists, it drops its shell, follows the host's theme, and
+  sends every call to the host's proxy with the host's pass.
 
 ### The shadow accelerator (`accel.py`)
 

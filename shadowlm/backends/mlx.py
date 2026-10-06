@@ -792,8 +792,12 @@ class MLXBackend(Backend):
             from mlx_lm_lora.trainer.dpo_trainer import DPOTrainingArgs, train_dpo  # noqa: PLC0415
         except ImportError as e:
             raise ImportError(
-                "Preference training on Apple Silicon needs mlx-lm-lora: "
-                "pip install shadowlm[preference]"
+                "Preference training on Apple Silicon needs mlx-lm-lora, which requires "
+                "mlx-lm 0.30+ and transformers 5 — versions the torch trainer "
+                "cannot share an environment with. Install it in one of its own:\n\n"
+                "    pip install shadowlm[preference] --no-deps\n"
+                "    pip install 'mlx-lm-lora>=2.0'\n\n"
+                "LoRA, QLoRA, DoRA and CPT need none of this."
             ) from e
         from mlx_lm import load as mlx_load  # noqa: PLC0415
         from mlx_lm.tuner.utils import linear_to_lora_layers  # noqa: PLC0415
@@ -873,7 +877,12 @@ class MLXBackend(Backend):
             from mlx_lm_lora.trainer.grpo_trainer import GRPOTrainingArgs, train_grpo  # noqa: PLC0415
         except ImportError as e:
             raise ImportError(
-                "GRPO on Apple Silicon needs mlx-lm-lora: pip install shadowlm[preference]"
+                "GRPO on Apple Silicon needs mlx-lm-lora, which requires "
+                "mlx-lm 0.30+ and transformers 5 — versions the torch trainer "
+                "cannot share an environment with. Install it in one of its own:\n\n"
+                "    pip install shadowlm[preference] --no-deps\n"
+                "    pip install 'mlx-lm-lora>=2.0'\n\n"
+                "LoRA, QLoRA, DoRA and CPT need none of this."
             ) from e
         from mlx_lm import load as mlx_load  # noqa: PLC0415
         from mlx_lm.tuner.utils import linear_to_lora_layers  # noqa: PLC0415
