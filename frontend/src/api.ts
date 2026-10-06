@@ -1,4 +1,5 @@
 // The ShadowLM remote protocol, typed. Same endpoints the SDK speaks.
+import { embedApiBase, embedded, embedToken, renewPass } from "@/lib/embed";
 
 export interface DatasetMeta {
   dataset_id: string;
@@ -80,16 +81,41 @@ export const apiKey = {
   clear: () => localStorage.removeItem("slm_api_key"),
 };
 
-export async function api<T>(path: string, opts: RequestInit = {}): Promise<T> {
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  const key = apiKey.get();
-  if (key) headers["Authorization"] = `Bearer ${key}`;
-  const r = await fetch(path, { ...opts, headers });
-  if (r.status === 401) {
+// apiUrl is where a call goes: this server, or embedded in a host console
+// (lib/embed.ts), the host's proxy for it.
+export const apiUrl = (path: string) => (embedded ? `${embedApiBase() ?? ""}${path}` : path);
+
+// authHeaders is the bearer for a call: the host's pass when embedded, else
+// this studio's own key or login token.
+export function authHeaders(): Record<string, string> {
+  const t = embedded ? embedToken() : apiKey.get();
+  return t ? { Authorization: `Bearer ${t}` } : {};
+}
+
+// apiFetch is fetch against the API with its credential. Embedded, a 401
+// asks the host for a fresh pass and tries once more; no cookie is sent.
+export async function apiFetch(path: string, opts: RequestInit = {}): Promise<Response> {
+  const go = () => fetch(apiUrl(path), {
+    ...opts,
+    headers: { ...(opts.headers as Record<string, string> | undefined), ...authHeaders() },
+    credentials: embedded ? "omit" : "same-origin",
+  });
+  let r = await go();
+  if (r.status === 401 && embedded) {
+    await renewPass();
+    r = await go();
+  } else if (r.status === 401) {
     // token missing/expired — drop it and bounce back to the login gate
     apiKey.clear();
     window.dispatchEvent(new Event("slm-unauthorized"));
   }
+  return r;
+}
+
+export async function api<T>(path: string, opts: RequestInit = {}): Promise<T> {
+  const r = await apiFetch(path, {
+    ...opts, headers: { "Content-Type": "application/json", ...(opts.headers as Record<string, string> | undefined) },
+  });
   if (!r.ok) {
     const detail = await r.json().catch(() => ({} as { error?: string }));
     throw new Error(detail.error || r.statusText);
