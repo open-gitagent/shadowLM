@@ -192,6 +192,15 @@ charts + training console) → Playground (compare base ↔ finetuned). It's the
 built React app, shipped in the wheel; the same JSON protocol powers
 `backend="remote"`.
 
+The studio can also be **embedded** in a host console such as opencontroller,
+in a frame, over the `oc-embed/1` bridge (the same one Rekori's console
+speaks): the host's menu replaces the sidebar, the host sets the theme, and
+every API call goes through the host's proxy with a short-lived pass — the
+frame holds no session of its own. Only listed origins may frame it:
+`https://dev.opencontroller.sh` and `localhost` on any port are built in; add
+yours with `SHADOWLM_FRAME_ANCESTORS="https://console.example.com"`
+(space- or comma-separated). Opened on its own, the studio is unchanged.
+
 ## The shadow accelerator
 
 `accelerator="shadow"` turns on the optimizations that are safe for your model
