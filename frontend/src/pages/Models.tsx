@@ -1,11 +1,16 @@
 // Model library — catalog + recently trained, search and family filters.
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Check, Cpu, Download, Loader2, Search, X } from "lucide-react";
+import { Box, Check, Download, LoaderCircle, Plus, Search, TriangleAlert, X } from "lucide-react";
+
 import {
   addCustomModel, downloadModel, getDownloads, getModels, removeCustomModel,
-} from "../api";
-import type { CatalogModel, DownloadStatus } from "../api";
-import { PageHeader, btnGhost, btnPrimary } from "../ui";
+} from "@/api";
+import type { CatalogModel, DownloadStatus } from "@/api";
+import { EmptyState, Mono, PageHeader } from "@/components/common";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 const fmtGB = (b?: number) => (b ? `${(b / 1e9).toFixed(b < 1e9 ? 2 : 1)} GB` : "");
 
@@ -77,104 +82,114 @@ export default function Models() {
   return (
     <>
       <PageHeader
-        eyebrow="Library"
         title="Models"
-        description={`Any open model on the HuggingFace hub works — these are good starting points. Server backend: ${backend}.`}
+        description={`Any open model on the Hugging Face hub works; these are good starting points. Server backend: ${backend}.`}
+        actions={
+          <form className="flex gap-2" onSubmit={(e) => { e.preventDefault(); addModel(free); }}>
+            <Input value={free} onChange={(e) => setFree(e.target.value)}
+                   placeholder="org/model, any HF id" className="w-56 font-mono" />
+            <Button type="submit" disabled={!free.trim()}><Plus /> Add</Button>
+          </form>
+        }
       />
 
-      <div className="px-8 py-6 max-w-[1400px] space-y-4">
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="relative flex-1 min-w-[220px] max-w-md">
-            <Search className="size-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-            <input value={search} onChange={(e) => setSearch(e.target.value)}
-                   placeholder="Search models…" className="w-full pl-9 pr-3 py-2 text-sm" />
-          </div>
-          <div className="flex gap-1 p-1 bg-muted rounded-md">
-            {families.map((f) => (
-              <button key={f} onClick={() => setFamily(f)}
-                className={`px-2.5 py-1 text-[11px] font-mono rounded transition-colors ${
-                  family === f ? "bg-card text-foreground shadow-sm" : "text-muted-foreground"}`}>
-                {f}
-              </button>
-            ))}
-          </div>
-          <form className="ml-auto flex gap-2"
-                onSubmit={(e) => { e.preventDefault(); addModel(free); }}>
-            <input value={free} onChange={(e) => setFree(e.target.value)}
-                   placeholder="org/model — add any HF id" className="text-xs font-mono w-56" />
-            <button className={btnPrimary}>+ Add</button>
-          </form>
+      <div className="mb-4 flex flex-wrap items-center gap-2">
+        <div className="relative max-w-sm min-w-[220px] flex-1">
+          <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Input value={search} onChange={(e) => setSearch(e.target.value)}
+                 placeholder="Search models…" className="pl-8" />
         </div>
+        <Tabs value={family} onValueChange={setFamily}>
+          <TabsList>
+            {families.map((f) => (
+              <TabsTrigger key={f} value={f} className="px-2.5 capitalize">{f}</TabsTrigger>
+            ))}
+          </TabsList>
+        </Tabs>
+      </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+      {filtered.length === 0 ? (
+        <EmptyState icon={Box} title="No models match">
+          Clear the search, or add any Hugging Face model id above.
+        </EmptyState>
+      ) : (
+        <div className="grid grid-cols-1 gap-3 @2xl:grid-cols-2 @5xl:grid-cols-3">
           {filtered.map((m) => {
             const dl = downloads[m.id];
             const onDisk = m.cached || dl?.state === "ready";
             const downloading = dl?.state === "downloading";
             return (
-            <div key={m.id}
-                 className="rounded-lg border border-border bg-card p-4 hover:border-primary/40 transition-colors">
-              <div className="flex items-start justify-between mb-2">
-                <div className="size-8 rounded-md bg-primary/10 border border-primary/20 grid place-items-center">
-                  <Cpu className="size-4 text-primary" />
+              <div key={m.id}
+                   className="flex flex-col border border-border bg-card p-4 transition-colors hover:border-border-strong">
+                <div className="mb-2 flex items-start justify-between gap-2">
+                  <span className="grid size-7 shrink-0 place-items-center rounded-md border border-border bg-surface/60">
+                    <Box className="size-3.5 text-muted-foreground" strokeWidth={1.75} />
+                  </span>
+                  <span className="flex flex-wrap items-center justify-end gap-1">
+                    {onDisk && (
+                      <Badge variant="outline" className="border-good/30 bg-good/10 font-normal text-good">
+                        <Check /> On disk
+                      </Badge>
+                    )}
+                    {m.dev && <Badge variant="secondary" className="font-normal">Dev pick</Badge>}
+                    {m.gated && (
+                      <Badge variant="outline" className="border-warning/30 bg-warning/10 font-normal text-warning">
+                        HF token
+                      </Badge>
+                    )}
+                    {m.custom && (
+                      <Button variant="ghost" size="icon-xs" title="Remove from library" aria-label={`Remove ${m.id}`}
+                              className="text-muted-foreground hover:text-destructive"
+                              onClick={() => removeModel(m.id)}>
+                        <X />
+                      </Button>
+                    )}
+                  </span>
                 </div>
-                <span className="flex gap-1.5 items-center">
-                  {onDisk && <span className="text-[9px] font-mono uppercase px-1.5 py-0.5 rounded border border-success/40 text-success inline-flex items-center gap-1"><Check className="size-2.5" />on disk</span>}
-                  {m.dev && <span className="text-[9px] font-mono uppercase px-1.5 py-0.5 rounded border border-success/40 text-success">dev pick</span>}
-                  {m.gated && <span className="text-[9px] font-mono uppercase px-1.5 py-0.5 rounded border border-warning/40 text-warning">HF token</span>}
-                  {m.custom && (
-                    <button onClick={() => removeModel(m.id)} title="remove from library"
-                            className="text-muted-foreground hover:text-destructive">
-                      <X className="size-3.5" />
-                    </button>
-                  )}
-                </span>
-              </div>
-              <div className="text-sm font-semibold truncate">{m.id.split("/").pop()}</div>
-              <div className="text-xs text-muted-foreground font-mono mt-0.5 truncate">
-                {m.id}{m.params ? ` · ${m.params}` : ""}
-              </div>
-              {m.note && <div className="text-xs text-muted-foreground mt-0.5">{m.note}</div>}
+                <div className="truncate text-sm font-semibold">{m.id.split("/").pop()}</div>
+                <div className="mt-0.5 truncate text-muted-foreground">
+                  <Mono>{m.id}</Mono>{m.params ? <span className="text-xs"> · {m.params}</span> : ""}
+                </div>
+                {m.note && <div className="mt-0.5 text-xs text-muted-foreground">{m.note}</div>}
 
-              {downloading && (
-                <div className="mt-3">
-                  <div className="h-1.5 rounded-full bg-muted overflow-hidden">
-                    <div className="h-full bg-primary transition-all"
-                         style={{ width: `${dl.pct ?? 5}%` }} />
+                {downloading && (
+                  <div className="mt-3">
+                    <div className="h-1 overflow-hidden rounded-full bg-muted">
+                      <div className="h-full bg-primary transition-all" style={{ width: `${dl.pct ?? 5}%` }} />
+                    </div>
+                    <div className="mt-1 flex items-center gap-1 text-xs text-muted-foreground tabular-nums">
+                      <LoaderCircle className="size-3 animate-spin" />
+                      {dl.pct != null
+                        ? `${dl.pct}% · ${fmtGB(dl.downloaded)} / ${fmtGB(dl.total)}`
+                        : "downloading…"}
+                    </div>
                   </div>
-                  <div className="mt-1 text-[10px] font-mono text-muted-foreground flex items-center gap-1">
-                    <Loader2 className="size-3 animate-spin" />
-                    {dl.pct != null
-                      ? `${dl.pct}% · ${fmtGB(dl.downloaded)} / ${fmtGB(dl.total)}`
-                      : "downloading…"}
-                  </div>
-                </div>
-              )}
-              {dl?.state === "error" && (
-                <div className="mt-2 text-[10px] font-mono text-destructive truncate" title={dl.error ?? ""}>
-                  ⚠ {dl.error}
-                </div>
-              )}
-
-              <div className="mt-4 flex gap-2">
-                <button onClick={() => pick("model", m.id, "#train")}
-                        className={`${btnPrimary} flex-1 justify-center`}>
-                  Fine-tune
-                </button>
-                <button onClick={() => pick("model", m.id, "#playground")} className={btnGhost}>
-                  Try
-                </button>
-                {!onDisk && !downloading && (
-                  <button onClick={() => startDownload(m.id)} className={btnGhost} title="prefetch weights to disk">
-                    <Download className="size-3.5" />
-                  </button>
                 )}
+                {dl?.state === "error" && (
+                  <div className="mt-2 flex items-center gap-1 truncate text-xs text-destructive" title={dl.error ?? ""}>
+                    <TriangleAlert className="size-3 shrink-0" /> {dl.error}
+                  </div>
+                )}
+
+                <div className="mt-auto flex gap-2 pt-4">
+                  <Button className="flex-1" onClick={() => pick("model", m.id, "#train")}>
+                    Fine-tune
+                  </Button>
+                  <Button variant="outline" onClick={() => pick("model", m.id, "#playground")}>
+                    Try
+                  </Button>
+                  {!onDisk && !downloading && (
+                    <Button variant="outline" size="icon" title="Prefetch weights to disk"
+                            aria-label={`Download ${m.id}`} onClick={() => startDownload(m.id)}>
+                      <Download />
+                    </Button>
+                  )}
+                </div>
               </div>
-            </div>
             );
           })}
         </div>
-      </div>
+      )}
     </>
   );
 }

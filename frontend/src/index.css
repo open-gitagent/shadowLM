@@ -1,70 +1,300 @@
 @import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
 
-/* ShadowLM Studio — the banner palette: cream paper + heart red.
-   Same scheme as the README banner and the Lyzr deck. */
+@custom-variant dark (&:is(.dark *));
 
-@theme {
-  --radius-sm: 0.25rem;
-  --radius-md: 0.375rem;
-  --radius-lg: 0.5rem;
-  --radius-xl: 0.75rem;
+/* ============================================================
+   Paper & Ink, softened
 
-  --color-background: oklch(0.96 0.015 60);
-  --color-foreground: oklch(0.25 0.03 30);
-  --color-surface: oklch(0.92 0.02 55);
-  --color-card: oklch(0.98 0.01 58);
-  --color-card-foreground: oklch(0.25 0.03 30);
-  --color-primary: oklch(0.55 0.2 25);
-  --color-primary-foreground: oklch(0.97 0.01 60);
-  --color-secondary: oklch(0.87 0.02 50);
-  --color-muted: oklch(0.83 0.02 50);
-  --color-muted-foreground: oklch(0.55 0.04 45);
-  --color-accent: oklch(0.9 0.03 45);
-  --color-destructive: oklch(0.5 0.18 25);
-  --color-success: oklch(0.65 0.15 140);
-  --color-warning: oklch(0.75 0.14 70);
-  --color-border: oklch(0.78 0.02 50);
-  --color-input: oklch(0.85 0.02 50);
-  --color-sidebar: oklch(0.92 0.02 55);
-  --color-sidebar-border: oklch(0.8 0.02 50);
-  --color-sidebar-accent: oklch(0.88 0.025 45);
+   Near-black ink on warm paper: no pure white or black, every neutral
+   warmed toward the paper's hue. Panels are near-white cards lifted off
+   the paper canvas by a hairline and a faint warm shadow; corners are
+   near-square.
 
-  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+   Nothing is filled solid. The one interactive colour, a muted slate
+   blue (primary), marks what can be acted on and where you are, always
+   as a soft tint: tinted background, deeper text. State that means
+   something is an earthy tint the same way (success, warning, failure).
+   ============================================================ */
+
+:root {
+  /* A white page, cards and panels: the content reads crisp. The warmth
+     stays in the side panel, the fills and the rules. */
+  --canvas: #ffffff;
+  --background: #ffffff;
+  --foreground: #141311;
+
+  --card: #ffffff;
+  --card-foreground: #141311;
+  --popover: #ffffff;
+  --popover-foreground: #141311;
+
+  /* Raised fills: table heads and chips, then hover and selection. */
+  --surface: #ede9e1;
+  --surface-2: #e8e4dd;
+
+  /* The interactive colour, used as a tint. */
+  --primary: #3d5a86;
+  --primary-foreground: #fdfcf9;
+
+  --secondary: #e8e4dd;
+  --secondary-foreground: #141311;
+  --muted: #e8e4dd;
+  --muted-foreground: #635d51;
+  --accent: #e8e4dd;
+  --accent-foreground: #141311;
+  /* A whisper for hover and zebra rows, where muted would be too loud. */
+  --subtle: #f6f3ed;
+
+  --destructive: #9e3b28;
+  --good: #3f7a4f;
+  --warning: #a5671c;
+  --info: #2d2d2d;
+  --kg-model: #7a5a8c;
+  --accent-alt: #a0522d;
+
+  /* A hairline for dividing, a stronger edge for separating, full ink
+     for framing. */
+  --border: #e3ded4;
+  --border-strong: #d2cdc0;
+  --rule: #141311;
+  --input: #e8e4dd;
+  --ring: #3d5a86;
+
+  --chart-1: #3d5a86;
+  --chart-2: #635d51;
+  --chart-3: #d2cdc0;
+  --chart-4: #3f7a4f;
+  --chart-5: #9e3b28;
+
+  /* Near-square. */
+  --radius: 0.5rem;
+
+  /* Faint shadows, warm brown rather than black. */
+  --shadow-paper: 0 1px 0 rgb(28 24 18 / 0.03), 0 1px 2px rgb(28 24 18 / 0.05);
+  --shadow-raised: 0 1px 0 rgb(28 24 18 / 0.04), 0 2px 4px rgb(28 24 18 / 0.06), 0 8px 24px -12px rgb(28 24 18 / 0.1);
+
+  /* shadcn's sidebar slots, kept in the same palette. */
+  --sidebar: #f8f7f4;
+  --sidebar-foreground: var(--foreground);
+  --sidebar-primary: var(--primary);
+  --sidebar-primary-foreground: var(--primary-foreground);
+  --sidebar-accent: var(--surface-2);
+  --sidebar-accent-foreground: var(--foreground);
+  --sidebar-border: var(--border);
+  --sidebar-ring: var(--ring);
 }
 
-html, body, #root { height: 100%; }
+.dark {
+  /* Warm graphite: the light theme's paper warmth, held back to a hint so
+     the greys read crisp and neutral. The canvas is darkest, cards rise
+     off it, hover lifts a step lighter. */
+  --canvas: #121110;
+  --background: #1a1917;
+  --foreground: #ebe8e3;
 
-body {
-  background-color: var(--color-background);
-  color: var(--color-foreground);
-  font-family: var(--font-mono);
-  font-size: 14px;
-  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  --card: #1a1917;
+  --sidebar: var(--background);
+  --card-foreground: #ebe8e3;
+  --popover: #1e1d1b;
+  --popover-foreground: #ebe8e3;
+
+  --surface: #201f1c;
+  --surface-2: #262522;
+
+  --primary: #9db2d4;
+  --primary-foreground: #121110;
+
+  --secondary: #23221f;
+  --secondary-foreground: #ebe8e3;
+  --muted: #23221f;
+  --muted-foreground: #a39e95;
+  --accent: #23221f;
+  --accent-foreground: #ebe8e3;
+  --subtle: #171614;
+
+  --destructive: #d4685a;
+  --good: #6faa83;
+  --warning: #cfa25a;
+  --info: #9b968d;
+  --kg-model: #ae92c9;
+  --accent-alt: #cc8459;
+
+  --border: #2a2926;
+  --border-strong: #38362f;
+  --rule: #ebe8e3;
+  --input: #2a2926;
+  --ring: #9db2d4;
+
+  --chart-1: #9db2d4;
+  --chart-2: #a39e95;
+  --chart-3: #38362f;
+  --chart-4: #6faa83;
+  --chart-5: #d4685a;
+
+  --shadow-paper: 0 1px 0 rgb(0 0 0 / 0.25), 0 1px 2px rgb(0 0 0 / 0.3);
+  --shadow-raised: 0 1px 0 rgb(0 0 0 / 0.3), 0 2px 4px rgb(0 0 0 / 0.35), 0 8px 24px -12px rgb(0 0 0 / 0.5);
 }
 
-::selection { background-color: oklch(0.55 0.2 25 / 0.25); }
+@theme inline {
+  --font-sans: "Manrope", ui-sans-serif, system-ui, sans-serif;
+  /* Headings in the side panel's face, so the page reads as one voice. */
+  --font-heading: "Manrope", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", monospace;
 
-* { border-color: var(--color-border); }
+  --color-canvas: var(--canvas);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-border-strong: var(--border-strong);
+  --color-accent-alt: var(--accent-alt);
+  --color-subtle: var(--subtle);
+  --color-rule: var(--rule);
+  --color-good: var(--good);
+  --color-warning: var(--warning);
+  --color-info: var(--info);
 
-input, select, textarea {
-  background: var(--color-input);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  padding: 8px 12px;
-  font: inherit;
-  color: var(--color-foreground);
-}
-input:focus, select:focus, textarea:focus {
-  outline: none;
-  border-color: var(--color-primary);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-foreground: var(--foreground);
+  --color-background: var(--background);
+
+  /* Every radius comes out of the one --radius: slightly rounded, the
+     larger the surface the softer, never pill-shaped but for pills. */
+  --radius-sm: calc(var(--radius) * 0.5);
+  --radius-md: calc(var(--radius) * 0.75);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.5);
+  --radius-2xl: calc(var(--radius) * 2);
+  --radius-3xl: calc(var(--radius) * 2.5);
+  --radius-4xl: 9999px; /* pills stay pills */
+
+  /* Depth is a hairline and a faint warm shadow, never heavy elevation. */
+  --shadow-paper: var(--shadow-paper);
+  --shadow-raised: var(--shadow-raised);
+  --shadow-xs: var(--shadow-paper);
+  --shadow-sm: var(--shadow-paper);
+  --shadow-md: var(--shadow-raised);
+  --shadow-lg: var(--shadow-raised);
 }
 
-.scrollbar-thin::-webkit-scrollbar { width: 8px; height: 8px; }
-.scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
-.scrollbar-thin::-webkit-scrollbar-thumb {
-  background: oklch(0.78 0.02 50);
-  border-radius: 4px;
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  /* What a person types in a monospaced field is read character by
+     character: no ligatures, which draw a cron's star and slash as one
+     glyph that hides the star. */
+  input.font-mono,
+  textarea.font-mono {
+    font-variant-ligatures: none;
+  }
+  /* A box drawn with a full border (a section, a list, a table's frame)
+     takes the soft corner; one that sets its own rounding keeps it, since
+     utilities come after this layer. */
+  :where(.border) {
+    border-radius: var(--radius-lg);
+  }
+  /* A table's rows reach its frame's edges; the corners clip them. */
+  :where(.border):has(> [data-slot="table-container"]) {
+    overflow: hidden;
+  }
+  html,
+  body,
+  #root {
+    @apply h-full;
+  }
+  body {
+    @apply bg-canvas font-sans text-foreground antialiased;
+    font-feature-settings: "cv11", "ss01";
+  }
+  /* Display type is Sora, tight; it leans on size and tracking, not weight. */
+  h1,
+  h2,
+  h3 {
+    @apply font-heading tracking-[-0.02em];
+    text-wrap: balance;
+  }
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
 }
+
+@layer components {
+  /* A framed block: full-strength rule, square, no shadow. */
+  .framed {
+    @apply border border-rule;
+  }
+}
+
+/* ============================================================
+   OpenFinetuner additions on top of the console's tokens
+   ============================================================ */
+
+:root {
+  /* Ink + bone: the training-log console, dark in either theme. */
+  --ink: #141311;
+  --bone: #ebe8e3;
+}
+
+@theme inline {
+  --color-success: var(--good);
+  --color-ink: var(--ink);
+  --color-bone: var(--bone);
+}
+
+@layer base {
+  /* A bare form control (one not yet a ui/ component) reads like the
+     console's Input: hairline, soft corner, no fill. */
+  :where(input:not([type="checkbox"], [type="radio"], [type="range"], [type="file"]), select, textarea):not([data-slot]) {
+    border: 1px solid var(--input);
+    border-radius: var(--radius-lg);
+    background: transparent;
+    padding: 0.25rem 0.625rem;
+    min-height: 2rem;
+    font: inherit;
+    font-size: 0.875rem;
+    color: var(--foreground);
+    outline: none;
+    transition: border-color 0.15s, box-shadow 0.15s;
+  }
+  :where(input:not([type="checkbox"], [type="radio"], [type="range"], [type="file"]), select, textarea):not([data-slot]):focus-visible {
+    border-color: var(--ring);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--ring) 50%, transparent);
+  }
+  :where(input, textarea)::placeholder { color: var(--muted-foreground); }
+  input[type="checkbox"] { accent-color: var(--primary); }
+}
+
+.scrollbar-thin { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
 
 @keyframes rise { from { opacity: 0; transform: translateY(5px); } }
 .rise { animation: rise 0.18s ease-out; }

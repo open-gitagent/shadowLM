@@ -1,20 +1,25 @@
 // Machines — every device serving this hub via `shadowlm worker`.
-import { useEffect, useState } from "react";
-import { Check, Copy, KeyRound, MonitorSmartphone, Trash2 } from "lucide-react";
-import { createToken, getTokens, getWorkers, revokeToken } from "../api";
-import type { MachineToken, WorkerInfo } from "../api";
-import { PageHeader } from "../ui";
+import { Fragment, useEffect, useState } from "react";
+import { Check, ChevronDown, ChevronRight, Copy, KeyRound, MonitorSmartphone, Trash2 } from "lucide-react";
+
+import { createToken, getTokens, getWorkers, revokeToken } from "@/api";
+import type { MachineToken, WorkerInfo } from "@/api";
+import { EmptyState, Mono, PageHeader, SectionHeader } from "@/components/common";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { cn } from "@/lib/utils";
 
 function CopyBtn({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
   return (
-    <button title="copy"
+    <Button variant="outline" size="icon-sm" title="Copy" aria-label="Copy"
       onClick={() => navigator.clipboard.writeText(text).then(() => {
         setCopied(true); setTimeout(() => setCopied(false), 1500);
-      })}
-      className="shrink-0 p-2 rounded-md border border-border text-muted-foreground hover:text-foreground hover:bg-accent/40">
-      {copied ? <Check className="size-3.5 text-emerald-500" /> : <Copy className="size-3.5" />}
-    </button>
+      })}>
+      {copied ? <Check className="text-good" /> : <Copy />}
+    </Button>
   );
 }
 
@@ -43,50 +48,49 @@ function ConnectCmd() {
     : null;
 
   return (
-    <div className="space-y-3 text-left">
+    <div className="grid gap-3">
       <div className="flex items-center gap-2">
-        <input value={name} onChange={(e) => setName(e.target.value)}
+        <Input value={name} onChange={(e) => setName(e.target.value)}
                onKeyDown={(e) => e.key === "Enter" && mint()}
-               placeholder="machine name — e.g. macbook"
-               className="flex-1 font-mono text-sm" />
-        <button onClick={mint}
-                className="shrink-0 inline-flex items-center gap-1.5 text-xs px-3 py-2 rounded-md border border-border hover:bg-accent/40">
-          <KeyRound className="size-3.5" /> Create machine token
-        </button>
+               placeholder="Machine name, e.g. macbook"
+               className="flex-1 font-mono" />
+        <Button variant="outline" onClick={mint}>
+          <KeyRound /> Create machine token
+        </Button>
       </div>
-      {err && <p className="text-xs text-red-500">{err}</p>}
+      {err && <p className="text-sm text-destructive">{err}</p>}
 
       {cmd && (
-        <div className="space-y-1.5">
+        <div className="grid gap-1.5">
           <div className="flex items-start gap-2">
-            <pre className="flex-1 overflow-x-auto text-xs font-mono bg-accent/40 border border-border rounded-md px-4 py-2.5">
+            <pre className="flex-1 overflow-x-auto border border-border bg-surface/60 px-3 py-2 font-mono text-xs">
               {cmd}
             </pre>
             <CopyBtn text={cmd} />
           </div>
-          <p className="text-[11px] text-muted-foreground">
-            long-lived token, shown once — copy it now. Revoke it here any time.
+          <p className="text-xs text-muted-foreground">
+            A long-lived token, shown once: copy it now. Revoke it here any time.
           </p>
         </div>
       )}
 
       {tokens.length > 0 && (
-        <div className="divide-y divide-border border border-border rounded-md">
+        <ul className="divide-y divide-border border">
           {tokens.map((t) => (
-            <div key={t.name} className="px-3 py-2 flex items-center gap-2 text-xs">
-              <KeyRound className="size-3 text-muted-foreground" />
-              <span className="font-mono font-medium">{t.name}</span>
-              <span className="text-muted-foreground font-mono ml-auto">
+            <li key={t.name} className="flex items-center gap-2 px-3 py-1.5 text-sm">
+              <KeyRound className="size-3.5 text-muted-foreground" strokeWidth={1.75} />
+              <Mono className="font-medium">{t.name}</Mono>
+              <span className="ml-auto text-xs text-muted-foreground">
                 created {new Date(t.created * 1000).toLocaleDateString()}
               </span>
-              <button title="revoke"
-                onClick={() => revokeToken(t.name).then(refresh)}
-                className="p-1 rounded text-muted-foreground hover:text-red-500">
-                <Trash2 className="size-3.5" />
-              </button>
-            </div>
+              <Button variant="ghost" size="icon-sm" title="Revoke" aria-label={`Revoke ${t.name}`}
+                      className="text-muted-foreground hover:text-destructive"
+                      onClick={() => revokeToken(t.name).then(refresh)}>
+                <Trash2 />
+              </Button>
+            </li>
           ))}
-        </div>
+        </ul>
       )}
     </div>
   );
@@ -129,97 +133,94 @@ export default function Machines() {
   return (
     <>
       <PageHeader
-        eyebrow="Fleet"
         title="Machines"
-        description="Devices serving this hub over one outbound socket — they appear here the moment `shadowlm worker` connects, and any of them can be picked as the training target."
+        description={<>Devices serving this hub over one outbound socket. They appear here the moment <Mono>shadowlm worker</Mono> connects, and any of them can be picked as the training target.</>}
       />
-      <div className="px-8 py-6 space-y-6 max-w-[1400px]">
-        {loaded && workers.length === 0 ? (
-          <section className="rounded-lg border border-border bg-card px-6 py-10 text-center space-y-3">
-            <MonitorSmartphone className="size-6 mx-auto text-muted-foreground" />
-            <div className="text-sm font-medium">No machines connected</div>
-            <p className="text-xs text-muted-foreground">
-              On any machine with <span className="font-mono">shadowlm</span> installed
-              (a MacBook, an office GPU box — NAT is fine, it dials out):
-            </p>
-            <div className="max-w-2xl mx-auto"><ConnectCmd /></div>
-          </section>
-        ) : (
-          <section className="rounded-lg border border-border bg-card overflow-hidden">
-            <div className="px-5 py-3 border-b border-border flex items-center gap-2">
-              <h2 className="text-sm font-semibold">Connected machines</h2>
-              <span className="text-xs text-muted-foreground font-mono ml-auto">
+
+      {loaded && workers.length === 0 ? (
+        <div className="grid max-w-2xl gap-4">
+          <EmptyState icon={MonitorSmartphone} title="No machines connected">
+            On any machine with <Mono>shadowlm</Mono> installed (a MacBook, an office GPU box; NAT is
+            fine, it dials out), create a token and run the command it gives you.
+          </EmptyState>
+          <ConnectCmd />
+        </div>
+      ) : (
+        <>
+          <SectionHeader
+            title="Connected machines"
+            actions={
+              <span className="text-xs text-muted-foreground tabular-nums">
                 {workers.filter((w) => w.online).length}/{workers.length} online
               </span>
-            </div>
-            <table className="w-full text-sm">
-              <thead className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">
-                <tr className="border-b border-border">
-                  <th className="text-left px-5 py-2.5 font-normal">Machine</th>
-                  <th className="text-left px-3 py-2.5 font-normal">Backend</th>
-                  <th className="text-left px-3 py-2.5 font-normal">Platform</th>
-                  <th className="text-left px-3 py-2.5 font-normal">Compute</th>
-                  <th className="text-right px-3 py-2.5 font-normal">Queue</th>
-                  <th className="text-right px-5 py-2.5 font-normal">Status</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-border">
+            }
+          />
+          <div className="@container border">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Machine</TableHead>
+                  <TableHead>Backend</TableHead>
+                  <TableHead className="hidden @2xl:table-cell">Platform</TableHead>
+                  <TableHead>Compute</TableHead>
+                  <TableHead className="text-right">Queue</TableHead>
+                  <TableHead className="text-right">Status</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
                 {workers.map((w) => (
-                  <>
-                    <tr key={w.name} className="hover:bg-accent/30 cursor-pointer"
-                        onClick={() => setOpen(open === w.name ? null : w.name)}>
-                      <td className="px-5 py-3">
-                        <span className="inline-flex items-center gap-2 font-mono font-medium">
-                          <span className={`size-2 rounded-full ${
-                            w.online ? "bg-emerald-500" : "bg-muted-foreground/40"}`} />
-                          {w.name}
+                  <Fragment key={w.name}>
+                    <TableRow className="cursor-pointer" onClick={() => setOpen(open === w.name ? null : w.name)}>
+                      <TableCell>
+                        <span className="inline-flex items-center gap-2 font-medium">
+                          <span className={cn("size-1.5 rounded-full", w.online ? "bg-good" : "bg-muted-foreground/40")} />
+                          <Mono className="text-sm">{w.name}</Mono>
                           {w.models.length > 0 && (
-                            <span className="text-[10px] text-muted-foreground font-normal">
-                              {open === w.name ? "▾" : "▸"} {w.models.length} models
+                            <span className="inline-flex items-center gap-0.5 text-xs font-normal text-muted-foreground">
+                              {open === w.name ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
+                              {w.models.length} models
                             </span>
                           )}
                         </span>
-                      </td>
-                      <td className="px-3 py-3 font-mono text-xs uppercase">{w.backend}</td>
-                      <td className="px-3 py-3 font-mono text-xs">{w.device}</td>
-                      <td className="px-3 py-3 font-mono text-xs">{compute(w)}</td>
-                      <td className="px-3 py-3 text-right font-mono">{w.queued || "—"}</td>
-                      <td className="px-5 py-3 text-right text-xs text-muted-foreground font-mono">
+                      </TableCell>
+                      <TableCell className="text-muted-foreground">{w.backend}</TableCell>
+                      <TableCell className="hidden text-muted-foreground @2xl:table-cell">{w.device}</TableCell>
+                      <TableCell>{compute(w)}</TableCell>
+                      <TableCell className="text-right tabular-nums">{w.queued || "—"}</TableCell>
+                      <TableCell className="text-right text-xs text-muted-foreground">
                         {w.online ? (w.queued ? "busy" : "idle") : `last seen ${ago(w.last_seen)}`}
-                      </td>
-                    </tr>
+                      </TableCell>
+                    </TableRow>
                     {open === w.name && w.models.length > 0 && (
-                      <tr key={`${w.name}-models`}>
-                        <td colSpan={6} className="px-5 pb-3 pt-0 bg-accent/10">
-                          <div className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground pt-2 pb-1.5">
-                            models on {w.name}
-                          </div>
+                      <TableRow className="bg-subtle hover:bg-subtle">
+                        <TableCell colSpan={6} className="whitespace-normal">
+                          <div className="pb-1.5 text-xs text-muted-foreground">Models on {w.name}</div>
                           <div className="flex flex-wrap gap-1.5">
                             {w.models.map((m) => (
-                              <span key={m.id}
-                                    className="text-xs font-mono px-2 py-1 rounded border border-border bg-card">
+                              <Badge key={m.id} variant="outline" className="font-mono font-normal">
                                 {m.id}
-                                <span className="text-muted-foreground"> · {m.size_gb} GB</span>
-                              </span>
+                                <span className="text-muted-foreground">· {m.size_gb} GB</span>
+                              </Badge>
                             ))}
                           </div>
-                        </td>
-                      </tr>
+                        </TableCell>
+                      </TableRow>
                     )}
-                  </>
+                  </Fragment>
                 ))}
-              </tbody>
-            </table>
-          </section>
-        )}
-
-        {workers.length > 0 && (
-          <div className="max-w-2xl">
-            <p className="text-xs text-muted-foreground mb-1.5">Add another machine:</p>
-            <ConnectCmd />
+              </TableBody>
+            </Table>
           </div>
-        )}
-      </div>
+
+          {workers.length > 0 && (
+            <section className="mt-8 max-w-2xl">
+              <SectionHeader title="Add another machine"
+                             description="Create a machine token, then run the command it gives you on that machine." />
+              <ConnectCmd />
+            </section>
+          )}
+        </>
+      )}
     </>
   );
 }

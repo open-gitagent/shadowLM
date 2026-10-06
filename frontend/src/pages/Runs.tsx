@@ -1,9 +1,15 @@
 // Runs — master-detail: searchable run list left, live detail right.
 import { useEffect, useRef, useState } from "react";
-import { Download, MessagesSquare, Search, Square } from "lucide-react";
-import { apiKey, cancelJob, getCheckpoints, getJob, getJobs, getLogs, getMetrics } from "../api";
-import type { Checkpoint, JobDetail, JobSummary, StepMetric } from "../api";
-import { ChartLegend, LossChart, PageHeader, Sparkline, StatTile, StatusBadge, btnGhost } from "../ui";
+import type { ReactNode } from "react";
+import { CircleAlert, Download, History, MessagesSquare, PackageOpen, Search, Square, TerminalSquare } from "lucide-react";
+import { apiFetch, cancelJob, getCheckpoints, getJob, getJobs, getLogs, getMetrics } from "@/api";
+import type { Checkpoint, JobDetail, JobSummary, StepMetric } from "@/api";
+import { ChartLegend, LossChart, Sparkline } from "@/components/charts";
+import { EmptyState, Mono, PageHeader, Stat, StatStrip, StatusBadge } from "@/components/common";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { cn } from "@/lib/utils";
 
 export default function Runs({ initialId }: { initialId?: string }) {
   const [jobs, setJobs] = useState<JobSummary[]>([]);
@@ -45,21 +51,20 @@ export default function Runs({ initialId }: { initialId?: string }) {
   return (
     <>
       <PageHeader
-        eyebrow="Run history"
         title="Training runs"
         description="Every finetune persists its config, metrics, and artifact. Watch live, compare in the playground, download the adapter."
       />
 
-      <div className="flex-1 grid grid-cols-1 lg:grid-cols-[1fr_minmax(0,1.4fr)] min-h-0">
-        <div className="border-r border-border flex flex-col min-h-0">
-          <div className="px-5 py-3 border-b border-border flex gap-2 items-center">
+      <div className="grid min-h-[520px] flex-1 !shrink grid-cols-1 overflow-hidden border border-border bg-card lg:grid-cols-[minmax(0,1fr)_minmax(0,1.6fr)]">
+        <div className="flex min-h-0 flex-col border-b border-border lg:border-r lg:border-b-0">
+          <div className="flex items-center gap-2 border-b border-border p-3">
             <div className="relative flex-1">
-              <Search className="size-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-              <input value={filter} onChange={(e) => setFilter(e.target.value)}
-                     placeholder="Search runs…" className="w-full pl-9 pr-3 py-1.5 text-sm" />
+              <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
+              <Input value={filter} onChange={(e) => setFilter(e.target.value)}
+                     placeholder="Search runs…" className="pl-8" />
             </div>
             <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}
-                    className="text-xs px-2 py-1.5">
+                    className="h-8 text-sm">
               <option value="all">All status</option>
               <option value="succeeded">Succeeded</option>
               <option value="running">Running</option>
@@ -67,28 +72,32 @@ export default function Runs({ initialId }: { initialId?: string }) {
               <option value="stopped">Stopped</option>
             </select>
           </div>
-          <div className="flex-1 overflow-auto scrollbar-thin divide-y divide-border">
+          <div className="min-h-0 flex-1 divide-y divide-border overflow-auto scrollbar-thin">
             {filtered.length === 0 && (
-              <div className="px-5 py-8 text-sm text-muted-foreground text-center">
-                no runs yet — start one in <a href="#train" className="text-primary">Train</a>
+              <div className="p-4">
+                <EmptyState icon={History} title="No runs yet">
+                  Start one in <a href="#train" className="font-medium text-primary hover:underline">New run</a>.
+                </EmptyState>
               </div>
             )}
             {filtered.map((r) => (
               <button key={r.job_id}
                 onClick={() => { setSelectedId(r.job_id); window.location.hash = `#runs/${r.job_id}`; }}
-                className={`w-full text-left px-5 py-3.5 hover:bg-accent/30 transition-colors ${
+                aria-current={selectedId === r.job_id ? "true" : undefined}
+                className={cn(
+                  "w-full border-l-2 px-4 py-3 text-left transition-colors",
                   selectedId === r.job_id
-                    ? "bg-accent/50 border-l-2 border-l-primary"
-                    : "border-l-2 border-l-transparent"}`}>
-                <div className="flex items-center justify-between gap-2 mb-1.5">
-                  <span className="font-mono text-[11px] text-muted-foreground truncate">
+                    ? "border-l-primary bg-primary/5"
+                    : "border-l-transparent hover:bg-subtle")}>
+                <div className="mb-1 flex items-center justify-between gap-2">
+                  <span className="truncate font-mono text-[11px] text-muted-foreground">
                     {r.name?.trim() || r.job_id.slice(0, 12)}
                   </span>
                   <StatusBadge status={r.status} />
                 </div>
-                <div className="text-sm font-medium truncate">{r.base_model}</div>
-                <div className="flex items-center justify-between mt-1.5 gap-2">
-                  <div className="text-xs text-muted-foreground font-mono truncate">
+                <div className="truncate text-sm font-medium">{r.base_model}</div>
+                <div className="mt-1 flex items-center justify-between gap-2">
+                  <div className="truncate font-mono text-xs text-muted-foreground">
                     {r.method ?? "?"} · {r.steps} steps</div>
                   <span className={r.status === "failed" ? "text-destructive" : "text-primary"}>
                     <Sparkline data={curves[r.job_id] ?? []} width={64} height={20} />
@@ -101,9 +110,27 @@ export default function Runs({ initialId }: { initialId?: string }) {
 
         {selected
           ? <RunDetail key={selected.job_id} run={selected} />
-          : <div className="p-8 text-sm text-muted-foreground">select a run</div>}
+          : <div className="p-6 text-sm text-muted-foreground">Select a run to see its curves, logs and artifact.</div>}
       </div>
     </>
+  );
+}
+
+// Panel is one framed block of the run detail: a title line, then its body.
+function Panel({ title, sub, actions, children, className }: {
+  title: string; sub?: string; actions?: ReactNode; children: ReactNode; className?: string;
+}) {
+  return (
+    <section className={cn("overflow-hidden border border-border bg-card", className)}>
+      <header className="flex items-center justify-between gap-3 border-b border-border px-4 py-2.5">
+        <div className="min-w-0">
+          <h3 className="text-sm font-semibold">{title}</h3>
+          {sub && <p className="text-xs text-muted-foreground">{sub}</p>}
+        </div>
+        {actions}
+      </header>
+      {children}
+    </section>
   );
 }
 
@@ -135,9 +162,7 @@ function RunDetail({ run }: { run: JobSummary }) {
   const last = steps[steps.length - 1];
 
   async function downloadAdapter() {
-    const headers: Record<string, string> = {};
-    if (apiKey.get()) headers["Authorization"] = `Bearer ${apiKey.get()}`;
-    const r = await fetch(`/v1/finetunes/${run.job_id}/artifact`, { headers });
+    const r = await apiFetch(`/v1/finetunes/${run.job_id}/artifact`);
     if (!r.ok) return alert("artifact not ready");
     const blob = await r.blob();
     const a = document.createElement("a");
@@ -147,179 +172,157 @@ function RunDetail({ run }: { run: JobSummary }) {
     URL.revokeObjectURL(a.href);
   }
 
+  const status = job?.status ?? run.status;
+  const toPlayground = () => {
+    sessionStorage.setItem("pick.adapter", run.job_id);
+    sessionStorage.setItem("pick.model", run.base_model);
+    window.location.hash = "#playground";
+  };
+
   return (
-    <div className="overflow-auto scrollbar-thin">
-      <div className="px-8 py-6 space-y-6 max-w-[1000px]">
-        <div className="flex items-start justify-between gap-6 flex-wrap">
-          <div>
-            <div className="flex items-center gap-3 mb-2">
+    <div className="min-h-0 overflow-auto scrollbar-thin">
+      <div className="max-w-[1000px] space-y-5 p-5">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="min-w-0">
+            <div className="mb-1.5 flex flex-wrap items-center gap-2">
               {run.name?.trim() && <span className="text-sm font-semibold text-primary">{run.name.trim()}</span>}
-              <span className="font-mono text-xs text-muted-foreground">{run.job_id}</span>
-              <StatusBadge status={(job?.status ?? run.status)} />
+              <Mono className="text-muted-foreground">{run.job_id}</Mono>
+              <StatusBadge status={status} />
             </div>
-            <h2 className="text-xl font-semibold">{run.base_model}</h2>
-            <p className="text-sm text-muted-foreground font-mono mt-1">
+            <h2 className="text-lg font-semibold tracking-[-0.01em]">{run.base_model}</h2>
+            <p className="mt-0.5 font-mono text-xs text-muted-foreground">
               {run.method ?? "?"}
               {last?.tokens_per_s ? ` · ${Math.round(last.tokens_per_s)} tok/s` : ""}
             </p>
           </div>
           <div className="flex items-center gap-2">
             {(job?.status === "running" || job?.status === "pending") && (
-              <button onClick={() => cancelJob(run.job_id)}
-                className="inline-flex items-center gap-1.5 rounded-md border border-destructive/40 bg-destructive/10 text-destructive px-3 py-2 text-xs font-medium hover:bg-destructive/20 transition-colors">
-                <Square className="size-3.5" /> Cancel
-              </button>
+              <Button variant="destructive" onClick={() => cancelJob(run.job_id)}>
+                <Square /> Cancel
+              </Button>
             )}
             {job?.status === "succeeded" && (
               <>
-                <button onClick={() => {
-                  sessionStorage.setItem("pick.adapter", run.job_id);
-                  sessionStorage.setItem("pick.model", run.base_model);
-                  window.location.hash = "#playground";
-                }} className={btnGhost}>
-                  <MessagesSquare className="size-3.5" /> Playground
-                </button>
-                <button onClick={downloadAdapter} className={btnGhost}>
-                  <Download className="size-3.5" /> Adapter
-                </button>
+                <Button variant="outline" onClick={toPlayground}>
+                  <MessagesSquare /> Playground
+                </Button>
+                <Button variant="outline" onClick={downloadAdapter}>
+                  <Download /> Adapter
+                </Button>
               </>
             )}
           </div>
         </div>
 
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          <StatTile label="Final loss" value={job?.final_loss != null ? job.final_loss.toFixed(4) : last ? last.loss.toFixed(4) : "—"} />
-          <StatTile label="Eval loss" value={evals.length ? evals[evals.length - 1].loss.toFixed(4) : "—"} />
-          <StatTile label="Steps" value={String(last?.step ?? 0)} />
-          <StatTile label="LR" value={last ? last.lr.toExponential(1) : "—"} />
-        </div>
+        <StatStrip>
+          <Stat label="Final loss" value={job?.final_loss != null ? job.final_loss.toFixed(4) : last ? last.loss.toFixed(4) : undefined} />
+          <Stat label="Eval loss" value={evals.length ? evals[evals.length - 1].loss.toFixed(4) : undefined} />
+          <Stat label="Steps" value={String(last?.step ?? 0)} />
+          <Stat label="Learning rate" value={last ? last.lr.toExponential(1) : undefined} />
+        </StatStrip>
 
-        {/* tabs */}
-        <div className="flex items-center gap-1 border-b border-border">
-          {(["loss", "logs", "artifact"] as const).map((t) => (
-            <button key={t} onClick={() => setTab(t)}
-              className={`px-4 py-2.5 text-sm border-b-2 -mb-px transition-colors capitalize ${
-                tab === t ? "border-primary text-foreground"
-                          : "border-transparent text-muted-foreground hover:text-foreground"}`}>
-              {t === "loss" ? "Loss curves" : t === "logs" ? "Training logs" : "Artifact"}
-              {t === "logs" && job?.status === "running" &&
-                <span className="ml-2 inline-block size-1.5 rounded-full bg-primary animate-pulse" />}
-            </button>
-          ))}
-        </div>
+        <Tabs value={tab} onValueChange={(v) => setTab(v as typeof tab)} className="gap-4">
+          <TabsList variant="line" className="w-full justify-start border-b border-border">
+            <TabsTrigger value="loss" className="flex-none">Loss curves</TabsTrigger>
+            <TabsTrigger value="logs" className="flex-none">
+              Training logs
+              {job?.status === "running" && <span className="size-1.5 animate-pulse rounded-full bg-primary" />}
+            </TabsTrigger>
+            <TabsTrigger value="artifact" className="flex-none">Artifact</TabsTrigger>
+          </TabsList>
 
-        {tab === "loss" && (
-          <div className="space-y-4">
+          <TabsContent value="loss" className="space-y-4">
             {/* combined: train curve with eval overlaid */}
-            <section className="rounded-lg border border-border bg-card overflow-hidden">
-              <header className="px-5 py-3 border-b border-border flex items-center justify-between">
-                <div>
-                  <h3 className="text-sm font-semibold">Loss</h3>
-                  <p className="text-xs text-muted-foreground">train (raw + EMA) with eval overlaid</p>
-                </div>
-                <ChartLegend />
-              </header>
-              <div className="p-5"><LossChart steps={steps} evals={evals} /></div>
-            </section>
+            <Panel title="Loss" sub="train (raw + EMA) with eval overlaid" actions={<ChartLegend />}>
+              <div className="p-4"><LossChart steps={steps} evals={evals} /></div>
+            </Panel>
             {/* separate: train and eval on their own axes */}
-            <div className="grid lg:grid-cols-2 gap-4">
-              <section className="rounded-lg border border-border bg-card overflow-hidden">
-                <header className="px-5 py-3 border-b border-border">
-                  <h3 className="text-sm font-semibold">Training loss</h3>
-                  <p className="text-xs text-muted-foreground">raw + EMA overlay</p>
-                </header>
-                <div className="p-5"><LossChart steps={steps} evals={[]} /></div>
-              </section>
-              <section className="rounded-lg border border-border bg-card overflow-hidden">
-                <header className="px-5 py-3 border-b border-border">
-                  <h3 className="text-sm font-semibold">Eval loss</h3>
-                  <p className="text-xs text-muted-foreground">held-out validation</p>
-                </header>
-                <div className="p-5">
+            <div className="grid gap-4 @4xl:grid-cols-2">
+              <Panel title="Training loss" sub="raw + EMA overlay">
+                <div className="p-4"><LossChart steps={steps} evals={[]} /></div>
+              </Panel>
+              <Panel title="Eval loss" sub="held-out validation">
+                <div className="p-4">
                   {evals.length
                     ? <LossChart steps={evals} evals={[]} />
-                    : <div className="flex h-[240px] items-center justify-center text-center text-sm text-muted-foreground">
+                    : <div className="flex h-[240px] items-center justify-center text-center">
                         <div>
-                          <div className="font-mono text-xs uppercase tracking-wider opacity-60">No eval data</div>
-                          <div className="mt-1 text-xs opacity-50">Train with a held-out eval split to see this</div>
+                          <div className="text-sm font-medium text-muted-foreground">No eval data</div>
+                          <div className="mt-0.5 text-xs text-muted-foreground">Train with a held-out eval split to see this</div>
                         </div>
                       </div>}
                 </div>
-              </section>
+              </Panel>
             </div>
-          </div>
-        )}
+          </TabsContent>
 
-        {tab === "logs" && (
-          logs.length
-            ? <TerminalPanel logs={logs} live={job?.status === "running"} />
-            : <div className="rounded-lg border border-border bg-card p-8 text-center text-sm text-muted-foreground">
-                no console output captured for this run
-              </div>
-        )}
+          <TabsContent value="logs">
+            {logs.length
+              ? <TerminalPanel logs={logs} live={job?.status === "running"} />
+              : <EmptyState icon={TerminalSquare} title="No console output">
+                  Nothing was captured for this run.
+                </EmptyState>}
+          </TabsContent>
 
-        {tab === "artifact" && (
-          <div className="space-y-4">
+          <TabsContent value="artifact" className="space-y-4">
             {job?.error && (
-              <section className="rounded-lg border border-destructive/40 bg-destructive/5 p-5">
-                <h3 className="text-sm font-semibold text-destructive mb-2">Error</h3>
-                <pre className="text-xs font-mono whitespace-pre-wrap text-destructive/90">{job.error}</pre>
+              <section className="border border-destructive/30 bg-destructive/5 p-4">
+                <h3 className="mb-2 flex items-center gap-1.5 text-sm font-semibold text-destructive">
+                  <CircleAlert className="size-4" /> Error
+                </h3>
+                <pre className="font-mono text-xs whitespace-pre-wrap text-destructive">{job.error}</pre>
               </section>
             )}
             {job?.checkpoint ? (
-              <section className="rounded-lg border border-border bg-card overflow-hidden">
-                <header className="px-5 py-3 border-b border-border">
-                  <h3 className="text-sm font-semibold">Trained adapter</h3>
-                </header>
-                <div className="px-5 py-4 flex items-center justify-between gap-4 text-sm">
+              <Panel title="Trained adapter">
+                <div className="flex items-center justify-between gap-4 px-4 py-3 text-sm">
                   <div className="min-w-0">
-                    <div className="font-mono text-xs text-muted-foreground break-all">{job.checkpoint}</div>
-                    <div className="text-xs text-muted-foreground mt-1">
-                      load it back: <code className="text-foreground/80">slm.load("{run.base_model}", adapter="…")</code>
+                    <Mono className="text-muted-foreground">{job.checkpoint}</Mono>
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      Load it back: <code className="font-mono text-foreground/80">slm.load("{run.base_model}", adapter="…")</code>
                     </div>
                   </div>
-                  <button onClick={downloadAdapter} className={btnGhost}>
-                    <Download className="size-3.5" /> tar.gz
-                  </button>
+                  <Button variant="outline" onClick={downloadAdapter}>
+                    <Download /> tar.gz
+                  </Button>
                 </div>
                 {ckpts.length > 1 && (
                   <div className="border-t border-border">
-                    <div className="px-5 pt-3 pb-1 text-[10px] font-mono uppercase tracking-[0.18em] text-muted-foreground">
-                      saved versions · {ckpts.length}
+                    <div className="px-4 pt-3 pb-1 text-xs text-muted-foreground">
+                      Saved versions · {ckpts.length}
                     </div>
                     <div className="divide-y divide-border">
                       {[...ckpts].reverse().map((c) => (
-                        <div key={c.path} className="px-5 py-2.5 flex items-center justify-between gap-3 text-sm">
-                          <span className="font-mono">
+                        <div key={c.path} className="flex items-center justify-between gap-3 px-4 py-2 text-sm">
+                          <span className="font-mono text-xs">
                             {c.final ? <span className="text-primary">{c.label}</span> : `step ${c.step}`}
                           </span>
-                          <button
+                          <Button variant="ghost" size="xs" className="text-primary"
                             onClick={() => {
                               sessionStorage.setItem("pick.adapter", run.job_id);
                               sessionStorage.setItem("pick.model", run.base_model);
                               if (c.final) sessionStorage.removeItem("pick.checkpoint");
                               else sessionStorage.setItem("pick.checkpoint", String(c.step));
                               window.location.hash = "#playground";
-                            }}
-                            className="text-xs text-primary hover:underline inline-flex items-center gap-1">
-                            <MessagesSquare className="size-3.5" /> test this version
-                          </button>
+                            }}>
+                            <MessagesSquare /> Test this version
+                          </Button>
                         </div>
                       ))}
                     </div>
-                    <div className="px-5 py-2 text-[11px] text-muted-foreground">
-                      trained with <code className="text-foreground/70">save_steps</code> — each is a point you can roll back to or A/B in the playground.
+                    <div className="px-4 py-2 text-[11px] text-muted-foreground">
+                      Trained with <code className="font-mono text-foreground/70">save_steps</code>: each is a point you can roll back to or A/B in the playground.
                     </div>
                   </div>
                 )}
-              </section>
+              </Panel>
             ) : !job?.error && (
-              <div className="rounded-lg border border-border bg-card p-8 text-center text-sm text-muted-foreground">
-                no artifact yet — finishes when training succeeds
-              </div>
+              <EmptyState icon={PackageOpen} title="No artifact yet">
+                It appears when training succeeds.
+              </EmptyState>
             )}
-          </div>
-        )}
+          </TabsContent>
+        </Tabs>
       </div>
     </div>
   );
@@ -331,20 +334,19 @@ function TerminalPanel({ logs, live }: { logs: string[]; live: boolean }) {
   useEffect(() => { if (stick && ref.current) ref.current.scrollTop = ref.current.scrollHeight; },
     [logs, stick]);
   return (
-    <section className="rounded-lg border border-border bg-card overflow-hidden">
-      <header className="px-5 py-3 border-b border-border flex items-center justify-between">
+    <section className="overflow-hidden border border-border bg-card">
+      <header className="flex items-center justify-between gap-3 border-b border-border px-4 py-2.5">
         <div className="flex items-center gap-2">
-          <span className="flex gap-1.5">
-            <span className="size-2.5 rounded-full bg-destructive/70" />
-            <span className="size-2.5 rounded-full bg-warning/70" />
-            <span className="size-2.5 rounded-full bg-success/70" />
-          </span>
+          <TerminalSquare className="size-4 text-muted-foreground" strokeWidth={1.75} />
           <h3 className="text-sm font-semibold">Training console</h3>
-          {live && <span className="text-[10px] font-mono uppercase tracking-wider text-primary animate-pulse">● live</span>}
+          {live && (
+            <span className="flex items-center gap-1 text-xs text-primary">
+              <span className="size-1.5 animate-pulse rounded-full bg-primary" /> live
+            </span>
+          )}
         </div>
-        <label className="text-[10px] font-mono text-muted-foreground flex items-center gap-1.5">
-          <input type="checkbox" checked={stick} onChange={(e) => setStick(e.target.checked)}
-                 className="w-auto" /> follow
+        <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          <input type="checkbox" checked={stick} onChange={(e) => setStick(e.target.checked)} /> Follow
         </label>
       </header>
       <pre ref={ref}
@@ -352,7 +354,7 @@ function TerminalPanel({ logs, live }: { logs: string[]; live: boolean }) {
              const el = e.currentTarget;
              setStick(el.scrollHeight - el.scrollTop - el.clientHeight < 24);
            }}
-           className="m-0 max-h-[460px] overflow-auto bg-ink p-4 text-[11px] leading-[1.35] text-bone/90 font-mono whitespace-pre scrollbar-thin">
+           className="m-0 max-h-[460px] overflow-auto bg-ink p-4 font-mono text-[11px] leading-[1.35] whitespace-pre text-bone/90 scrollbar-thin">
         {logs.join("\n")}
       </pre>
     </section>

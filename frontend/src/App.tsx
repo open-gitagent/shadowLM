@@ -1,22 +1,36 @@
-// The studio shell — cream sidebar, lucide icons, hash router, login gate.
-import { useEffect, useState } from "react";
-import type { FormEvent } from "react";
+// The studio shell, in the opencontroller console's language: a floating
+// side panel (the "island") that folds to a rail, the page beside it, a
+// hash router, and the sign-in gate. Embedded in a host console
+// (lib/embed.ts), the host's menu and sign-in replace both.
 import {
-  Box, Cpu, Database, ExternalLink, History, LayoutDashboard, LogOut,
-  MessagesSquare, MonitorSmartphone, Zap,
+  ArrowRight, BookOpen, Box, Cpu, Database, ExternalLink, History, KeyRound, LayoutDashboard,
+  LoaderCircle, type LucideIcon, LogOut, MessagesSquare, MonitorSmartphone, Moon,
+  PanelLeftClose, PanelLeftOpen, Sun, Zap,
 } from "lucide-react";
+import { AnimatePresence, motion, MotionConfig } from "motion/react";
+import { ThemeProvider, useTheme } from "next-themes";
+import { type CSSProperties, type FormEvent, type ReactNode, useEffect, useState } from "react";
+
 import {
   apiKey, clearVram, getAuthInfo, getHealth, getMethods, getSettings, getVram,
   login, logout, setHfToken,
-} from "./api";
-import type { AuthInfo, MethodInfo } from "./api";
-import Dashboard from "./pages/Dashboard";
-import Datasets from "./pages/Datasets";
-import Models from "./pages/Models";
-import Train from "./pages/Train";
-import Runs from "./pages/Runs";
-import Playground from "./pages/Playground";
-import Machines from "./pages/Machines";
+} from "@/api";
+import type { AuthInfo, MethodInfo } from "@/api";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { embedded, hashToPage, reportRoute, reportTitle, useEmbedTheme } from "@/lib/embed";
+import { cn } from "@/lib/utils";
+import Dashboard from "@/pages/Dashboard";
+import Datasets from "@/pages/Datasets";
+import Machines from "@/pages/Machines";
+import Models from "@/pages/Models";
+import Playground from "@/pages/Playground";
+import Runs from "@/pages/Runs";
+import Train from "@/pages/Train";
 
 function useHash(): string {
   const [h, setH] = useState(window.location.hash);
@@ -28,18 +42,65 @@ function useHash(): string {
   return h.replace(/^#/, "");
 }
 
-const NAV = [
-  { hash: "playground", label: "Playground", icon: MessagesSquare },
-  { hash: "", label: "Dashboard", icon: LayoutDashboard },
-  { hash: "datasets", label: "Datasets", icon: Database },
-  { hash: "models", label: "Models", icon: Box },
-  { hash: "train", label: "Train", icon: Cpu },
-  { hash: "runs", label: "Runs", icon: History },
-  { hash: "machines", label: "Machines", icon: MonitorSmartphone },
-] as const;
+interface NavItem { hash: string; label: string; icon: LucideIcon }
+type Section = { title?: string; items: NavItem[] };
 
-// ---- the login gate ---------------------------------------------------------
+// The navigation follows the shadowing loop: bring data and a base model,
+// train, watch the run, then talk to what you own. Machines, where training
+// runs, is setup, so it sits apart at the foot.
+const sections: Section[] = [
+  { items: [{ hash: "", label: "Overview", icon: LayoutDashboard }] },
+  {
+    title: "Build",
+    items: [
+      { hash: "datasets", label: "Datasets", icon: Database },
+      { hash: "models", label: "Models", icon: Box },
+    ],
+  },
+  {
+    title: "Train",
+    items: [
+      { hash: "train", label: "New run", icon: Cpu },
+      { hash: "runs", label: "Runs", icon: History },
+    ],
+  },
+  { title: "Use", items: [{ hash: "playground", label: "Playground", icon: MessagesSquare }] },
+];
+const machinesItem: NavItem = { hash: "machines", label: "Machines", icon: MonitorSmartphone };
+const allItems = [...sections.flatMap((s) => s.items), machinesItem];
+
+// The repository; its README is the documentation.
+const repo = "https://github.com/open-gitagent/shadowLM";
+
+const openWidth = 240;
+const railWidth = 48;
+const inset = 12;
+const gap = 24;
+const pageRight = 32;
+const spring = { type: "spring", stiffness: 380, damping: 36 } as const;
+const storageKey = "of-island-open";
+
+function readOpen(): boolean {
+  try {
+    return localStorage.getItem(storageKey) !== "false";
+  } catch {
+    return true;
+  }
+}
+
+// ---- the root: theme, then the gate ----------------------------------------
 export default function App() {
+  // Embedded, the host's theme wins; otherwise the person's own choice.
+  const hostTheme = useEmbedTheme();
+  return (
+    <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange
+                   forcedTheme={embedded ? hostTheme : undefined}>
+      {embedded ? <Studio embeddedIn /> : <Gate />}
+    </ThemeProvider>
+  );
+}
+
+function Gate() {
   const [auth, setAuth] = useState<AuthInfo | null>(null);
   const [token, setToken] = useState(apiKey.get());
 
@@ -57,29 +118,25 @@ export default function App() {
 
   if (auth === null) {
     return (
-      <div className="min-h-screen grid place-items-center text-sm text-muted-foreground">
-        connecting…
+      <div className="grid h-full place-items-center text-sm text-muted-foreground">
+        <LoaderCircle className="size-4 animate-spin" />
       </div>
     );
   }
   if (auth.auth_required && !token) {
-    return <Login mode={auth.mode} onAuthed={() => setToken(apiKey.get())} />;
+    return <SignIn apikeyMode={auth.mode === "apikey"} onAuthed={() => setToken(apiKey.get())} />;
   }
-  return (
-    <Studio
-      authEnabled={auth.auth_required}
-      onSignOut={() => { logout(); setToken(""); }}
-    />
-  );
+  return <Studio onSignOut={auth.auth_required ? () => { logout(); setToken(""); } : undefined} />;
 }
 
-function Login({ mode, onAuthed }: { mode: string; onAuthed: () => void }) {
+// ---- sign in ------------------------------------------------------------------
+// Outside the shell, on the canvas, with the studio's own mark.
+function SignIn({ apikeyMode, onAuthed }: { apikeyMode: boolean; onAuthed: () => void }) {
   const [username, setUsername] = useState("admin");
   const [password, setPassword] = useState("");
   const [key, setKey] = useState("");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
-  const apikeyMode = mode === "apikey";
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -88,9 +145,9 @@ function Login({ mode, onAuthed }: { mode: string; onAuthed: () => void }) {
     try {
       if (apikeyMode) {
         apiKey.set(key.trim());
-        await getHealth(); // 401 throws → invalid key
+        await getHealth();
       } else {
-        await login(username.trim(), password);
+        await login(username, password);
       }
       onAuthed();
     } catch (e2) {
@@ -102,76 +159,91 @@ function Login({ mode, onAuthed }: { mode: string; onAuthed: () => void }) {
   }
 
   return (
-    <div className="min-h-screen grid place-items-center bg-background px-4">
-      <form onSubmit={submit}
-            className="w-full max-w-xs rounded-xl border border-sidebar-border bg-sidebar p-6 space-y-4">
-        <div className="flex items-center gap-2.5">
-          <img src="/lyzr-mark.png" alt="" className="size-8 rounded-lg" />
-          <div className="leading-tight">
-            <div className="text-sm font-semibold tracking-tight">ShadowLM</div>
-            <div className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
-              Studio
-            </div>
-          </div>
+    <main className="grid min-h-svh place-items-center bg-canvas px-4 py-10">
+      <div className="w-full max-w-sm">
+        <div className="mb-6 flex items-center gap-2.5">
+          <Monogram />
+          <span className="grid leading-tight">
+            <span className="text-sm font-semibold tracking-[-0.01em]">openfinetuner</span>
+            <span className="text-[11px] text-muted-foreground">formerly ShadowLM</span>
+          </span>
         </div>
-        <div className="text-xs text-muted-foreground">
-          {apikeyMode ? "Enter the API key to continue." : "Sign in to continue."}
-        </div>
-        {apikeyMode ? (
-          <input type="password" autoFocus value={key} placeholder="API key"
-                 className="w-full text-sm"
-                 onChange={(e) => setKey(e.target.value)} />
-        ) : (
-          <>
-            <input type="text" autoFocus value={username} placeholder="Username"
-                   autoComplete="username" className="w-full text-sm"
-                   onChange={(e) => setUsername(e.target.value)} />
-            <input type="password" value={password} placeholder="Password"
-                   autoComplete="current-password" className="w-full text-sm"
-                   onChange={(e) => setPassword(e.target.value)} />
-          </>
-        )}
-        {err && <div className="text-xs text-red-500">{err}</div>}
-        <button type="submit" disabled={busy}
-                className="w-full rounded-md bg-primary text-primary-foreground text-sm py-2 disabled:opacity-50">
-          {busy ? "Signing in…" : "Sign in"}
-        </button>
-      </form>
-    </div>
+        <section className="grid gap-5 border border-border bg-background p-6">
+          <header className="grid gap-1.5">
+            <h1 className="text-lg font-semibold tracking-[-0.01em]">Sign in to openfinetuner</h1>
+            <p className="text-sm text-muted-foreground">
+              {apikeyMode ? "Use the API key this server was started with." : "Use the username and password this server was started with."}
+            </p>
+          </header>
+          <form onSubmit={submit} className="grid gap-3">
+            {apikeyMode ? (
+              <div className="grid gap-1.5">
+                <Label htmlFor="key">API key</Label>
+                <Input id="key" type="password" autoFocus value={key} onChange={(e) => setKey(e.target.value)} />
+              </div>
+            ) : (
+              <>
+                <div className="grid gap-1.5">
+                  <Label htmlFor="username">Username</Label>
+                  <Input id="username" autoComplete="username" autoFocus value={username}
+                         onChange={(e) => setUsername(e.target.value)} />
+                </div>
+                <div className="grid gap-1.5">
+                  <Label htmlFor="password">Password</Label>
+                  <Input id="password" type="password" autoComplete="current-password" value={password}
+                         onChange={(e) => setPassword(e.target.value)} />
+                </div>
+              </>
+            )}
+            {err && <p className="text-sm text-destructive">{err}</p>}
+            <Button type="submit" size="lg" disabled={busy} className="h-10 w-full justify-between px-3">
+              {busy ? "Signing in…" : "Sign in"}
+              {busy ? <LoaderCircle className="animate-spin" /> : <ArrowRight />}
+            </Button>
+          </form>
+        </section>
+        <p className="mt-4 font-mono text-[11px] text-muted-foreground">from Lyzr Research Labs</p>
+      </div>
+    </main>
   );
 }
 
-// ---- the authenticated studio shell ----------------------------------------
-function Studio({ authEnabled, onSignOut }: { authEnabled: boolean; onSignOut: () => void }) {
+function Monogram() {
+  return (
+    <span className="grid size-7 shrink-0 place-items-center rounded-md border border-primary/20 bg-primary/10 font-mono text-[10px] font-semibold text-primary">
+      of
+    </span>
+  );
+}
+
+// ---- the studio ---------------------------------------------------------------
+function Studio({ onSignOut, embeddedIn }: { onSignOut?: () => void; embeddedIn?: boolean }) {
   const hash = useHash();
   const [section, arg] = hash.split("/");
-  const [health, setHealth] = useState("connecting…");
   const [methods, setMethods] = useState<MethodInfo[]>([]);
-  const [hf, setHf] = useState("");
-  const [hfSet, setHfSet] = useState(false);
-  const [vram, setVram] = useState("");
-
-  const showVram = (used: number | null | undefined) =>
-    setVram(used != null ? `VRAM ${(used / 1024).toFixed(1)} GB used` : "");
+  const [open, setOpen] = useState(readOpen);
 
   useEffect(() => {
-    getHealth()
-      .then((h) => setHealth(`backend=${h.backend} · v${h.version}`))
-      .catch((e) => setHealth(`⚠ ${e.message}`));
     getMethods().then((m) => setMethods(m.methods)).catch(() => {});
-    getSettings().then((s) => setHfSet(s.hf_token_set)).catch(() => {});
-    getVram().then((v) => showVram(v.used_mb)).catch(() => {});
   }, []);
 
-  async function saveHfToken() {
-    try { setHfSet((await setHfToken(hf)).hf_token_set); setHf(""); } catch { /* ignore */ }
-  }
+  // Embedded, the host keeps the studio's page in its own address and shows
+  // what the page is as its subtitle.
+  useEffect(() => {
+    if (!embeddedIn) return;
+    reportRoute(hashToPage(hash));
+    reportTitle(allItems.find((i) => i.hash === section)?.label ?? "Overview");
+  }, [embeddedIn, hash, section]);
 
-  async function cleanVram() {
-    setVram("clearing…");
-    try { const r = await clearVram(); showVram(r.after_mb); }
-    catch { setVram("clear failed"); }
-  }
+  const toggle = () =>
+    setOpen((o) => {
+      try {
+        localStorage.setItem(storageKey, String(!o));
+      } catch {
+        // private window: the island just won't remember
+      }
+      return !o;
+    });
 
   const page =
     section === "models" ? <Models /> :
@@ -182,72 +254,318 @@ function Studio({ authEnabled, onSignOut }: { authEnabled: boolean; onSignOut: (
     section === "machines" ? <Machines /> :
     <Dashboard />;
 
+  if (embeddedIn) {
+    return (
+      <main className="@container flex h-full min-h-0 flex-col overflow-y-auto bg-canvas px-6 pt-6 pb-8 *:shrink-0">
+        {page}
+      </main>
+    );
+  }
+
   return (
-    <div className="flex min-h-screen w-full">
-      <aside className="w-60 shrink-0 border-r border-sidebar-border bg-sidebar flex flex-col sticky top-0 h-screen">
-        <div className="px-5 py-5 border-b border-sidebar-border">
-          <a href="#" className="flex items-center gap-2.5">
-            <img src="/lyzr-mark.png" alt="" className="size-8 rounded-lg" />
-            <div className="leading-tight">
-              <div className="text-sm font-semibold tracking-tight">ShadowLM</div>
-              <div className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">Studio</div>
-            </div>
-          </a>
-          <div className="mt-2.5 text-[10px] text-muted-foreground">from Lyzr Research Labs</div>
-        </div>
-        <nav className="flex-1 px-3 py-4 space-y-0.5">
-          {NAV.map(({ hash: to, label, icon: Icon }) => {
-            const active = to === "" ? section === "" : section === to;
-            return (
-              <a key={to} href={`#${to}`}
-                 className={`flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors no-underline ${
-                   active
-                     ? "bg-sidebar-accent text-foreground"
-                     : "text-foreground/60 hover:bg-sidebar-accent/40 hover:text-foreground"
-                 }`}>
-                <Icon className="size-4" />
-                <span>{label}</span>
-                {active && <span className="ml-auto size-1.5 rounded-full bg-primary" />}
-              </a>
-            );
-          })}
-        </nav>
-        <div className="px-3 py-3 border-t border-sidebar-border space-y-2">
-          <div className="px-3 text-[10px] font-mono text-muted-foreground">{health}</div>
-          <div className="flex gap-1.5">
-            <input type="password" value={hf}
-                   placeholder={hfSet ? "HF token ✓ set — replace" : "HF token (gated models)"}
-                   title="Hugging Face token for gated/private models; stored on the server"
-                   className="w-full text-xs"
-                   onKeyDown={(e) => { if (e.key === "Enter") saveHfToken(); }}
-                   onChange={(e) => setHf(e.target.value)} />
-            <button onClick={saveHfToken} disabled={!hf.trim()}
-                    className="text-[11px] px-2 rounded-md border border-sidebar-border text-muted-foreground hover:text-foreground disabled:opacity-40">
-              save
-            </button>
+    <MotionConfig reducedMotion="user">
+      <div className="h-full" style={{ "--nav-right": `${inset + (open ? openWidth : railWidth)}px` } as CSSProperties}>
+        <Island open={open} onToggle={toggle} section={section} onSignOut={onSignOut} />
+        <motion.main
+          initial={false}
+          animate={{ paddingLeft: inset + (open ? openWidth : railWidth) + gap, paddingRight: pageRight }}
+          transition={spring}
+          className="@container flex h-full min-h-0 flex-col overflow-y-auto pt-6 pb-8 *:shrink-0"
+        >
+          {page}
+        </motion.main>
+      </div>
+    </MotionConfig>
+  );
+}
+
+const fade = {
+  initial: { opacity: 0 },
+  animate: { opacity: 1 },
+  exit: { opacity: 0 },
+  transition: { duration: 0.12 },
+};
+
+function Island({ open, onToggle, section, onSignOut }: {
+  open: boolean; onToggle: () => void; section: string; onSignOut?: () => void;
+}) {
+  const [backend, setBackend] = useState<string>();
+  const [version, setVersion] = useState<string>();
+  const [live, setLive] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    const check = () =>
+      getHealth()
+        .then((h) => { if (alive) { setLive(true); setBackend(h.backend); setVersion(h.version); } })
+        .catch(() => alive && setLive(false));
+    check();
+    const t = setInterval(check, 15_000);
+    return () => { alive = false; clearInterval(t); };
+  }, []);
+
+  return (
+    <motion.nav
+      aria-label="Navigation"
+      initial={false}
+      animate={{ width: open ? openWidth : railWidth }}
+      transition={spring}
+      style={{ left: inset, top: inset, bottom: inset }}
+      className="fixed z-50 flex flex-col overflow-clip rounded-xl border border-border bg-sidebar p-1 text-foreground shadow-paper"
+    >
+      <a href="#" title="openfinetuner, formerly ShadowLM" className="flex h-12 shrink-0 items-center gap-2.5 px-1.5 outline-none focus-visible:ring-2 focus-visible:ring-ring/40">
+        <Monogram />
+        <span className="grid min-w-0 leading-tight">
+          <NavLabel open={open} className="font-heading text-sm font-semibold tracking-[-0.01em]">openfinetuner</NavLabel>
+          <NavLabel open={open} className="text-[11px] text-muted-foreground">formerly ShadowLM</NavLabel>
+        </span>
+      </a>
+
+      <div className="mt-2 flex min-h-0 flex-col gap-0.5 overflow-y-auto px-1.5 [scrollbar-width:none]">
+        {sections.map((sec, i) => (
+          <div key={sec.title ?? i} className="flex flex-col gap-0.5">
+            {sec.title && <SectionTitle open={open}>{sec.title}</SectionTitle>}
+            {sec.items.map((item) => (
+              <Item key={item.hash} item={item} open={open} active={section === item.hash} />
+            ))}
           </div>
-          <button onClick={cleanVram} title="Unload cached models + free GPU memory"
-                  className="w-full flex items-center gap-3 px-3 py-2 rounded-md text-xs text-muted-foreground hover:bg-sidebar-accent/40 transition-colors">
-            <Zap className="size-3.5" />
-            <span>Clean VRAM</span>
-            {vram && <span className="ml-auto font-mono text-[10px]">{vram}</span>}
-          </button>
-          {authEnabled && (
-            <button onClick={onSignOut}
-                    className="w-full flex items-center gap-3 px-3 py-2 rounded-md text-xs text-muted-foreground hover:bg-sidebar-accent/40 transition-colors">
-              <LogOut className="size-3.5" />
-              <span>Sign out</span>
-            </button>
+        ))}
+      </div>
+
+      <div className="flex-1" />
+
+      <div className="flex flex-col gap-0.5 px-1.5 pb-2">
+        <Item item={machinesItem} open={open} active={section === machinesItem.hash} />
+        <HfTokenButton open={open} />
+        <VramButton open={open} />
+        <ActionRow open={open} icon={BookOpen} label="Docs" title="The README: SDK, CLI, methods, studio"
+                   onClick={() => window.open(`${repo}#readme`, "_blank", "noreferrer")} />
+        <ActionRow open={open} icon={ExternalLink} label="GitHub" title="github.com/open-gitagent/shadowLM"
+                   onClick={() => window.open(repo, "_blank", "noreferrer")} />
+      </div>
+
+      <div className={cn("mx-1.5 flex gap-2.5 border-t border-border pt-3 pb-1.5", open ? "flex-col" : "flex-col items-center")}>
+        <AnimatePresence initial={false} mode="popLayout">
+          {open ? (
+            <motion.div key="status" {...fade} className="grid min-w-0 gap-1.5 text-[11px] whitespace-nowrap text-muted-foreground">
+              {backend && (
+                <span className="grid min-w-0 gap-0.5">
+                  <span className="truncate text-xs font-medium text-foreground">This machine</span>
+                  <span className="text-[11px] text-muted-foreground">backend {backend}</span>
+                </span>
+              )}
+              <span className="flex items-center gap-1.5">
+                <LiveDot live={live} label />
+                {version && (
+                  <>
+                    <span aria-hidden>·</span>
+                    <span className="tabular-nums">v{version}</span>
+                  </>
+                )}
+              </span>
+            </motion.div>
+          ) : (
+            <motion.div key="dot" {...fade} className="grid justify-items-center gap-2 py-1">
+              <LiveDot live={live} />
+            </motion.div>
           )}
-          <a href="https://github.com/open-gitagent/shadowLM" target="_blank" rel="noreferrer"
-             className="w-full flex items-center gap-3 px-3 py-2 rounded-md text-xs text-muted-foreground hover:bg-sidebar-accent/40 transition-colors no-underline">
-            <ExternalLink className="size-3.5" />
-            <span>GitHub</span>
-            <span className="ml-auto font-mono text-[10px] text-primary">slm♥</span>
-          </a>
+        </AnimatePresence>
+        <div className={cn("flex gap-0.5", open ? "-mx-1" : "flex-col")}>
+          <ThemeToggle />
+          {onSignOut && (
+            <IconButton label="Sign out" onClick={onSignOut}>
+              <LogOut className="size-3.5" />
+            </IconButton>
+          )}
+          <IconButton label={open ? "Collapse navigation" : "Expand navigation"} onClick={onToggle}>
+            {open ? <PanelLeftClose className="size-3.5" /> : <PanelLeftOpen className="size-3.5" />}
+          </IconButton>
         </div>
-      </aside>
-      <main className="flex-1 min-w-0 flex flex-col">{page}</main>
+      </div>
+    </motion.nav>
+  );
+}
+
+const row = (active: boolean) =>
+  cn(
+    "group flex h-8 shrink-0 items-center gap-3 rounded-md px-1.5 text-[13px] font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/40",
+    active ? "bg-primary/10 text-primary" : "text-muted-foreground hover:bg-surface-2/70 hover:text-foreground",
+  );
+
+function Item({ item, open, active }: { item: NavItem; open: boolean; active: boolean }) {
+  return (
+    <a href={`#${item.hash}`} aria-current={active ? "page" : undefined} title={open ? undefined : item.label} className={row(active)}>
+      <item.icon className="size-4 shrink-0 opacity-70 group-aria-[current=page]:opacity-100" strokeWidth={1.75} aria-hidden />
+      <NavLabel open={open} className="min-w-0 flex-1">{item.label}</NavLabel>
+    </a>
+  );
+}
+
+// ActionRow is a nav-styled row that does something rather than going
+// somewhere: its label says what, and hint, on the right, its state.
+function ActionRow({ open, icon: Icon, label, hint, title, onClick }: {
+  open: boolean; icon: LucideIcon; label: string; hint?: ReactNode; title?: string; onClick: () => void;
+}) {
+  return (
+    <button type="button" onClick={onClick} title={open ? title : (title ?? label)} className={cn(row(false), "w-full text-left")}>
+      <Icon className="size-4 shrink-0 opacity-70" strokeWidth={1.75} aria-hidden />
+      <NavLabel open={open} className="min-w-0 flex-1">{label}</NavLabel>
+      {open && hint && <span className="shrink-0 text-[11px] font-normal text-muted-foreground tabular-nums">{hint}</span>}
+    </button>
+  );
+}
+
+function SectionTitle({ open, children }: { open: boolean; children: ReactNode }) {
+  return (
+    <div className="relative mt-4 mb-1 h-4 shrink-0">
+      <motion.span
+        initial={false}
+        animate={{ opacity: open ? 0 : 1 }}
+        transition={{ duration: 0.12 }}
+        className="absolute inset-x-1.5 top-1/2 h-px bg-border"
+        aria-hidden
+      />
+      <div className="absolute inset-x-0 -top-0.5 flex h-5 items-center px-1.5">
+        <NavLabel open={open} className="text-[11px] font-medium text-muted-foreground/80">{children}</NavLabel>
+      </div>
     </div>
+  );
+}
+
+// NavLabel is text that is there when the island is open and gone, not
+// squashed, when it folds.
+function NavLabel({ open, className, children }: { open: boolean; className?: string; children: ReactNode }) {
+  return (
+    <motion.span
+      initial={false}
+      animate={{ opacity: open ? 1 : 0 }}
+      transition={{ duration: open ? 0.2 : 0.08, delay: open ? 0.08 : 0 }}
+      className={cn("truncate whitespace-nowrap", className)}
+      aria-hidden={!open}
+    >
+      {children}
+    </motion.span>
+  );
+}
+
+// LiveDot says whether the API is answering.
+function LiveDot({ live, label }: { live: boolean; label?: boolean }) {
+  return (
+    <span title={live ? "API reachable" : "the API is not answering; what is shown may be out of date"} className="flex items-center gap-1.5">
+      <span className={cn("size-1.5 shrink-0 rounded-full", live ? "bg-good" : "bg-muted-foreground/40")} />
+      {label && (live ? "live" : "offline")}
+    </span>
+  );
+}
+
+function IconButton({ label, onClick, children }: { label: string; onClick: () => void; children: ReactNode }) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      onClick={onClick}
+      className="grid size-7 place-items-center rounded-md text-muted-foreground outline-none hover:bg-surface-2 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/40"
+    >
+      {children}
+    </button>
+  );
+}
+
+function ThemeToggle() {
+  const { resolvedTheme, setTheme } = useTheme();
+  const dark = resolvedTheme === "dark";
+  return (
+    <IconButton label="Toggle theme" onClick={() => setTheme(dark ? "light" : "dark")}>
+      {dark ? <Sun className="size-3.5" /> : <Moon className="size-3.5" />}
+    </IconButton>
+  );
+}
+
+// HfTokenButton sets the Hugging Face token the server uses for gated and
+// private models.
+function HfTokenButton({ open: islandOpen }: { open: boolean }) {
+  const [open, setOpen] = useState(false);
+  const [isSet, setIsSet] = useState(false);
+  const [value, setValue] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    getSettings().then((s) => setIsSet(s.hf_token_set)).catch(() => {});
+  }, []);
+
+  async function save(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setErr("");
+    try {
+      setIsSet((await setHfToken(value)).hf_token_set);
+      setValue("");
+      setOpen(false);
+    } catch (e2) {
+      setErr((e2 as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      <ActionRow open={islandOpen} icon={KeyRound} label="Hugging Face token"
+                 hint={isSet ? "set" : "not set"}
+                 title="The token the server uses for gated and private models"
+                 onClick={() => setOpen(true)} />
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="sm:max-w-md">
+          <form onSubmit={save} className="grid gap-4">
+            <DialogHeader>
+              <DialogTitle>Hugging Face token</DialogTitle>
+              <DialogDescription>
+                For gated and private models. It is stored on this server, never in the browser.
+                {isSet && " A token is set; saving replaces it."}
+              </DialogDescription>
+            </DialogHeader>
+            <Input type="password" autoFocus placeholder="hf_…" value={value} onChange={(e) => setValue(e.target.value)} />
+            {err && <p className="text-sm text-destructive">{err}</p>}
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
+              <Button type="submit" disabled={!value.trim() || busy}>{busy ? "Saving…" : "Save token"}</Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
+
+// VramButton unloads cached models and frees GPU memory; beside it, how
+// much is in use, and after a clean, what it came down to.
+function VramButton({ open }: { open: boolean }) {
+  const [hint, setHint] = useState("");
+  const [busy, setBusy] = useState(false);
+  const gb = (mb: number) => `${(mb / 1024).toFixed(1)} GB`;
+
+  useEffect(() => {
+    getVram().then((v) => v.used_mb != null && setHint(`${gb(v.used_mb)} used`)).catch(() => {});
+  }, []);
+
+  async function clean() {
+    setBusy(true);
+    try {
+      const r = await clearVram();
+      setHint(r.after_mb != null ? `freed · ${gb(r.after_mb)}` : "freed");
+    } catch {
+      setHint("failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <ActionRow open={open} icon={busy ? LoaderCircle : Zap} label="Clean VRAM"
+               hint={busy ? "clearing…" : hint}
+               title="Unload cached models and free GPU memory"
+               onClick={clean} />
   );
 }
