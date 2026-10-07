@@ -836,6 +836,11 @@ class Server:
                 job.logs.append(job.live)
                 job.live = ""
             self._persist(job)  # terminal state + final metrics + logs → disk
+            # The trained model would otherwise live on in this loop's locals
+            # until the next job reassigns them, holding the GPU between runs
+            # where Clean VRAM can't reach it: let it go now.
+            be = result = callbacks = None  # noqa: F841
+            self._release_gpu_cache()
 
     # ---- inference -------------------------------------------------------------
     def _infer_key(self, model: str, adapter: str | None,
@@ -929,10 +934,16 @@ class Server:
     def _drop_inference_models(self) -> tuple[int, str | None]:
         """Empty the inference cache and release the GPU allocator's cache.
         Caller holds ``_model_lock``. Returns (models dropped, release error)."""
-        import gc  # noqa: PLC0415
-
         n = len(self._infer_cache)
         self._infer_cache.clear()
+        return n, self._release_gpu_cache()
+
+    @staticmethod
+    def _release_gpu_cache() -> str | None:
+        """Collect dropped models and hand the allocator's cache back to the
+        GPU. Returns the release error, if any."""
+        import gc  # noqa: PLC0415
+
         gc.collect()
         freed_error: str | None = None
         try:
@@ -944,7 +955,7 @@ class Server:
             freed_error = f"{type(e).__name__}: {e}"
             print(f"[serve] VRAM release failed ({freed_error})", flush=True)
         gc.collect()
-        return n, freed_error
+        return freed_error
 
     def clear_vram(self) -> dict:
         """Drop every cached inference model and release the GPU allocator's
