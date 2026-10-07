@@ -228,6 +228,15 @@ function RunDetail({ run }: { run: JobSummary }) {
           <Stat label="Learning rate" value={last ? last.lr.toExponential(1) : undefined} />
         </StatStrip>
 
+        {job?.error && (
+          <section className="border border-destructive/30 bg-destructive/5 p-4">
+            <h3 className="mb-2 flex items-center gap-1.5 text-sm font-semibold text-destructive">
+              <CircleAlert className="size-4" /> Why it failed
+            </h3>
+            <pre className="max-h-40 overflow-auto font-mono text-xs whitespace-pre-wrap text-destructive">{job.error}</pre>
+          </section>
+        )}
+
         <Tabs value={tab} onValueChange={(v) => setTab(v as typeof tab)} className="gap-4">
           <TabsList variant="line" className="w-full justify-start border-b border-border">
             <TabsTrigger value="loss" className="flex-none">Loss curves</TabsTrigger>
@@ -272,14 +281,6 @@ function RunDetail({ run }: { run: JobSummary }) {
           </TabsContent>
 
           <TabsContent value="artifact" className="space-y-4">
-            {job?.error && (
-              <section className="border border-destructive/30 bg-destructive/5 p-4">
-                <h3 className="mb-2 flex items-center gap-1.5 text-sm font-semibold text-destructive">
-                  <CircleAlert className="size-4" /> Error
-                </h3>
-                <pre className="font-mono text-xs whitespace-pre-wrap text-destructive">{job.error}</pre>
-              </section>
-            )}
             {job?.checkpoint ? (
               <Panel title="Trained adapter">
                 <div className="flex items-center justify-between gap-4 px-4 py-3 text-sm">
