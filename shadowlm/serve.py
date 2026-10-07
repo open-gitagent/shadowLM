@@ -774,6 +774,14 @@ class Server:
                     payload["dataset"] = {"rows": train.rows, "format": train.format}
                     payload["eval_dataset"] = {"rows": ev.rows, "format": ev.format}
                 with self._model_lock:
+                    # Playground models cached on the GPU would leave a big base
+                    # too little room to train (an 8B in bf16 next to a cached
+                    # 8B is an OOM on 48 GB), so a run starts on a clean card.
+                    if self._infer_cache:
+                        n, _ = self._drop_inference_models()
+                        print(f"[{job_id[:8]}] unloaded {n} playground "
+                              f"model{'s' if n != 1 else ''} to free the GPU "
+                              "for training", flush=True)
                     be = select_backend(self.backend_name,
                                         accelerator=self.accelerator,
                                         device=self.device)
@@ -918,27 +926,33 @@ class Server:
         except Exception:  # noqa: BLE001
             return None
 
-    def clear_vram(self) -> dict:
-        """Drop every cached inference model and release the GPU allocator's
-        cache — frees VRAM held after inference/compare without restarting the
-        server. Queued/running training is untouched (one job at a time)."""
+    def _drop_inference_models(self) -> tuple[int, str | None]:
+        """Empty the inference cache and release the GPU allocator's cache.
+        Caller holds ``_model_lock``. Returns (models dropped, release error)."""
         import gc  # noqa: PLC0415
 
-        before = self._gpu_used_mb()
-        freed_error: str | None = None
-        with self._model_lock:
-            n = len(self._infer_cache)
-            self._infer_cache.clear()
+        n = len(self._infer_cache)
+        self._infer_cache.clear()
         gc.collect()
+        freed_error: str | None = None
         try:
             import torch  # noqa: PLC0415
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
                 torch.cuda.synchronize()
-        except Exception as e:  # noqa: BLE001 — report, don't fail the request
+        except Exception as e:  # noqa: BLE001 — report, don't fail the caller
             freed_error = f"{type(e).__name__}: {e}"
             print(f"[serve] VRAM release failed ({freed_error})", flush=True)
         gc.collect()
+        return n, freed_error
+
+    def clear_vram(self) -> dict:
+        """Drop every cached inference model and release the GPU allocator's
+        cache — frees VRAM held after inference/compare without restarting the
+        server. Queued/running training is untouched (one job at a time)."""
+        before = self._gpu_used_mb()
+        with self._model_lock:
+            n, freed_error = self._drop_inference_models()
         out = {"unloaded": n, "before_mb": before, "after_mb": self._gpu_used_mb()}
         if freed_error:  # don't report a clean sweep when the allocator threw
             out["error"] = freed_error
