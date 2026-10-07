@@ -291,7 +291,11 @@ export default function Playground() {
                 <Pane tone="base" label="Base" text={base[i]?.content} />
               </div>
             ))}
-            {busy && <div className="grid grid-cols-2 gap-3"><Pane tone="tuned" label="Shadow" /><Pane tone="base" label="Base" /></div>}
+            {/* until the shadow answers, both panes wait here; after, its row
+                carries the base's wait, so don't draw a second one */}
+            {busy && msgs[msgs.length - 1]?.role === "user" && (
+              <div className="grid grid-cols-2 gap-3"><Pane tone="tuned" label="Shadow" /><Pane tone="base" label="Base" /></div>
+            )}
           </div>
         ) : (
           <div className="mx-auto flex max-w-3xl flex-col gap-4 py-6">
