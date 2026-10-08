@@ -1,0 +1,492 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-08T09:14:45+00:00",
+  "title": "Design System: openfinetuner",
+  "extensions": {
+    "colorMeta": {
+      "slate-primary": {
+        "role": "primary",
+        "displayName": "Slate Primary",
+        "canonical": "oklch(46.5% 0.080 258.5)",
+        "tonalRamp": [
+          "#00062c",
+          "#08224a",
+          "#244069",
+          "#415e8b",
+          "#607ead",
+          "#80a0d0",
+          "#a5c6f8",
+          "#cef1ff"
+        ],
+        "darkCounterpart": "dark-slate-primary"
+      },
+      "good": {
+        "role": "secondary",
+        "displayName": "Moss Good",
+        "canonical": "oklch(52.7% 0.092 151.0)",
+        "tonalRamp": [
+          "#001400",
+          "#002f08",
+          "#0c4d25",
+          "#316c42",
+          "#528d61",
+          "#73af81",
+          "#98d6a6",
+          "#c2ffcf"
+        ],
+        "darkCounterpart": "dark-good"
+      },
+      "warning": {
+        "role": "secondary",
+        "displayName": "Ochre Warning",
+        "canonical": "oklch(56.9% 0.116 65.4)",
+        "tonalRamp": [
+          "#270000",
+          "#460e00",
+          "#672e00",
+          "#894d00",
+          "#ac6d24",
+          "#d08f4a",
+          "#f8b470",
+          "#ffdf99"
+        ],
+        "darkCounterpart": "dark-warning"
+      },
+      "destructive": {
+        "role": "secondary",
+        "displayName": "Brick Destructive",
+        "canonical": "oklch(48.8% 0.136 32.8)",
+        "tonalRamp": [
+          "#2d0000",
+          "#4f0000",
+          "#721e0e",
+          "#953f2e",
+          "#b9604d",
+          "#df816d",
+          "#ffa792",
+          "#ffd1bb"
+        ],
+        "darkCounterpart": "dark-destructive"
+      },
+      "canvas": {
+        "role": "neutral",
+        "displayName": "Canvas",
+        "canonical": "oklch(100.0% 0.000 89.9)",
+        "tonalRamp": [
+          "#0b0b0b",
+          "#242424",
+          "#404040",
+          "#5d5d5d",
+          "#7d7d7d",
+          "#9e9e9e",
+          "#c4c4c4",
+          "#eeeeee"
+        ],
+        "darkCounterpart": "dark-canvas"
+      },
+      "ink-foreground": {
+        "role": "neutral",
+        "displayName": "Ink Foreground",
+        "canonical": "oklch(18.7% 0.004 84.6)",
+        "tonalRamp": [
+          "#0c0b09",
+          "#252422",
+          "#41403d",
+          "#5f5d5b",
+          "#7e7d7a",
+          "#a09e9b",
+          "#c5c4c1",
+          "#f0eeeb"
+        ],
+        "darkCounterpart": "dark-foreground"
+      },
+      "muted-foreground": {
+        "role": "neutral",
+        "displayName": "Muted Foreground",
+        "canonical": "oklch(48.0% 0.020 84.6)",
+        "tonalRamp": [
+          "#0f0a03",
+          "#292319",
+          "#453f34",
+          "#635d51",
+          "#837d70",
+          "#a49e91",
+          "#cac3b6",
+          "#f5eee0"
+        ],
+        "darkCounterpart": "dark-muted-foreground"
+      },
+      "surface": {
+        "role": "neutral",
+        "displayName": "Surface",
+        "canonical": "oklch(93.5% 0.012 84.6)",
+        "tonalRamp": [
+          "#0d0b06",
+          "#27241e",
+          "#433f39",
+          "#615d56",
+          "#807d76",
+          "#a29e96",
+          "#c7c4bc",
+          "#f2eee6"
+        ],
+        "darkCounterpart": "dark-surface"
+      },
+      "surface-2": {
+        "role": "neutral",
+        "displayName": "Surface 2",
+        "canonical": "oklch(92.0% 0.010 81.8)",
+        "tonalRamp": [
+          "#0d0b07",
+          "#27241e",
+          "#423f3a",
+          "#615d57",
+          "#807d76",
+          "#a29e97",
+          "#c7c4bd",
+          "#f2eee7"
+        ],
+        "darkCounterpart": "dark-surface-2"
+      },
+      "subtle": {
+        "role": "neutral",
+        "displayName": "Subtle",
+        "canonical": "oklch(96.5% 0.009 84.6)",
+        "tonalRamp": [
+          "#0d0b07",
+          "#26241f",
+          "#423f3b",
+          "#605d58",
+          "#807d78",
+          "#a19e98",
+          "#c7c4be",
+          "#f1eee8"
+        ]
+      },
+      "side-panel": {
+        "role": "neutral",
+        "displayName": "Side Panel",
+        "canonical": "oklch(97.6% 0.004 91.4)",
+        "tonalRamp": [
+          "#0c0b09",
+          "#252422",
+          "#40403d",
+          "#5e5d5b",
+          "#7e7d7a",
+          "#9f9e9b",
+          "#c5c4c1",
+          "#efeeeb"
+        ]
+      },
+      "hairline": {
+        "role": "neutral",
+        "displayName": "Hairline",
+        "canonical": "oklch(90.2% 0.015 84.6)",
+        "tonalRamp": [
+          "#0e0b05",
+          "#27241c",
+          "#433f37",
+          "#615d55",
+          "#817d74",
+          "#a39e94",
+          "#c8c4ba",
+          "#f3eee4"
+        ],
+        "darkCounterpart": "dark-hairline"
+      },
+      "hairline-strong": {
+        "role": "neutral",
+        "displayName": "Hairline Strong",
+        "canonical": "oklch(84.9% 0.019 89.4)",
+        "tonalRamp": [
+          "#0e0b04",
+          "#28241a",
+          "#443f35",
+          "#625d52",
+          "#827d71",
+          "#a39e92",
+          "#c9c4b7",
+          "#f3eee1"
+        ],
+        "darkCounterpart": "dark-hairline-strong"
+      },
+      "console-ink": {
+        "role": "neutral",
+        "displayName": "Console Ink",
+        "canonical": "oklch(18.7% 0.004 84.6)",
+        "tonalRamp": [
+          "#0c0b09",
+          "#252422",
+          "#41403d",
+          "#5f5d5b",
+          "#7e7d7a",
+          "#a09e9b",
+          "#c5c4c1",
+          "#f0eeeb"
+        ]
+      },
+      "console-bone": {
+        "role": "neutral",
+        "displayName": "Console Bone",
+        "canonical": "oklch(93.2% 0.007 80.7)",
+        "tonalRamp": [
+          "#0d0b08",
+          "#262420",
+          "#423f3b",
+          "#605d59",
+          "#7f7d78",
+          "#a19e99",
+          "#c7c4bf",
+          "#f1eee9"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "headline": {
+        "displayName": "Headline",
+        "purpose": "Page titles and the mode chooser."
+      },
+      "title": {
+        "displayName": "Title",
+        "purpose": "Panel and station headers, project name, action-card titles."
+      },
+      "figure": {
+        "displayName": "Figure",
+        "purpose": "Scorecard scores and stat-strip values, tabular."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Ctrl agent messages, table cells, descriptions."
+      },
+      "nav": {
+        "displayName": "Nav",
+        "purpose": "Side-panel rows."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "Buttons at xs, field labels, chips, station state lines."
+      },
+      "meta": {
+        "displayName": "Meta",
+        "purpose": "Author line, station status word, section titles, version strings."
+      },
+      "mono": {
+        "displayName": "Mono",
+        "purpose": "Ids, model names, config keys, CLI, logs, chart axes."
+      }
+    },
+    "shadows": [
+      {
+        "name": "paper",
+        "value": "0 1px 0 rgb(28 24 18 / 0.03), 0 1px 2px rgb(28 24 18 / 0.05)",
+        "darkValue": "0 1px 0 rgb(0 0 0 / 0.25), 0 1px 2px rgb(0 0 0 / 0.3)",
+        "purpose": "The side-panel island, the selected mode segment, the live action card."
+      },
+      {
+        "name": "raised",
+        "value": "0 1px 0 rgb(28 24 18 / 0.04), 0 2px 4px rgb(28 24 18 / 0.06), 0 8px 24px -12px rgb(28 24 18 / 0.1)",
+        "darkValue": "0 1px 0 rgb(0 0 0 / 0.3), 0 2px 4px rgb(0 0 0 / 0.35), 0 8px 24px -12px rgb(0 0 0 / 0.5)",
+        "purpose": "Popovers, menus, select content, tooltips, sheets."
+      },
+      {
+        "name": "focus-ring",
+        "value": "0 0 0 3px color-mix(in srgb, var(--ring) 50%, transparent)",
+        "purpose": "Focus on buttons and fields, with the edge turning slate."
+      }
+    ],
+    "motion": [
+      {
+        "name": "state",
+        "value": "150-250ms ease-out",
+        "purpose": "Colour and selection changes; the inspector fades in at 200ms."
+      },
+      {
+        "name": "rise",
+        "value": "rise 0.18s ease-out (opacity 0, translateY 5px)",
+        "purpose": "New thread messages arriving."
+      },
+      {
+        "name": "dash-flow",
+        "value": "of-dashflow 0.6s linear infinite (16px period; 12px on the rail)",
+        "purpose": "The running rail segment and the live line, only while work runs."
+      },
+      {
+        "name": "reduced-motion",
+        "value": "motion-safe / prefers-reduced-motion",
+        "purpose": "All of the above off under reduced motion."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "phone-shell",
+        "value": "767px (max-width)",
+        "purpose": "Side panel folds to a 48px rail and opens as an overlay."
+      },
+      {
+        "name": "cockpit-split",
+        "value": "56rem / 896px (container)",
+        "purpose": "Conversation 5/12 and loop 7/12 side by side; below, stacked with the page as the only scroller."
+      },
+      {
+        "name": "rail-four-up",
+        "value": "@2xl (42rem container)",
+        "purpose": "Loop rail goes from two columns to four."
+      },
+      {
+        "name": "answers-table",
+        "value": "@xl (36rem container)",
+        "purpose": "Scorecard answers switch from stacked blocks to a table."
+      }
+    ],
+    "darkMode": {
+      "selector": ".dark",
+      "note": "Warm graphite; the embed host's theme wins when framed."
+    }
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The one tinted action: slate at 10% with a slate edge and text; never filled solid.",
+      "html": "<button class=\"ds-btn-primary\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><polygon points=\"6 3 20 12 6 21 6 3\"/></svg> Start version 2</button>",
+      "css": ".ds-btn-primary{font-family:Manrope,ui-sans-serif,system-ui,sans-serif;display:inline-flex;align-items:center;gap:6px;height:32px;padding:0 10px;border:1px solid transparent;border-radius:8px;font-size:14px;font-weight:500;cursor:pointer;transition:background-color .15s,border-color .15s,box-shadow .15s;background:color-mix(in srgb,var(--primary,#3d5a86) 10%,transparent);border-color:color-mix(in srgb,var(--primary,#3d5a86) 20%,transparent);color:var(--primary,#3d5a86);} .ds-btn-primary:hover{background:color-mix(in srgb,var(--primary,#3d5a86) 15%,transparent);} .ds-btn-primary:focus-visible{outline:none;border-color:var(--ring,#3d5a86);box-shadow:0 0 0 3px color-mix(in srgb,var(--ring,#3d5a86) 50%,transparent);} .ds-btn-primary:active{transform:translateY(1px);}"
+    },
+    {
+      "name": "Ghost Button",
+      "kind": "button",
+      "refersTo": "button-ghost",
+      "description": "The quiet Edit beside the primary; no edge, muted fill on hover.",
+      "html": "<button class=\"ds-btn-ghost\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M21.17 6.81a1 1 0 0 0-3.99-3.99L3.84 16.17a2 2 0 0 0-.5.83l-1.32 4.35a.5.5 0 0 0 .62.62l4.35-1.32a2 2 0 0 0 .83-.5z\"/></svg> Edit</button>",
+      "css": ".ds-btn-ghost{font-family:Manrope,ui-sans-serif,system-ui,sans-serif;display:inline-flex;align-items:center;gap:6px;height:32px;padding:0 10px;border:1px solid transparent;border-radius:8px;font-size:14px;font-weight:500;cursor:pointer;transition:background-color .15s,border-color .15s,box-shadow .15s;background:transparent;color:var(--foreground,#141311);} .ds-btn-ghost:hover{background:var(--muted,#e8e4dd);} .ds-btn-ghost:focus-visible{outline:none;border-color:var(--ring,#3d5a86);box-shadow:0 0 0 3px color-mix(in srgb,var(--ring,#3d5a86) 50%,transparent);} .ds-btn-ghost:active{transform:translateY(1px);}"
+    },
+    {
+      "name": "Outline Button / Suggestion Chip",
+      "kind": "chip",
+      "refersTo": "chip-suggestion",
+      "description": "Secondary actions and the composer's suggested next steps.",
+      "html": "<div class=\"ds-chips\"><button class=\"ds-chip\">Deploy it</button><button class=\"ds-chip\">Train another version</button><button class=\"ds-chip\">Compare versions</button></div>",
+      "css": ".ds-chips{display:flex;flex-wrap:wrap;gap:6px;} .ds-chip{font-family:Manrope,ui-sans-serif,system-ui,sans-serif;display:inline-flex;align-items:center;height:24px;padding:0 8px;border:1px solid var(--border,#e3ded4);border-radius:6px;background:var(--card,#fff);color:var(--foreground,#141311);font-size:12px;font-weight:400;cursor:pointer;transition:background-color .15s;} .ds-chip:hover{background:var(--surface-2,#e8e4dd);} .ds-chip:focus-visible{outline:none;border-color:var(--ring,#3d5a86);box-shadow:0 0 0 3px color-mix(in srgb,var(--ring,#3d5a86) 50%,transparent);}"
+    },
+    {
+      "name": "Input",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Hairline, transparent, 8px corner; slate edge and ring on focus.",
+      "html": "<label class=\"ds-field\"><span>Base model</span><input class=\"ds-input\" value=\"Qwen2.5-0.5B-Instruct-4bit\"></label>",
+      "css": ".ds-field{font-family:Manrope,ui-sans-serif,system-ui,sans-serif;display:grid;gap:4px;font-size:12px;color:var(--muted-foreground,#635d51);max-width:320px;} .ds-input{font-family:'JetBrains Mono',ui-monospace,monospace;font-size:12px;font-variant-ligatures:none;height:32px;padding:4px 10px;border:1px solid var(--input,#e8e4dd);border-radius:8px;background:transparent;color:var(--foreground,#141311);transition:border-color .15s,box-shadow .15s;} .ds-input:focus-visible{outline:none;border-color:var(--ring,#3d5a86);box-shadow:0 0 0 3px color-mix(in srgb,var(--ring,#3d5a86) 50%,transparent);}"
+    },
+    {
+      "name": "Side-panel Navigation",
+      "kind": "nav",
+      "refersTo": "nav-item",
+      "description": "Floating island with monogram, 13px rows and the slate-tinted active row.",
+      "html": "<nav class=\"ds-nav\"><div class=\"ds-brand\"><span class=\"ds-mono\">of</span><span><b>openfinetuner</b><small>formerly ShadowLM</small></span></div><div class=\"ds-modes\"><button class=\"ds-mode\">Business</button><button class=\"ds-mode on\">Research</button></div><a class=\"ds-nav-row\" href=\"#\">Overview</a><a class=\"ds-nav-row on\" href=\"#\" aria-current=\"page\">Projects</a><div class=\"ds-sec\">Build</div><a class=\"ds-nav-row\" href=\"#\">Datasets</a><a class=\"ds-nav-row\" href=\"#\">Models</a></nav>",
+      "css": ".ds-nav{font-family:Manrope,ui-sans-serif,system-ui,sans-serif;width:240px;display:flex;flex-direction:column;gap:2px;padding:4px 10px 10px;background:var(--sidebar,#f8f7f4);border:1px solid var(--border,#e3ded4);border-radius:12px;box-shadow:var(--shadow-paper,0 1px 0 rgb(28 24 18 / .03),0 1px 2px rgb(28 24 18 / .05));} .ds-brand{display:flex;align-items:center;gap:10px;height:48px;} .ds-brand b{display:block;font-size:14px;font-weight:600;letter-spacing:-.01em;} .ds-brand small{display:block;font-size:11px;color:var(--muted-foreground,#635d51);} .ds-mono{display:grid;place-items:center;width:28px;height:28px;border-radius:6px;border:1px solid color-mix(in srgb,var(--primary,#3d5a86) 20%,transparent);background:color-mix(in srgb,var(--primary,#3d5a86) 10%,transparent);color:var(--primary,#3d5a86);font:600 10px 'JetBrains Mono',monospace;} .ds-modes{display:grid;grid-template-columns:1fr 1fr;gap:2px;padding:2px;border-radius:8px;background:color-mix(in srgb,var(--surface-2,#e8e4dd) 70%,transparent);margin-bottom:6px;} .ds-mode{font-family:Manrope,ui-sans-serif,system-ui,sans-serif;height:28px;border:0;border-radius:6px;background:transparent;font-size:12px;font-weight:500;color:var(--muted-foreground,#635d51);cursor:pointer;} .ds-mode.on{background:var(--card,#fff);color:var(--foreground,#141311);box-shadow:var(--shadow-paper,0 1px 2px rgb(28 24 18 / .05));} .ds-nav-row{display:flex;align-items:center;height:32px;padding:0 6px;border-radius:6px;font-size:13px;font-weight:500;color:var(--muted-foreground,#635d51);text-decoration:none;transition:background-color .15s,color .15s;} .ds-nav-row:hover{background:color-mix(in srgb,var(--surface-2,#e8e4dd) 70%,transparent);color:var(--foreground,#141311);} .ds-nav-row.on{background:color-mix(in srgb,var(--primary,#3d5a86) 10%,transparent);color:var(--primary,#3d5a86);} .ds-nav-row:focus-visible,.ds-mode:focus-visible{outline:none;box-shadow:0 0 0 2px color-mix(in srgb,var(--ring,#3d5a86) 40%,transparent);} .ds-sec{margin:14px 6px 2px;font-size:11px;font-weight:500;color:color-mix(in srgb,var(--muted-foreground,#635d51) 80%,transparent);}"
+    },
+    {
+      "name": "Action Card",
+      "kind": "card",
+      "refersTo": "panel",
+      "description": "The Ctrl agent's live proposal: bordered panel, paper shadow, one tinted primary, a quiet Edit and the shell disclosure.",
+      "html": "<div class=\"ds-msg\"><div class=\"ds-author\">Ctrl agent <span>Fine-tune</span></div><p>I'd train version 2 like this:</p><div class=\"ds-card\"><p class=\"ds-card-t\">Fine-tune</p><dl><dt>Version</dt><dd>2</dd><dt>Base model</dt><dd class=\"m\">Qwen2.5-0.5B-Instruct-4bit</dd><dt>Method</dt><dd>MoRE</dd><dt>Steps</dt><dd>200</dd></dl><details><summary>Same run from your shell</summary><pre>shadowlm finetune --method more --set max_steps=200</pre></details><div class=\"ds-row\"><button class=\"ds-p\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><polygon points=\"6 3 20 12 6 21 6 3\"/></svg> Start version 2</button><button class=\"ds-g\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M21.17 6.81a1 1 0 0 0-3.99-3.99L3.84 16.17a2 2 0 0 0-.5.83l-1.32 4.35a.5.5 0 0 0 .62.62l4.35-1.32a2 2 0 0 0 .83-.5z\"/></svg> Edit</button></div></div></div>",
+      "css": ".ds-msg{font-family:Manrope,ui-sans-serif,system-ui,sans-serif;max-width:420px;font-size:14px;line-height:1.625;color:var(--foreground,#141311);} .ds-author{display:flex;justify-content:space-between;font-size:11px;color:var(--muted-foreground,#635d51);} .ds-msg>p{margin:4px 0 10px;} .ds-card{border:1px solid var(--border,#e3ded4);border-radius:8px;background:var(--card,#fff);padding:14px 16px;box-shadow:var(--shadow-paper,0 1px 0 rgb(28 24 18 / .03),0 1px 2px rgb(28 24 18 / .05));} .ds-card-t{margin:0;font-weight:600;letter-spacing:-.01em;} .ds-card dl{display:grid;grid-template-columns:auto 1fr;gap:4px 16px;margin:8px 0 0;} .ds-card dt{color:var(--muted-foreground,#635d51);} .ds-card dd{margin:0;font-variant-numeric:tabular-nums;} .ds-card dd.m{font:12px/20px 'JetBrains Mono',monospace;} .ds-card summary{margin-top:10px;font-size:12px;color:var(--muted-foreground,#635d51);cursor:pointer;} .ds-card summary:hover{color:var(--foreground,#141311);} .ds-card pre{margin:6px 0 0;padding:8px 12px;border-radius:6px;background:var(--surface,#ede9e1);font:11px/1.625 'JetBrains Mono',monospace;overflow-x:auto;} .ds-row{display:flex;gap:8px;margin-top:12px;} .ds-p,.ds-g{font-family:Manrope,ui-sans-serif,system-ui,sans-serif;display:inline-flex;align-items:center;gap:6px;height:32px;padding:0 10px;border:1px solid transparent;border-radius:8px;font-size:14px;font-weight:500;cursor:pointer;transition:background-color .15s,border-color .15s,box-shadow .15s;} .ds-p{background:color-mix(in srgb,var(--primary,#3d5a86) 10%,transparent);border-color:color-mix(in srgb,var(--primary,#3d5a86) 20%,transparent);color:var(--primary,#3d5a86);} .ds-p:hover{background:color-mix(in srgb,var(--primary,#3d5a86) 15%,transparent);} .ds-g{background:transparent;color:var(--foreground,#141311);} .ds-g:hover{background:var(--muted,#e8e4dd);} .ds-p:focus-visible,.ds-g:focus-visible{outline:none;border-color:var(--ring,#3d5a86);box-shadow:0 0 0 3px color-mix(in srgb,var(--ring,#3d5a86) 50%,transparent);}"
+    },
+    {
+      "name": "Loop Rail",
+      "kind": "custom",
+      "refersTo": "station-marker",
+      "description": "Four stations on one continuous line; markers alone on the line, words below, verdict tone on Evaluate, dash-flow into a running station.",
+      "html": "<nav class=\"ds-rail\" aria-label=\"The loop\"><div class=\"ds-st\"><span class=\"ds-seg done\"></span><button class=\"ds-stb\"><span class=\"ds-mk good\"><svg width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"10\"/><path d=\"m9 12 2 2 4-4\"/></svg></span><b>Data</b><i class=\"good\">Done</i><small>5 examples</small></button></div><div class=\"ds-st\"><span class=\"ds-seg flow\"></span><button class=\"ds-stb\"><span class=\"ds-mk good\"><svg width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"10\"/><path d=\"m9 12 2 2 4-4\"/></svg></span><b>Fine-tune</b><i class=\"good\">Done</i><small>100 steps · MoRE</small></button></div><div class=\"ds-st\"><span class=\"ds-seg\"></span><button class=\"ds-stb sel\" aria-checked=\"true\"><span class=\"ds-mk warn\"><svg width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"10\"/><line x1=\"12\" x2=\"12\" y1=\"8\" y2=\"12\"/><line x1=\"12\" x2=\"12.01\" y1=\"16\" y2=\"16\"/></svg></span><b>Evaluate</b><i class=\"warn\">Not there yet</i><small>4 of 5 correct</small></button></div><div class=\"ds-st\"><button class=\"ds-stb\"><span class=\"ds-mk pri\"><svg width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"10\"/><circle cx=\"12\" cy=\"12\" r=\"1\"/></svg></span><b>Deploy</b><i class=\"pri\">Ready</i><small>Not deployed</small></button></div></nav>",
+      "css": "@keyframes ds-dash{to{background-position:12px 0;}} .ds-rail{font-family:Manrope,ui-sans-serif,system-ui,sans-serif;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));padding:12px;border:1px solid var(--border,#e3ded4);border-radius:8px;background:var(--card,#fff);} .ds-st{position:relative;min-width:0;} .ds-seg{position:absolute;top:12px;left:13px;right:-13px;height:2px;background:var(--border,#e3ded4);transition:background-color .2s;} .ds-seg.done{background:color-mix(in srgb,var(--good,#3f7a4f) 60%,transparent);} .ds-seg.flow{color:var(--primary,#3d5a86);background:repeating-linear-gradient(90deg,currentColor 0 6px,transparent 6px 12px);animation:ds-dash .6s linear infinite;} @media (prefers-reduced-motion:reduce){.ds-seg.flow{animation:none;}} .ds-stb{font-family:Manrope,ui-sans-serif,system-ui,sans-serif;position:relative;display:flex;flex-direction:column;align-items:flex-start;gap:6px;width:100%;padding:0 8px 8px 0;border:1px solid transparent;border-radius:6px;background:transparent;text-align:left;color:var(--foreground,#141311);cursor:pointer;transition:background-color .2s,border-color .2s;} .ds-stb:hover{background:var(--subtle,#f6f3ed);} .ds-stb.sel{border-color:color-mix(in srgb,var(--primary,#3d5a86) 30%,transparent);background:color-mix(in srgb,var(--primary,#3d5a86) 5%,transparent);} .ds-stb:focus-visible{outline:none;box-shadow:0 0 0 2px color-mix(in srgb,var(--ring,#3d5a86) 40%,transparent);} .ds-mk{position:relative;z-index:1;display:grid;place-items:center;width:24px;height:24px;border-radius:9999px;border:1px solid var(--border,#e3ded4);background:var(--card,#fff);} .ds-mk.good{color:var(--good,#3f7a4f);border-color:color-mix(in srgb,var(--good,#3f7a4f) 40%,transparent);} .ds-mk.warn{color:var(--warning,#a5671c);border-color:color-mix(in srgb,var(--warning,#a5671c) 50%,transparent);} .ds-mk.pri{color:var(--primary,#3d5a86);border-color:color-mix(in srgb,var(--primary,#3d5a86) 40%,transparent);} .ds-stb b{padding-left:4px;font-size:14px;font-weight:600;letter-spacing:-.01em;} .ds-stb i{padding-left:4px;margin-top:-6px;font-style:normal;font-size:11px;font-weight:500;} .ds-stb i.good{color:var(--good,#3f7a4f);} .ds-stb i.warn{color:var(--warning,#a5671c);} .ds-stb i.pri{color:var(--primary,#3d5a86);} .ds-stb small{padding-left:4px;margin-top:-6px;font-size:12px;color:var(--muted-foreground,#635d51);}"
+    },
+    {
+      "name": "Scorecard",
+      "kind": "custom",
+      "refersTo": "panel",
+      "description": "Verdict callout in its tint, then per-target figures joined by hairline gaps with a pill progress bar and mono model id.",
+      "html": "<div class=\"ds-score\"><div class=\"ds-verdict\"><p>Better than the base model, not there yet</p><span>It answers 4 of 5 correctly against the base model's 0.</span></div><div class=\"ds-targets\"><div><small>Your fine-tune</small><div class=\"ds-fig\"><b>4</b> of 5 correct</div><div class=\"ds-bar\"><i style=\"width:80%\"></i></div><code>Qwen2.5-0.5B-Instruct-4bit</code></div><div><small>Base model</small><div class=\"ds-fig\"><b>0</b> of 5 correct</div><div class=\"ds-bar\"><i class=\"cmp\" style=\"width:0%\"></i></div><code>Qwen2.5-0.5B-Instruct-4bit</code></div></div></div>",
+      "css": ".ds-score{font-family:Manrope,ui-sans-serif,system-ui,sans-serif;display:grid;gap:20px;max-width:560px;color:var(--foreground,#141311);} .ds-verdict{padding:14px 16px;border:1px solid color-mix(in srgb,var(--warning,#a5671c) 30%,transparent);border-radius:8px;background:color-mix(in srgb,var(--warning,#a5671c) 5%,transparent);font-size:14px;} .ds-verdict p{margin:0;font-weight:600;color:var(--warning,#a5671c);} .ds-verdict span{display:block;margin-top:2px;color:var(--muted-foreground,#635d51);} .ds-targets{display:grid;grid-template-columns:1fr 1fr;gap:1px;overflow:hidden;border:1px solid var(--border,#e3ded4);border-radius:8px;background:var(--border,#e3ded4);} .ds-targets>div{background:var(--card,#fff);padding:14px 16px;} .ds-targets small{font-size:12px;color:var(--muted-foreground,#635d51);} .ds-fig{margin-top:6px;font-size:14px;color:var(--muted-foreground,#635d51);font-variant-numeric:tabular-nums;} .ds-fig b{font-size:24px;font-weight:600;letter-spacing:-.01em;color:var(--foreground,#141311);margin-right:4px;} .ds-bar{margin-top:10px;height:6px;border-radius:9999px;overflow:hidden;background:var(--surface-2,#e8e4dd);} .ds-bar i{display:block;height:100%;border-radius:9999px;background:var(--primary,#3d5a86);} .ds-bar i.cmp{background:color-mix(in srgb,var(--muted-foreground,#635d51) 50%,transparent);} .ds-targets code{display:block;margin-top:8px;font:11px 'JetBrains Mono',monospace;color:var(--muted-foreground,#635d51);}"
+    },
+    {
+      "name": "Badge",
+      "kind": "chip",
+      "refersTo": "badge",
+      "description": "20px pill in the tint grammar; run status uses the verdict tints.",
+      "html": "<div class=\"ds-badges\"><span class=\"ds-badge\">MoRE</span><span class=\"ds-badge ok\">Succeeded</span><span class=\"ds-badge bad\">Failed</span></div>",
+      "css": ".ds-badges{display:flex;gap:6px;} .ds-badge{font-family:Manrope,ui-sans-serif,system-ui,sans-serif;display:inline-flex;align-items:center;height:20px;padding:2px 8px;border-radius:9999px;border:1px solid color-mix(in srgb,var(--primary,#3d5a86) 20%,transparent);background:color-mix(in srgb,var(--primary,#3d5a86) 10%,transparent);color:var(--primary,#3d5a86);font-size:12px;font-weight:500;} .ds-badge.ok{border-color:color-mix(in srgb,var(--good,#3f7a4f) 30%,transparent);background:color-mix(in srgb,var(--good,#3f7a4f) 10%,transparent);color:var(--good,#3f7a4f);} .ds-badge.bad{border-color:color-mix(in srgb,var(--destructive,#9e3b28) 25%,transparent);background:color-mix(in srgb,var(--destructive,#9e3b28) 10%,transparent);color:var(--destructive,#9e3b28);}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Lab Notebook on Warm Paper",
+    "overview": "openfinetuner wears the opencontroller console's system, Paper & Ink, softened, on purpose: the studio embeds inside opencontroller and has to read as the same instrument. Near-black ink sits on a white page; every neutral is warmed toward paper (no pure black, no cool greys); panels are white blocks set apart by a warm hairline rather than by depth. Corners are near-square and soften only as surfaces grow.\n\nThe density is a working console's: small type (14px body, 12px labels, 11px meta), tight but regular padding, and every number in tabular figures. Nothing is filled solid. The single interactive colour, a muted slate blue, marks what can be acted on and where you are, always as a soft tint with deeper text. Verdicts speak in earthy tints the same way: moss green for good, ochre for not-there-yet, brick for failure. Data, ids, model names and code are set in JetBrains Mono, so what is machine-truth reads differently from what is prose.\n\nThe cockpit added the system's first signature components: a Ctrl agent thread whose action cards carry one tinted primary and a quiet Edit, a four-station loop rail drawn as one continuous line, a station inspector, and a scorecard. Light and dark are equal citizens: dark is warm graphite with the same roles, and the embed host's theme wins when framed.",
+    "keyCharacteristics": [
+      "White canvas, warm hairlines, warm-brown faint shadows; depth by edge, not elevation.",
+      "One slate-blue accent, used only as a tint (10% fill, 20-30% edge, full-strength text).",
+      "Earthy verdict tints (good / warning / destructive) in the same tint grammar.",
+      "Manrope for every word, JetBrains Mono for every datum; tabular numbers throughout.",
+      "Near-square corners from one radius (8px); pills only for pills.",
+      "Motion is short and functional (150-250ms ease-out) and disappears under reduced motion."
+    ],
+    "rules": [
+      {
+        "name": "The Tint, Never Fill Rule",
+        "body": "No component fills solid with an accent or verdict colour. Primary, good, warning and destructive appear as a 5-15% background with a 20-40% edge and full-strength text. A solid slate button is off-system.",
+        "section": "colors"
+      },
+      {
+        "name": "The Warm Neutral Rule",
+        "body": "Every grey leans toward paper. No pure black text or surface, no cool grey, and in dark mode no neutral greys: graphite carries a hint of the same warmth.",
+        "section": "colors"
+      },
+      {
+        "name": "The Verdict Earns Its Colour Rule",
+        "body": "Good, warning and destructive appear only where a real state or score backs them; a decorative green or ochre is a lie on a surface that must not invent metrics.",
+        "section": "colors"
+      },
+      {
+        "name": "The Mono Is Machine-Truth Rule",
+        "body": "Anything a person could paste into a shell or an API (ids, model names, config keys, commands, logs) is JetBrains Mono; prose never is.",
+        "section": "typography"
+      },
+      {
+        "name": "The No Capitals Rule",
+        "body": "Labels are sentence case at 11-12px, weight 500. Uppercase tracked labels are not part of this system.",
+        "section": "typography"
+      },
+      {
+        "name": "The Container Not Viewport Rule",
+        "body": "Components respond to their container's width (container queries, ResizeObserver), because the studio is embedded at sizes the viewport cannot predict.",
+        "section": "layout"
+      },
+      {
+        "name": "The One Scroller Rule",
+        "body": "On a phone the page is the only scroller; nested scroll panes exist only when panes sit side by side.",
+        "section": "layout"
+      },
+      {
+        "name": "The Hairline First Rule",
+        "body": "Separate with a 1px warm hairline before reaching for a shadow; a shadow marks a floating surface or the one live card, never a resting panel.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "**Do** express every accent and verdict as a tint: 5-15% fill, 15-40% edge, full-strength text.",
+      "**Do** set ids, model names, config keys, commands and logs in JetBrains Mono, and every number in tabular figures.",
+      "**Do** separate panels with a 1px warm hairline and keep the paper shadow for floating surfaces and the live action card.",
+      "**Do** derive radii from the 8px base and keep pills for badges, chips, markers and bars.",
+      "**Do** size layouts from the container (container queries at 56rem for the cockpit split), so embedded and phone widths behave.",
+      "**Do** keep motion to 150-250ms ease-out state changes, plus the dash-flow only while work runs, all off under reduced motion.",
+      "**Do** keep light and dark equal: every colour role has its warm-graphite counterpart."
+    ],
+    "donts": [
+      "**Don't** fill a button, badge or callout solid with slate or a verdict colour.",
+      "**Don't** use pure black (#000) for text or surfaces, or cool greys, in either theme.",
+      "**Don't** colour a state good, warning or destructive without a real score or status behind it.",
+      "**Don't** add uppercase tracked labels, kickers or eyebrows above titles.",
+      "**Don't** introduce a second display face; Manrope carries headings.",
+      "**Don't** add heavy or black shadows in light mode, or lift resting panels with elevation.",
+      "**Don't** give the side panel page width on a phone, or nest scroll panes when the cockpit is stacked."
+    ]
+  }
+}

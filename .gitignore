@@ -21,3 +21,7 @@ frontend/node_modules/
 
 # local secrets
 .env
+
+# Impeccable working files: review captures and decision-page logs
+.impeccable/review/
+.impeccable/questions/

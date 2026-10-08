@@ -128,13 +128,40 @@ routing; its run progress is one step per unit (see `resolve_total_steps`).
   Same protocol backs `backend="remote"` and ShadowLM Studio. `SHADOWLM_API_URL`
   may list several servers; `pick()` binds to the least-busy reachable one for
   the session (client-side routing, deliberately not a scheduler).
-- `frontend/` — React 19 + Vite + Tailwind v4 studio. `npm run build` outputs to
+- `frontend/` — React 19 + Vite + Tailwind v4 studio. Layout: `src/app/` (shell,
+  `router.ts` — one typed route table over the URL hash, the format the embed
+  bridge speaks), `src/features/<feature>/` (one folder per surface: cockpit,
+  projects, datasets, models, train, runs, evaluate, deployments, playground,
+  machines, overview), `src/components/` (ui primitives + shared pieces),
+  `src/lib/` (`queries.ts` is the react-query data layer: one hook per
+  resource, polling only while something runs). The **cockpit**
+  (`features/cockpit/`) is where a model is made: the Ctrl agent conversation
+  on the right (`copilot.ts` narrates state and proposes the next action; rule-based, no
+  model call) drives a live map of the loop on the left (`model.ts` folds every resource
+  into Data → Fine-tune → Evaluate → Deploy stations). Its direction contract
+  lives in `.impeccable/surfaces/`. `npm run build` outputs to
   `../shadowlm/_static` (the wheel ships the compiled UI; end users never need
   node). `frontend/src/api.ts` is the typed mirror of the remote protocol. The
   pages (Dashboard · Datasets → Models → Train → Runs → Playground · Machines)
   are the capture→train→own loop as a UI. Auth has three modes — `password`,
   `apikey`, or `none` (`GET /v1/auth` reports which) — plus long-lived, hashed,
   individually-revocable **machine tokens** that workers authenticate with.
+  The studio has two modes over the same objects (`frontend/src/lib/mode.ts`,
+  asked once on first visit, switched in the side panel): **Business** walks a
+  *project* (`/v1/projects`: one fine-tune for a job, goal knowledge / task /
+  takeover) through Data → Fine-tune → Evaluate → Deploy, with base model and
+  method picked by `lib/recipe.ts` and shown; **Research** keeps the object
+  pages (datasets, models, runs) plus **Evaluate** (`/v1/evals`: several
+  targets scored on the same questions, run as a background job and persisted
+  under `<work>/evals/`). Chat runs as a background task too
+  (`/v1/tasks/chat`, polled by `chatAsync`), because a held request dies at the
+  proxy's 100 s. The user's **frontier model** (settings: OpenAI-compatible
+  base URL, key, model; `shadowlm/frontier.py`) is an eval baseline, the
+  `judge` metric, and the upstream for **agent capture** (`/v1/capture/<id>`
+  passes calls through and records them; `capture.reconstruct` turns them into
+  episodes → a dataset). **Deployments** serve a fine-tune at `/openai/v1`
+  (OpenAI-compatible, a hashed per-deployment key, no studio login). Product
+  context and principles live in `PRODUCT.md`.
   The UI uses the opencontroller console's design system (shadcn primitives in
   `frontend/src/components/ui/`, tokens in `index.css`, light + dark) and can
   run **embedded** in a host console over the `oc-embed/1` postMessage bridge
