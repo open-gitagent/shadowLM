@@ -30,6 +30,18 @@ help:  ## list the available targets
 $(PY):
 	python3 -m venv $(VENV)
 
+# Targets that run the CLI need the package *installed*, not just a venv. Guard
+# them so a fresh clone gets told what to do instead of the bare
+# "make: .venv/bin/shadowlm: No such file or directory".
+$(SHADOWLM):
+	@echo "shadowlm isn't installed in $(VENV) yet. Install it:"
+	@echo "    make install         # Apple Silicon (adds the mlx backend)"
+	@echo "    make install-torch   # CUDA or CPU"
+	@echo ""
+	@echo "Or run it from an environment you already have:"
+	@echo "    python3 -m shadowlm.serve --port $(PORT)"
+	@exit 1
+
 .PHONY: install
 install: $(PY)  ## editable install with the CLI + a training backend (mlx)
 	$(PIP) install -q -e '.[mlx,cli]'
@@ -44,21 +56,21 @@ frontend:  ## install + build the React studio into shadowlm/_static
 
 # ---- run --------------------------------------------------------------------
 .PHONY: serve
-serve:  ## run the studio + API on one port (make serve PORT=8329)
+serve: | $(SHADOWLM)  ## run the studio + API on one port (make serve PORT=8329)
 	$(SHADOWLM) serve --port $(PORT)
 
 .PHONY: dev
-dev:  ## serve with Vite hot-reload UI alongside the backend
+dev: | $(SHADOWLM)  ## serve with Vite hot-reload UI alongside the backend
 	$(SHADOWLM) serve --port $(PORT) --dev
 
 .PHONY: demo
-demo:  ## end-to-end smoke: a tiny finetune through the CLI
+demo: | $(SHADOWLM)  ## end-to-end smoke: a tiny finetune through the CLI
 	$(SHADOWLM) finetune examples/sample_dataset.jsonl \
 	  --model mlx-community/Qwen2.5-0.5B-Instruct-4bit --method lora --max-steps 8
 
 # ---- checks -----------------------------------------------------------------
 .PHONY: check
-check:  ## compile the package + typecheck the frontend
+check: | $(PY)  ## compile the package + typecheck the frontend
 	$(PY) -m compileall -q shadowlm
 	cd frontend && npx tsc -b
 
@@ -68,7 +80,7 @@ test: $(PY)  ## the CPU test suite (what CI runs; tests/gpu needs a GPU box)
 	$(PY) -m pytest tests/ --ignore=tests/gpu -q
 
 .PHONY: gpu-test
-gpu-test:  ## the CUDA verification suite (run on a GPU box)
+gpu-test: | $(PY)  ## the CUDA verification suite (run on a GPU box)
 	$(PY) tests/gpu/test_cuda.py
 
 # ---- gpu (cloud demo box) ---------------------------------------------------

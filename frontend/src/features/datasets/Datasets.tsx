@@ -1,12 +1,13 @@
 // Dataset library — upload JSONL, or reference a HuggingFace dataset (with a
 // streamed preview before you add it). Both become trainable by reference.
 import { useEffect, useRef, useState } from "react";
-import { ChevronDown, ChevronRight, Database, FileJson, LoaderCircle, Radio, Search, Trash2, Upload } from "lucide-react";
+import { ChevronDown, ChevronRight, Database, FileJson, LoaderCircle, Radio, Search, Sparkles, Trash2, Upload } from "lucide-react";
 import {
-  addHFDataset, captureToDataset, createDataset, deleteCapture, deleteDataset, getCaptures, getDataset,
-  getDatasets, hfInfo, importTraces, previewHF,
+  addHFDataset, cancelSynth, captureToDataset, createDataset, deleteCapture, deleteDataset, getCaptures, getDataset,
+  getDatasets, getMethods, getSynthRun, hfInfo, importTraces, previewHF, startSynth,
 } from "@/api";
-import type { CaptureInfo, DatasetMeta, HFPreview } from "@/api";
+import type { CaptureInfo, DatasetMeta, HFPreview, MethodInfo, SynthStatus } from "@/api";
+import { useFrontier } from "@/components/frontier-settings";
 import { ConfirmDelete, EmptyState, Field, Mono, PageHeader, SectionHeader } from "@/components/common";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -43,7 +44,7 @@ export default function Datasets() {
   const [list, setList] = useState<DatasetMeta[]>([]);
   const [search, setSearch] = useState("");
   const [view, setView] = useState<"mine" | "explore">("mine");
-  const [tab, setTab] = useState<"none" | "upload" | "hf" | "traces">("none");
+  const [tab, setTab] = useState<"none" | "upload" | "hf" | "traces" | "synth">("none");
   const [captures, setCaptures] = useState<CaptureInfo[]>([]);
   const [rowPreview, setRowPreview] = useState<PreviewState | null>(null);
   const [previewing, setPreviewing] = useState<string | null>(null);
@@ -87,9 +88,12 @@ export default function Datasets() {
     <>
       <PageHeader
         title="Datasets"
-        description="Upload JSONL, or reference a Hugging Face dataset. Chat, instruction, preference, or raw text — the format is auto-detected."
+        description="Upload JSONL, reference a Hugging Face dataset, or synthesize one from a task description. Chat, instruction, preference, or raw text — the format is auto-detected."
         actions={allows("operator") && (
           <>
+            <Button variant="outline" onClick={() => setTab("synth")}>
+              <Sparkles /> Synthesize
+            </Button>
             <Button variant="outline" onClick={() => setTab("traces")}>
               <FileJson /> Import traces
             </Button>
@@ -122,6 +126,19 @@ export default function Datasets() {
           <HFForm onDone={() => { setTab("none"); refresh(); }} />
         </DialogContent>
       </Dialog>
+      <Dialog open={tab === "synth"} onOpenChange={(o) => !o && setTab("none")}>
+        <DialogContent className="sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Synthesize a dataset</DialogTitle>
+            <DialogDescription>
+              A teacher model writes training data from a task description, optionally grounded in a document.
+              It runs on the server; the result lands here like any other dataset.
+            </DialogDescription>
+          </DialogHeader>
+          <SynthForm onDone={() => { setTab("none"); refresh(); }} />
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={tab === "traces"} onOpenChange={(o) => !o && setTab("none")}>
         <DialogContent className="sm:max-w-xl">
           <DialogHeader>
@@ -590,5 +607,165 @@ function Meta({ label, value }: { label: string; value: React.ReactNode }) {
       <span className="w-20 shrink-0 text-muted-foreground">{label}</span>
       <span className="min-w-0 truncate font-mono text-foreground/90">{value}</span>
     </div>
+  );
+}
+
+// ---- synthesize: make a dataset instead of bringing one --------------------------
+// A teacher model writes the data from a task description (optionally grounded
+// in a document). The run happens on the server; this polls it and lands the
+// result in the library. The frontier model saved in settings is the default
+// teacher, so its key never has to be pasted again.
+function SynthForm({ onDone }: { onDone: () => void }) {
+  const { frontier } = useFrontier();
+  const [name, setName] = useState("");
+  const [task, setTask] = useState("");
+  const [doc, setDoc] = useState("");
+  const [rows, setRows] = useState("100");
+  const [method, setMethod] = useState("lora");
+  const [minScore, setMinScore] = useState("0.6");
+  const [kind, setKind] = useState<"frontier" | "openai" | "local">("openai");
+  const [model, setModel] = useState("gpt-4o");
+  const [baseUrl, setBaseUrl] = useState("");
+  const [key, setKey] = useState("");
+  const [methods, setMethods] = useState<MethodInfo[]>([]);
+  const [run, setRun] = useState<SynthStatus | null>(null);
+  const [cancelling, setCancelling] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  useEffect(() => { getMethods().then((m) => setMethods(m.methods)).catch(() => {}); }, []);
+  useEffect(() => { if (frontier) setKind((k) => (k === "openai" ? "frontier" : k)); }, [frontier]);
+
+  useEffect(() => {
+    if (run?.status !== "running") return;
+    const timer = setInterval(() => { getSynthRun(run.synth_id).then(setRun).catch(() => {}); }, 1000);
+    return () => clearInterval(timer);
+  }, [run?.synth_id, run?.status]);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setErr("");
+    const n = Number(rows), min = Number(minScore);
+    if (!task.trim() && !doc.trim()) return setErr("Describe the task, or paste a document to ground it in.");
+    if (!Number.isInteger(n) || n < 1) return setErr("Rows must be a whole number of 1 or more.");
+    if (!(min >= 0 && min <= 1)) return setErr("Min score is between 0 and 1 (0 turns the judge gate off).");
+    setBusy(true);
+    try {
+      const teacher = kind === "frontier" ? { kind: "frontier" as const, model: frontier?.model ?? "" }
+        : { kind, model, base_url: baseUrl || undefined, api_key: key || undefined };
+      const { synth_id } = await startSynth({
+        name: name.trim(), n, method, min_score: min,
+        task: task.trim() || undefined, document: doc.trim() || undefined,
+        teacher,
+      });
+      setRun({ synth_id, name, status: "running", kept: 0, requested: n });
+    } catch (ex) {
+      setErr((ex as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (run) {
+    // a batch in flight has no kept rows yet: follow the live phase counter
+    const live = run.status === "running" && !!run.total;
+    const pct = live
+      ? Math.round((100 * (run.done ?? 0)) / Math.max(1, run.total!))
+      : Math.round((100 * run.kept) / Math.max(1, run.requested));
+    const phases: Record<string, string> = {
+      starting: "Starting", planning: "Planning scenarios", generating: "Generating", judging: "Judging", kept: "Collecting",
+    };
+    const planning = run.phase === "planning" && live;
+    return (
+      <div className="grid gap-3">
+        <div className="flex items-center justify-between gap-3 text-sm">
+          <span className="font-medium">
+            {run.status === "running" ? phases[run.phase ?? "starting"] ?? run.phase
+              : run.status === "succeeded" ? "Done" : run.status === "stopped" ? "Stopped" : "Failed"}
+            {live && run.phase !== "planning" && <span className="text-muted-foreground tabular-nums"> · {run.done}/{run.total}</span>}
+          </span>
+          <span className="text-xs text-muted-foreground tabular-nums">
+            {run.kept} of {run.requested} rows kept{run.tokens ? ` · ${run.tokens.toLocaleString()} tokens` : ""}
+          </span>
+        </div>
+        <div className="h-1.5 overflow-hidden rounded-full bg-surface-2" role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100}>
+          <div className={cn("h-full rounded-full bg-primary transition-all duration-300", planning && "motion-safe:animate-pulse")}
+               style={{ width: `${planning ? 100 : pct}%` }} />
+        </div>
+        {run.error && <p className="text-sm text-destructive">{run.error}</p>}
+        {!!run.logs?.length && (
+          <pre className="max-h-56 overflow-auto bg-surface p-3 font-mono text-[11px] whitespace-pre-wrap scrollbar-thin">{run.logs.join("\n")}</pre>
+        )}
+        <div className="flex justify-end">
+          {run.status === "running" ? (
+            // stopping keeps the rows already generated, so this is safe to offer
+            <Button variant="outline" disabled={cancelling}
+                    onClick={() => { setCancelling(true); cancelSynth(run.synth_id).catch(() => {}); }}>
+              {cancelling && <LoaderCircle className="animate-spin" />} {cancelling ? "Stopping…" : "Stop and keep what's done"}
+            </Button>
+          ) : (
+            <Button onClick={onDone}>Done</Button>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <form onSubmit={submit} className="grid gap-3">
+      <Field label="Name" htmlFor="sy-name">
+        <Input id="sy-name" placeholder="billing-triage-synth" value={name} onChange={(e) => setName(e.target.value)} />
+      </Field>
+      <Field label="Task" htmlFor="sy-task" hint="What the model should learn, in plain English.">
+        <Textarea id="sy-task" rows={3} value={task} onChange={(e) => setTask(e.target.value)}
+          placeholder="Triage customer billing emails: classify urgency, draft a reply, escalate refunds over $200." />
+      </Field>
+      <Field label="Ground it in a document" htmlFor="sy-doc" hint="Optional: answers must be supported by this text.">
+        <Textarea id="sy-doc" rows={3} value={doc} onChange={(e) => setDoc(e.target.value)} placeholder="Paste reference material here" />
+      </Field>
+      <div className="grid gap-3 sm:grid-cols-3">
+        <Field label="Rows" htmlFor="sy-rows">
+          <Input id="sy-rows" type="number" min={1} value={rows} onChange={(e) => setRows(e.target.value)} />
+        </Field>
+        <Field label="For method" htmlFor="sy-method" hint="Picks the output shape.">
+          <select id="sy-method" value={method} onChange={(e) => setMethod(e.target.value)}>
+            {(methods.length ? methods.map((m) => m.name) : ["lora"]).map((m) => <option key={m} value={m}>{m}</option>)}
+          </select>
+        </Field>
+        <Field label="Min score" htmlFor="sy-min" hint="The judge's gate; 0 turns it off.">
+          <Input id="sy-min" type="number" min={0} max={1} step={0.1} value={minScore} onChange={(e) => setMinScore(e.target.value)} />
+        </Field>
+      </div>
+      <Field label="Teacher" htmlFor="sy-kind" hint="Who writes the data.">
+        <select id="sy-kind" value={kind} onChange={(e) => setKind(e.target.value as typeof kind)}>
+          {frontier && <option value="frontier">Your frontier model · {frontier.model}</option>}
+          <option value="openai">Another OpenAI-compatible API</option>
+          <option value="local">A model on this machine</option>
+        </select>
+      </Field>
+      {kind !== "frontier" && (
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="Model" htmlFor="sy-model">
+            <Input id="sy-model" placeholder={kind === "local" ? "Qwen/Qwen2.5-7B-Instruct" : "gpt-4o"} value={model} onChange={(e) => setModel(e.target.value)} />
+          </Field>
+          {kind === "openai" && (
+            <Field label="Base URL" htmlFor="sy-url" hint="Blank uses api.openai.com.">
+              <Input id="sy-url" placeholder="https://api.openai.com/v1" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} />
+            </Field>
+          )}
+        </div>
+      )}
+      {kind === "openai" && (
+        <Field label="API key" htmlFor="sy-key" hint="Used for this run only, never stored.">
+          <Input id="sy-key" type="password" autoComplete="off" placeholder="sk-…" value={key} onChange={(e) => setKey(e.target.value)} />
+        </Field>
+      )}
+      {err && <p className="text-sm text-destructive">{err}</p>}
+      <div className="flex justify-end">
+        <Button type="submit" disabled={busy}>
+          {busy ? <LoaderCircle className="animate-spin" /> : <Sparkles />} Synthesize
+        </Button>
+      </div>
+    </form>
   );
 }

@@ -87,20 +87,56 @@ touches one file and no others.
 
 ### The shadowing / agent-tuning loop
 
+There are four ways data gets in, and they all end at a `Trajectory`:
+`capture.py` (live), `traces.py` (already ran), `synth/` (doesn't exist yet), and
+`Dataset.from_*` (you have a file).
+
 - `capture.py` — `slm.capture(model)` is a drop-in OpenAI-compatible proxy that
   records an unmodified agent's traffic, reconstructing message-level
   trajectories (calls that extend a prior call's message prefix merge into one
   episode; use an `x-session-id` header to disambiguate interleaved conversations).
 - `traces.py` — the offline sibling of `capture.py`: ingests OpenTelemetry GenAI
-  spans (OTLP JSON, event/spec/OpenInference/raw-wire shapes), groups them into
-  conversations, and `to_dataset()`s them. For agents already instrumented —
-  no proxy in the path.
+  spans, groups them into conversations, and `to_dataset()`s them. Four dialects
+  are read (OTel spec `{role,parts}`, OpenInference, indexed OpenLLMetry,
+  OpenAI-wire blobs). For agents already instrumented — no proxy in the path.
 - `rl.py` — `Trajectory` / `TrajectoryGroup` / `judge_group` (LLM-judge scoring),
   fed into `method="grpo"`.
 - `apo.py` — `optimize_prompt()`: optimize the prompt instead of weights, same
   capture/judge front end, no GPU.
 - `eval.py` — `slm.evaluate()` / `shadowlm eval`: score a model on a held-out set
   (exact / contains / numeric / JSON / LLM-judge scorers).
+
+### The synthesizer (`synth/`)
+
+The fourth inlet — for traffic that doesn't exist yet (cold start, amplifying a
+handful of episodes, covering cases production never hit). Two orthogonal axes
+again, mirroring backends × methods:
+
+- **seeds** (`seeds.py`) — where scenarios come from: a plain-English `task`, a
+  `document` (chunked, facts extracted, answers judged against the passage), or
+  real `episodes` to vary. Any seed composes with any mode.
+- **modes** (`generate.py`) — what gets written per scenario: a `conversation`,
+  a `preference` pair, or `paraphrases`. Generation is always **taxonomy first,
+  instances second** — that structure, not prompt wording, is what stops mode
+  collapse.
+
+Everything converges on `Trajectory` (the same type capture and traces produce),
+then `emit.py` renders it into the shape the consumer takes. **Output shape is
+chosen from the method's spec, never its name** (`resolve_output`). `to_otlp` is
+the exact inverse of `traces._spec_message` — change one and you must change the
+other; `tests/test_synth_otlp_roundtrip.py` is what holds them together.
+
+`quality.py` validates (the "must end on an assistant turn" rule is load-bearing
+— see `torch.py:_train_dataset`), deduplicates, and gates on a judge score.
+Nothing is dropped silently: `SynthReport` reconciles exactly, and
+`report.balanced` asserts it.
+
+A run costs money, so it is meterable and stoppable. Tokens come from the
+provider's own `usage` block — never estimated, and there is deliberately no
+price table to go stale. `token_budget=` and `should_stop=` end a run early
+while **keeping** what it produced; both gate *generation* only, because
+leaving already-generated rows unscored fails them at the gate and wastes the
+whole spend. Studio runs persist under `work_root/synth/` and are cancellable.
 
 ### Signature methods (MoRE)
 

@@ -195,3 +195,17 @@ def test_deployment_serves_a_finetune_on_its_own_key(studio):
     assert listed["requests"] == 1 and "key_hash" not in listed
     assert _call(port, "DELETE", f"/v1/deployments/{dep['deployment_id']}")[0] == 200
     assert _call(port, "GET", "/openai/v1/models", headers=auth)[0] == 401  # revoked
+
+
+def test_synth_can_use_the_saved_frontier_model_as_teacher(studio, frontier):
+    """kind "frontier" teaches with the model and key saved in settings; with
+    none saved, the run fails saying so instead of calling anything."""
+    server, port = studio
+    started = server.start_synth({"name": "t", "n": 1, "task": "say hi", "teacher": {"kind": "frontier"}})
+    sid = started["synth_id"] if isinstance(started, dict) else started
+    for _ in range(250):
+        st = server._synth[sid]
+        if st["status"] != "running":
+            break
+        time.sleep(0.02)
+    assert st["status"] == "failed" and "frontier model" in (st.get("error") or "")
