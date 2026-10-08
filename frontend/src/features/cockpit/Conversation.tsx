@@ -6,7 +6,7 @@
 // linked to it both ways (hover highlights it, the rail scrolls the thread).
 import { useQueryClient } from "@tanstack/react-query";
 import {
-  ArrowLeft, ArrowRight, ArrowUp, ChevronDown, LoaderCircle, MessagesSquare, Pencil, Play, Rocket, TriangleAlert,
+  ArrowLeft, ArrowRight, ArrowUp, ChevronDown, LoaderCircle, MessagesSquare, Pencil, Play, Rocket, Sparkles, TriangleAlert,
 } from "lucide-react";
 import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 
@@ -15,9 +15,9 @@ import { FrontierDialog, useFrontier } from "@/components/frontier-settings";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { allows, needs } from "@/lib/embed";
-import { breakable, methodLabel, modelParts } from "@/lib/format";
+import { breakable, examples, methodLabel, modelParts } from "@/lib/format";
 import { useMode } from "@/lib/mode";
-import { goalLabel, type Recipe } from "@/lib/recipe";
+import { goalLabel, RECIPE_METHODS, type Recipe, withMethod } from "@/lib/recipe";
 import { cn } from "@/lib/utils";
 
 import { type CockpitActions, type Loop, useCockpitLink } from "./Cockpit";
@@ -63,7 +63,16 @@ export function Conversation({ loop, actions }: { loop: Loop; actions: CockpitAc
   useEffect(() => { setLog(readLog(pid)); }, [pid]);
 
   const derived = narrate(loop);
-  const messages: Typed[] = useMemo(() => [...derived, ...log], [derived, log]);
+  // the narration's pending decision stays at the bottom of the thread, under
+  // any chat since, unless the latest typed reply is itself an open proposal
+  const messages: Typed[] = useMemo(() => {
+    const last = derived.at(-1);
+    const typedLast = log.at(-1);
+    const typedOpen = !!typedLast?.proposal && !typedLast.spent;
+    return last?.proposal && log.length && !typedOpen
+      ? [...derived.slice(0, -1), ...log, last]
+      : [...derived, ...log];
+  }, [derived, log]);
   const liveIndex = messages.findLastIndex((m) => m.proposal && !m.spent);
 
   // new messages rise in; ones present on first paint don't
@@ -236,6 +245,7 @@ const proposalTitle: Record<Proposal["kind"], string> = {
   deploy: "Deploy",
   "add-frontier": "Frontier model",
   playground: "Playground",
+  synthesize: "Write more examples",
 };
 
 // An earlier proposal: what was offered, without buttons.
@@ -244,7 +254,8 @@ function SpentProposal({ proposal }: { proposal: Proposal }) {
     proposal.kind === "finetune" ? `Version ${proposal.version}: ${proposal.recipe.method} on ${proposal.recipe.base_model.split("/").pop()}, ${proposal.recipe.config.max_steps} steps` :
     proposal.kind === "evaluate" ? (proposal.withFrontier ? "Against the base and frontier models" : "Against the base model") :
     proposal.kind === "deploy" ? "Deploy behind an OpenAI-compatible endpoint" :
-    proposal.kind === "add-frontier" ? "Add a frontier model" : "Try it in the Playground";
+    proposal.kind === "add-frontier" ? "Add a frontier model" :
+    proposal.kind === "synthesize" ? `${proposal.n} more examples, written by the frontier model` : "Try it in the Playground";
   return (
     <p className="border border-dashed border-border px-3 py-2 text-xs text-muted-foreground">
       Proposed · {proposalTitle[proposal.kind]}: {what}
@@ -320,6 +331,14 @@ function ActionCard({ proposal, loop, actions, onRan }: {
         </>
       )}
       {proposal.kind === "add-frontier" && <FrontierBody />}
+      {proposal.kind === "synthesize" && (
+        <SynthesizeBody proposal={proposal} loop={loop} actions={actions} operator={operator}
+          onStart={async (n) => {
+            await actions.run({ kind: "synthesize", n });
+            onRan();
+            link.select("data");
+          }} />
+      )}
       {proposal.kind === "playground" && (
         <CardActions operator>
           <Button variant="outline" onClick={() => toPlayground(loop)} disabled={!loop.project?.run_id || !loop.job}>
@@ -351,9 +370,14 @@ function FinetuneBody({ proposal, loop, actions, operator, onStart }: {
   const [editing, setEditing] = useState(false);
   const [steps, setSteps] = useState(String(r.config.max_steps ?? ""));
   const [base, setBase] = useState(r.base_model);
+  const [method, setMethod] = useState(r.method);
   const stepsN = Number(steps);
   const valid = Number.isInteger(stepsN) && stepsN >= 1 && stepsN <= 100_000 && base.trim().length > 0;
-  const recipe = valid ? withEdits(r, stepsN, base.trim()) : r;
+  const chosen = withMethod(r, method);
+  const recipe = valid ? withEdits(chosen, stepsN, base.trim()) : chosen;
+  // the methods offered here train on plain examples; a recipe's own (from a
+  // typed request) stays offered even if it isn't one of them
+  const methods = RECIPE_METHODS.some((m) => m.id === r.method) ? RECIPE_METHODS : [{ id: r.method, why: "" }, ...RECIPE_METHODS];
   const busy = actions.busy !== null;
   void loop;
 
@@ -372,13 +396,19 @@ function FinetuneBody({ proposal, loop, actions, operator, onStart }: {
           <div key={k} className="contents"><dt className="font-mono text-xs text-muted-foreground">{k}</dt><dd className="font-mono text-xs">{String(v)}</dd></div>
         ))}
       </dl>
-      {r.why.length > 0 && (
+      {recipe.why.length > 0 && (
         <ul className="mt-2.5 space-y-0.5 text-sm text-muted-foreground">
-          {r.why.map((w) => <li key={w} className="flex gap-2"><span aria-hidden>·</span><span>{w}</span></li>)}
+          {recipe.why.map((w) => <li key={w} className="flex gap-2"><span aria-hidden>·</span><span>{w}</span></li>)}
         </ul>
       )}
       {editing && (
         <div className="mt-3 grid gap-2 @md:grid-cols-[8rem_1fr]">
+          <label className="grid gap-1 text-xs text-muted-foreground @md:col-span-2">
+            Method
+            <select value={method} onChange={(e) => setMethod(e.target.value)}>
+              {methods.map((m) => <option key={m.id} value={m.id}>{methodLabel(m.id)}{m.why ? ` — ${m.why.split(": ")[1]}` : ""}</option>)}
+            </select>
+          </label>
           <label className="grid gap-1 text-xs text-muted-foreground">
             Steps
             <Input type="number" min={1} value={steps} onChange={(e) => setSteps(e.target.value)} className="tabular-nums" />
@@ -402,6 +432,36 @@ function FinetuneBody({ proposal, loop, actions, operator, onStart }: {
         </Button>
         <Button variant="ghost" disabled={busy} onClick={() => setEditing((e) => !e)} aria-expanded={editing}>
           <Pencil /> {editing ? "Done editing" : "Edit"}
+        </Button>
+      </CardActions>
+    </>
+  );
+}
+
+function SynthesizeBody({ proposal, loop, actions, operator, onStart }: {
+  proposal: Extract<Proposal, { kind: "synthesize" }>; loop: Loop; actions: CockpitActions;
+  operator: boolean; onStart: (n: number) => void;
+}) {
+  const [n, setN] = useState(String(proposal.n));
+  const nN = Number(n);
+  const valid = Number.isInteger(nN) && nN >= 1 && nN <= 1000;
+  const rows = loop.dataset?.rows ?? 0;
+  const teacher = loop.frontier?.model;
+  return (
+    <>
+      <dl className="mt-2 grid grid-cols-[auto_1fr] items-center gap-x-4 gap-y-1 text-sm">
+        <dt className="text-muted-foreground">Written by</dt>
+        <dd className="min-w-0 truncate font-mono text-xs" title={teacher}>{teacher ?? "no frontier model yet"}</dd>
+        <dt className="text-muted-foreground">New examples</dt>
+        <dd><Input type="number" min={1} max={1000} value={n} onChange={(e) => setN(e.target.value)}
+                   aria-label="New examples" className="h-7 w-20 tabular-nums" /></dd>
+        <dt className="text-muted-foreground">Keeps</dt><dd>Your {examples(rows)}, unchanged</dd>
+        <dt className="text-muted-foreground">Checked by</dt><dd>{teacher ?? "The frontier model"} scoring each one; weak ones are dropped</dd>
+      </dl>
+      {!valid && <p className="mt-2 text-xs text-destructive">Ask for 1 to 1,000 examples.</p>}
+      <CardActions operator={operator}>
+        <Button disabled={actions.busy !== null || !valid || !teacher} onClick={() => onStart(nN)}>
+          {actions.busy === "synthesize" ? <LoaderCircle className="animate-spin" /> : <Sparkles />} Write {valid ? nN : ""} examples
         </Button>
       </CardActions>
     </>

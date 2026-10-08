@@ -1,12 +1,13 @@
 // The examples a model learns from, every way they come in: written as a
 // question/answer table, uploaded as JSONL, picked from the server's datasets,
 // captured from an agent's live traffic to its frontier model, or imported
-// from its OpenTelemetry traces. Which ways lead depends on the goal (an agent
+// from its OpenTelemetry traces, or generated: the frontier model writes them
+// from a description of the task or a document. Which ways lead depends on the goal (an agent
 // takeover leads with capture). The parent hears one normalized value: rows
 // to save, or a dataset already on the server.
 import {
   ArrowRightLeft, BookOpen, Cable, Check, ChevronDown, Copy, Database, FileJson,
-  FileUp, ListChecks, LoaderCircle, PencilLine, Plus, Radio, Square, Trash2, TriangleAlert,
+  FileUp, ListChecks, LoaderCircle, PencilLine, Plus, Radio, Sparkles, Square, Trash2, TriangleAlert,
 } from "lucide-react";
 import { type ChangeEvent, type KeyboardEvent, useEffect, useRef, useState } from "react";
 
@@ -18,10 +19,11 @@ import { EmptyState, Mono } from "@/components/common";
 import { FrontierForm, useFrontier } from "@/components/frontier-settings";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 
 export interface Pair { q: string; a: string }
-export type Source = "write" | "upload" | "existing" | "agent" | "traces";
+export type Source = "write" | "upload" | "existing" | "agent" | "traces" | "generate";
 
 // The ways in, per goal: an agent's traffic and its traces lead for a takeover,
 // and stay on offer for a task; knowledge is written down.
@@ -31,11 +33,12 @@ const sourceTabs: Record<Source, { icon: typeof PencilLine; label: string }> = {
   write: { icon: PencilLine, label: "Write them" },
   upload: { icon: FileUp, label: "Upload a file" },
   existing: { icon: Database, label: "Use a dataset" },
+  generate: { icon: Sparkles, label: "Generate them" },
 };
 export const sourcesFor = (g: ProjectGoal | null): Source[] =>
-  g === "takeover" ? ["agent", "traces", "write", "upload", "existing"]
-    : g === "task" ? ["write", "upload", "existing", "agent", "traces"]
-    : ["write", "upload", "existing"];
+  g === "takeover" ? ["agent", "traces", "write", "upload", "existing", "generate"]
+    : g === "task" ? ["write", "upload", "generate", "existing", "agent", "traces"]
+    : ["write", "generate", "upload", "existing"];
 const fewConversations = 20;
 
 export const goals: { goal: ProjectGoal; icon: typeof BookOpen; title: string; body: string }[] = [
@@ -94,6 +97,8 @@ export interface ExamplesValue {
   dataset: DatasetMeta | null;  // or a dataset already on the server
   fileName: string;             // the uploaded file's name, for a suggested name
   count: number;
+  // or none yet: the frontier model writes `n` of them from a description
+  generate: { task: string; document: string; n: number; teacher: string } | null;
 }
 
 // ExamplesInput collects the examples; `name` names a capture or a saved
@@ -110,6 +115,8 @@ export function ExamplesInput({ goal, name, onChange }: {
   const [existing, setExisting] = useState<DatasetMeta | null>(null);
   const [agentDs, setAgentDs] = useState<DatasetMeta | null>(null);
   const [tracesDs, setTracesDs] = useState<DatasetMeta | null>(null);
+  const [gen, setGen] = useState({ task: "", document: "", n: goal === "knowledge" ? "40" : "100" });
+  const { frontier } = useFrontier();
   const tableRef = useRef<HTMLTableSectionElement>(null);
   const l = labels(goal);
 
@@ -122,12 +129,16 @@ export function ExamplesInput({ goal, name, onChange }: {
   const pairs = source === "write" ? filled(written) : source === "upload" ? uploaded : [];
   const chosen = source === "existing" ? existing : source === "agent" ? agentDs : source === "traces" ? tracesDs : null;
   const fromDataset = source === "existing" || source === "agent" || source === "traces";
-  const count = fromDataset ? (chosen?.rows ?? 0) : pairs.length;
+  const genN = Number(gen.n);
+  const generate = source === "generate" && frontier && (gen.task.trim() || gen.document.trim())
+    && Number.isInteger(genN) && genN >= 1 && genN <= 1000
+    ? { task: gen.task.trim(), document: gen.document.trim(), n: genN, teacher: frontier.model } : null;
+  const count = source === "generate" ? (generate?.n ?? 0) : fromDataset ? (chosen?.rows ?? 0) : pairs.length;
 
   useEffect(() => {
-    onChange({ source, pairs, dataset: fromDataset ? chosen : null, fileName: source === "upload" ? fileName : "", count });
+    onChange({ source, pairs, dataset: fromDataset ? chosen : null, fileName: source === "upload" ? fileName : "", count, generate });
     // pairs is derived each render; its content is what matters
-  }, [source, JSON.stringify(pairs), chosen?.dataset_id, fileName, count]);  // eslint-disable-line react-hooks/exhaustive-deps
+  }, [source, JSON.stringify(pairs), chosen?.dataset_id, fileName, count, JSON.stringify(generate)]);  // eslint-disable-line react-hooks/exhaustive-deps
 
   async function onFile(e: ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0];
@@ -264,8 +275,11 @@ export function ExamplesInput({ goal, name, onChange }: {
 
       {source === "agent" && <AgentSource name={name} saved={agentDs} onSaved={setAgentDs} />}
       {source === "traces" && <TracesSource saved={tracesDs} onSaved={setTracesDs} />}
+      {source === "generate" && <GenerateSource goal={goal} value={gen} onChange={setGen} />}
 
-      <Counter count={count} goal={goal} enough={count >= minimum[goal]} noun={l.noun} />
+      {source === "generate"
+        ? generate && <p className="mt-3 flex items-center gap-1.5 text-sm text-muted-foreground"><Sparkles className="size-3.5 text-primary" />Up to {generate.n} {l.noun}, written and checked by {generate.teacher}</p>
+        : <Counter count={count} goal={goal} enough={count >= minimum[goal]} noun={l.noun} />}
     </div>
   );
 }
@@ -537,6 +551,58 @@ function TracesSource({ saved, onSaved }: { saved: DatasetMeta | null; onSaved: 
           <Check className="size-3.5 text-good" />{saved.rows ?? 0} conversations imported as the dataset “{saved.name}”
         </p>
       )}
+    </div>
+  );
+}
+
+// GenerateSource: no examples yet. The frontier model writes them from what the
+// model should do, grounded in a document when there is one (for knowledge,
+// the document is the point: every answer must be supported by it). They're
+// written after the project is made, and its cockpit shows them arriving.
+function GenerateSource({ goal, value, onChange }: {
+  goal: ProjectGoal; value: { task: string; document: string; n: string };
+  onChange: (v: { task: string; document: string; n: string }) => void;
+}) {
+  const { frontier, refresh } = useFrontier();
+  const l = labels(goal);
+  const set = (k: keyof typeof value) => (e: ChangeEvent<HTMLTextAreaElement | HTMLInputElement>) => onChange({ ...value, [k]: e.target.value });
+  if (!frontier) {
+    return (
+      <div className="mt-4 space-y-3">
+        <p className="text-sm text-muted-foreground">
+          Your frontier model writes the {l.noun}, then scores each one and drops the weak ones. Add it first:
+          any OpenAI-compatible model, by base URL, model name and key. The key stays on the server.
+        </p>
+        <FrontierForm current={null} compact onSaved={() => refresh()} />
+      </div>
+    );
+  }
+  const docFirst = goal === "knowledge";
+  const task = (
+    <label key="task" className="grid gap-1.5 text-sm font-medium">
+      What it should do{docFirst && <span className="font-normal text-muted-foreground"> (optional)</span>}
+      <Textarea rows={3} value={value.task} onChange={set("task")} className="font-normal"
+        placeholder={goal === "knowledge" ? "Answer customer questions about our product, briefly." : "Triage support emails: label the urgency and draft a short reply."} />
+    </label>
+  );
+  const doc = (
+    <label key="doc" className="grid gap-1.5 text-sm font-medium">
+      {docFirst ? "The source" : "A document to ground it in"}
+      {!docFirst && <span className="-mt-1 text-xs font-normal text-muted-foreground">Optional. Answers must be supported by it.</span>}
+      {docFirst && <span className="-mt-1 text-xs font-normal text-muted-foreground">An FAQ, handbook or policy. Every answer must be supported by it.</span>}
+      <Textarea rows={docFirst ? 7 : 4} value={value.document} onChange={set("document")} className="font-normal" placeholder="Paste the text here" />
+    </label>
+  );
+  return (
+    <div className="mt-4 space-y-3">
+      {docFirst ? [doc, task] : [task, doc]}
+      <div className="flex flex-wrap items-end gap-3">
+        <label className="grid gap-1.5 text-sm font-medium">
+          How many
+          <Input type="number" min={1} max={1000} value={value.n} onChange={set("n")} className="w-24 font-normal tabular-nums" />
+        </label>
+        <p className="pb-2 text-xs text-muted-foreground">Written by <Mono>{frontier.model}</Mono> after you create the model; you'll see them arrive.</p>
+      </div>
     </div>
   );
 }

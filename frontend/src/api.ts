@@ -223,6 +223,8 @@ export interface SynthRequest {
   task?: string;
   document?: string;
   dataset_id?: string;
+  include_seed?: boolean;  // the saved dataset also carries the dataset_id rows it was written from
+  project_id?: string;     // shows on that project while it writes; the result becomes its data
   // "frontier": the frontier model saved in settings (its stored key)
   teacher: { kind: "openai" | "local" | "frontier"; model: string; base_url?: string; api_key?: string };
 }
@@ -336,6 +338,8 @@ export interface Project {
   dataset_id: string | null;
   run_id: string | null;
   eval_id: string | null;
+  synth_id?: string | null;  // examples being written for it (the synthesizer)
+  run_dataset_id?: string | null;  // what the current version trained on
   // earlier versions, oldest first: each fine-tune this project replaced
   history: { run_id: string; eval_id: string | null; dataset_id: string | null; replaced: number }[];
   created: number;
@@ -345,7 +349,7 @@ export const getProjects = () => api<{ projects: Project[] }>("/v1/projects");
 export const getProject = (id: string) => api<Project>(`/v1/projects/${id}`);
 export const createProject = (name: string, goal: ProjectGoal) =>
   api<Project>("/v1/projects", { method: "POST", body: JSON.stringify({ name, goal }) });
-export const updateProject = (id: string, patch: Partial<Pick<Project, "name" | "dataset_id" | "run_id" | "eval_id">>) =>
+export const updateProject = (id: string, patch: Partial<Pick<Project, "name" | "dataset_id" | "run_id" | "eval_id" | "synth_id">>) =>
   api<Project>(`/v1/projects/${id}`, { method: "PATCH", body: JSON.stringify(patch) });
 export const deleteProject = (id: string) =>
   api<{ ok: boolean }>(`/v1/projects/${id}`, { method: "DELETE" });

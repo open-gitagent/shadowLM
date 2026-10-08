@@ -34,7 +34,8 @@ export function pickRecipe(goal: ProjectGoal, rows: number, health: Health | nul
     return finish(base.model, "more", { method: "more", max_steps: steps }, null, [
       "MoRE: each fact becomes a retrieval expert, so answers come back exactly as written",
       base.why,
-      `All ${rows} examples train, and the evaluation asks those same questions: does it know them?`,
+      rows === 1 ? "The example trains, and the evaluation asks its question: does it know it?"
+        : `All ${rows} examples train, and the evaluation asks those same questions: does it know them?`,
       `${steps} steps`,
     ]);
   }
@@ -45,7 +46,7 @@ export function pickRecipe(goal: ProjectGoal, rows: number, health: Health | nul
     base.why,
     holdout
       ? "10% of your examples are held back, so the evaluation tests questions it never saw"
-      : `All ${rows} examples train; with fewer than 50, holding some back would leave too little to learn from`,
+      : `${rows === 1 ? "The one example trains" : `All ${rows} examples train`}; with fewer than 50, holding some back would leave too little to learn from`,
     `${steps} steps`,
   ]);
 }
@@ -60,6 +61,24 @@ function finish(base_model: string, method: string, config: Record<string, unkno
     ...(eval_dataset ? [`  --eval ${eval_dataset}`] : []),
   ].join("\n");
   return { base_model, method, config, eval_dataset, why, cli };
+}
+
+// The same recipe with another method, its reason said in the first line. The
+// cockpit offers the methods that train on plain examples; the rest stay in
+// Research mode's Train page.
+export const RECIPE_METHODS: { id: string; why: string }[] = [
+  { id: "lora", why: "LoRA: learns the task's pattern from your examples without retraining the whole model" },
+  { id: "sdft", why: "SDFT: learns from your examples on its own samples, so it keeps more of its general skills" },
+  { id: "more", why: "MoRE: each fact becomes a retrieval expert, so answers come back exactly as written" },
+];
+export function withMethod(r: Recipe, method: string): Recipe {
+  if (method === r.method) return r;
+  const why = RECIPE_METHODS.find((m) => m.id === method)?.why ?? method;
+  return {
+    ...r, method, config: { ...r.config, method },
+    why: [why, ...r.why.filter((w) => !RECIPE_METHODS.some((m) => w === m.why) && !/^(LoRA|SDFT|MoRE):/.test(w))],
+    cli: r.cli.replace(/--method \S+/, `--method ${method}`),
+  };
 }
 
 // Start the project's fine-tune and link the run (and its data) to it.

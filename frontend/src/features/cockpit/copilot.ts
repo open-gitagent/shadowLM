@@ -6,17 +6,18 @@
 // steps", "deploy", "how's it going". Every proposal shows what it will run.
 import { verdict } from "@/components/scorecard";
 import type { Recipe } from "@/lib/recipe";
-import { methodLabel } from "@/lib/format";
-import { goalLabel } from "@/lib/recipe";
+import { examples, methodLabel } from "@/lib/format";
+import { goalLabel, withMethod } from "@/lib/recipe";
 
-import { type Loop, nextRecipe, firstRecipe, type StationId } from "./model";
+import { type Loop, moreExamples, nextRecipe, firstRecipe, type StationId, synthPhase } from "./model";
 
 export type Proposal =
   | { kind: "finetune"; recipe: Recipe; version: number }
   | { kind: "evaluate"; withFrontier: boolean }
   | { kind: "deploy" }
   | { kind: "add-frontier" }
-  | { kind: "playground" };
+  | { kind: "playground" }
+  | { kind: "synthesize"; n: number };
 
 export interface Message {
   id: string;
@@ -29,6 +30,8 @@ export interface Message {
 }
 
 const fmt = (n: number) => n.toLocaleString();
+// an error's gist for the thread: no exception name, up to its first break
+const firstClause = (e: string) => e.replace(/^\w+Error:\s*/, "").split(/ — |\. |\n/)[0];
 
 // narrate: the project so far, oldest first, ending on what to do next.
 export function narrate(loop: Loop): Message[] {
@@ -37,13 +40,38 @@ export function narrate(loop: Loop): Message[] {
   const out: Message[] = [];
   out.push({ id: "goal", from: "copilot", text: `${p.name}: a model that ${goalLabel[p.goal].toLowerCase()}.`, at: p.created });
 
+  const s = loop.synth;
+  const writingLine = () => s
+    ? `${synthPhase[s.phase ?? "starting"] ?? "Writing"}: ${s.kept} of ${s.requested} examples kept so far${s.tokens ? ` · ${fmt(s.tokens)} tokens` : ""}.`
+    : "";
+  if (!loop.dataset && loop.writing) {
+    out.push({ id: "writing", from: "copilot", station: "data",
+               text: `Writing its examples from your description. ${writingLine()} I'll plan the fine-tune when they're in.` });
+    return out;
+  }
+  if (!loop.dataset && s && s.status !== "succeeded") {
+    out.push({ id: "write-failed", from: "copilot", station: "data",
+               text: `Writing the examples ${s.status === "stopped" ? "was stopped" : "failed"}${s.error ? `: ${firstClause(s.error)}` : ""}. The Data station has the details. Check the frontier model in the side panel, or make the model again with a fuller description or examples of your own.` });
+    return out;
+  }
   if (!loop.dataset) {
     out.push({ id: "need-data", from: "copilot", station: "data",
                text: "First it needs examples. Add them on the Data station: write a few, upload a file, use a dataset, or connect your agent." });
     return out;
   }
+  const rows = loop.dataset.rows ?? 0;
   out.push({ id: "data", from: "copilot", station: "data",
-             text: `It has ${fmt(loop.dataset.rows ?? 0)} examples from ${loop.dataset.name}.` });
+             text: `It has ${examples(rows)} from ${loop.dataset.name}.` });
+  // writing more didn't work: say so once, then carry on with what it has
+  if (!loop.writing && s && s.status === "failed" && s.dataset_id !== p.dataset_id) {
+    out.push({ id: `write-failed-${s.synth_id}`, from: "copilot", station: "data",
+               text: `Writing more examples failed${s.error ? `: ${firstClause(s.error)}` : ""}. It still has its ${examples(rows)}; the Data station has the details.` });
+  }
+  if (loop.writing) {
+    out.push({ id: "writing-more", from: "copilot", station: "data",
+               text: `Writing more examples like yours with ${loop.frontier?.model ?? "the frontier model"}. ${writingLine()} I'll propose the next version when they're in.` });
+    return out;
+  }
 
   // earlier versions, each with how it scored
   for (const v of loop.versions.filter((x) => !x.current)) {
@@ -57,6 +85,10 @@ export function narrate(loop: Loop): Message[] {
   const n = loop.versions.length || 1;
   const job = loop.job;
   if (!p.run_id || !job) {
+    if (rows < 20 && loop.frontier) {
+      out.push({ id: "small-start", from: "copilot", station: "data",
+                 text: `${examples(rows)} is a small start. It can train on them as they are, or say “write more examples” and ${loop.frontier.model} will write more in their style.` });
+    }
     const r = firstRecipe(loop);
     if (r) out.push({ id: "plan", from: "copilot", station: "finetune",
                       text: "Here's the plan for the first version. Start it when you're ready, or edit any step.",
@@ -113,6 +145,24 @@ export function narrate(loop: Loop): Message[] {
     out.push({ id: "frontier-hint", from: "copilot", station: "evaluate",
                text: "To measure it against the model your agent uses today, add a frontier model from the side panel; it will also judge answers, so a correct paraphrase counts." });
   }
+  if (v?.tone !== "good" && loop.dataChanged) {
+    const r = nextRecipe(loop);
+    if (r) out.push({ id: `more-data${n}`, from: "copilot", station: "finetune",
+                      text: `The examples grew to ${fmt(rows)}. I'd train version ${n + 1} on all of them:`, detail: r.why,
+                      proposal: { kind: "finetune", recipe: r, version: n + 1 } });
+    return out;
+  }
+  // thin data that hasn't been added to yet: more examples beat more steps
+  if (v?.tone !== "good" && rows < 50 && loop.frontier) {
+    const more = moreExamples(rows);
+    out.push({ id: `write${n}`, from: "copilot", station: "data",
+               text: `Version ${n} isn't there yet, and ${examples(rows)} is little to learn from. I'd have ${loop.frontier.model} write ${more} more like yours, then train version ${n + 1} on all of them.`,
+               detail: [`${loop.frontier.model} judges every example it writes; weak ones are dropped`,
+                        `Your ${examples(rows)} stay in, unchanged`,
+                        "Or say “train again” to retrain on these as they are"],
+               proposal: { kind: "synthesize", n: more } });
+    return out;
+  }
   if (v?.tone === "good") {
     out.push({ id: `ship${n}`, from: "copilot", station: "deploy",
                text: "It's ready. Deploy it behind an OpenAI-compatible endpoint, or try it in the Playground first.",
@@ -155,6 +205,22 @@ export function interpret(text: string, loop: Loop): Understood {
     });
     return { station: "evaluate", reply: lines.length ? lines.join(" · ") : "There's only one version so far." };
   }
+  if (has(t, "more examples", "more data", "write", "generate", "synthes", "amplif", "augment")) {
+    if (!loop.frontier) return { station: "data", reply: "I write examples with your frontier model. Add one, then ask again.", proposal: { kind: "add-frontier" } };
+    if (!loop.dataset) return { station: "data", reply: "It needs a few examples first, so the new ones can follow their style." };
+    if (loop.writing) return { station: "data", reply: "I'm already writing more; they'll land on the Data station." };
+    const m = t.match(/(\d{1,4})\s*(?:more\s*)?(?:examples?|rows?)/);
+    const more = m ? Math.max(1, Math.min(1000, Number(m[1]))) : moreExamples(loop.dataset.rows ?? 0);
+    return { station: "data", reply: `${loop.frontier.model} would write ${more} more like yours:`, proposal: { kind: "synthesize", n: more } };
+  }
+  // a method by name or by what it's for: SDFT keeps the base model's general skills
+  if (has(t, "sdft", "self-distill", "general skill", "forget", "keep what it knows") || /\blora\b/.test(t)) {
+    const base = nextRecipe(loop) ?? firstRecipe(loop);
+    if (!base) return { station: "data", reply: "It needs examples first: add them on the Data station." };
+    const method = /\blora\b/.test(t) && !has(t, "sdft") ? "lora" : "sdft";
+    return { station: "finetune", reply: `Version ${job ? n + 1 : 1} with ${methodLabel(method)}:`,
+             proposal: { kind: "finetune", recipe: withMethod(base, method), version: job ? n + 1 : 1 } };
+  }
   if (has(t, "train", "again", "retrain", "fine-tune", "finetune", "more steps", "longer", "bigger", "larger", "steps")) {
     const base = nextRecipe(loop) ?? firstRecipe(loop);
     if (!base) return { station: "data", reply: "It needs examples first: add them on the Data station." };
@@ -173,17 +239,20 @@ export function interpret(text: string, loop: Loop): Understood {
   if (has(t, "frontier", "openai", "gpt", "judge", "key")) {
     return { station: "evaluate", reply: "Add your frontier model and I'll measure against it and use it as the judge.", proposal: { kind: "add-frontier" } };
   }
-  return { reply: "I can fine-tune a new version (\"train again with 300 steps\"), evaluate it, compare versions, deploy it, or tell you where things stand." };
+  return { reply: "I can fine-tune a new version (\"train again with 300 steps\", \"use SDFT\"), write more examples, evaluate it, compare versions, deploy it, or tell you where things stand." };
 }
 
 // The quick replies offered under the composer for this moment.
 export function suggestions(loop: Loop): string[] {
   const job = loop.job;
+  if (loop.writing) return ["How's it going?"];
   if (!loop.dataset) return ["What examples does it need?"];
-  if (!job) return ["Start with 200 steps", "What will it do?"];
+  const canWrite = !!loop.frontier;
+  if (!job) return ["Start with 200 steps", ...(canWrite && (loop.dataset.rows ?? 0) < 50 ? ["Write more examples"] : []), "Use SDFT"];
   if (job.status === "pending" || job.status === "running") return ["How's it going?"];
   if (job.status !== "succeeded") return ["Train again", "Train again with more steps"];
   if (!loop.evaluation) return ["Evaluate it", "Try it in the Playground"];
-  const s = [loop.deployment ? "How's it going?" : "Deploy it", "Train another version", "Compare versions"];
-  return s;
+  const ready = verdict(loop.evaluation)?.tone === "good";
+  if (!ready && !loop.deployment) return [canWrite ? "Write more examples" : "Train again with more steps", "Use SDFT", "Compare versions"];
+  return [loop.deployment ? "How's it going?" : "Deploy it", "Train another version", "Compare versions"];
 }

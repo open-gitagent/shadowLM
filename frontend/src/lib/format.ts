@@ -7,6 +7,8 @@ const METHOD_LABELS: Record<string, string> = {
   adapter: "Adapter", sdft: "SDFT", sdpo: "SDPO",
 };
 
+// "1 example", "12 examples"
+export const examples = (n: number) => `${n.toLocaleString()} ${n === 1 ? "example" : "examples"}`;
 export const methodLabel = (m?: string | null) => (m ? METHOD_LABELS[m] ?? m : "");
 
 // "mlx-community/Qwen2.5-0.5B-Instruct-4bit" → { org: "mlx-community", name: "Qwen2.5-0.5B-Instruct-4bit" }

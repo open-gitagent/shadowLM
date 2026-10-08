@@ -3,12 +3,13 @@
 // should do (answer with a choice or in your own words), the Data station on
 // the right collects the examples, and the plan arrives as an action card.
 // Approving it creates the project, saves the examples and starts the
-// fine-tune; the full cockpit takes over with the run already live.
+// fine-tune; the full cockpit takes over with the run already live. Examples
+// to be generated are written first, in the cockpit, and the plan follows.
 import { ArrowRight, Check, ChevronDown, CornerDownLeft, LoaderCircle, MessagesSquare, Sparkles, TriangleAlert } from "lucide-react";
 import { type FormEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 
 import {
-  createDataset, createProject, deleteProject, getHealth,
+  createDataset, createProject, deleteProject, getHealth, startSynth,
   type Health, type Project, type ProjectGoal,
 } from "@/api";
 import { EmptyState, Field } from "@/components/common";
@@ -38,8 +39,8 @@ const reading: Record<ProjectGoal, string> = {
 };
 
 const askFor: Record<ProjectGoal, string> = {
-  knowledge: "Now give it the facts, on the Data station: write them as questions and answers, upload a file, or pick a dataset.",
-  task: "Now give it examples, on the Data station: inputs with the outputs you want. Write them, upload a file, pick a dataset, or capture your agent.",
+  knowledge: "Now give it the facts, on the Data station: write them as questions and answers, generate them from a document, upload a file, or pick a dataset.",
+  task: "Now give it examples, on the Data station: inputs with the outputs you want. Write them, upload a file, generate them from a description, pick a dataset, or capture your agent.",
   takeover: "Now connect your agent on the Data station: it keeps working as before while its conversations are recorded. Traces or a file work too.",
 };
 
@@ -119,6 +120,17 @@ export default function CockpitStart() {
     try {
       setPhase("Creating the project…");
       project = await createProject(finalName, goal);
+      if (examples.generate) {
+        // the cockpit shows them arriving; its plan comes once they're in
+        const g = examples.generate;
+        setPhase("Starting to write examples…");
+        await startSynth({
+          name: `${finalName} · written`, n: g.n, task: g.task || undefined, document: g.document || undefined,
+          project_id: project.project_id, teacher: { kind: "frontier", model: g.teacher },
+        });
+        window.location.hash = `#projects/${project.project_id}`;
+        return;
+      }
       let datasetId = examples.dataset?.dataset_id ?? "";
       if (!datasetId) {
         setPhase(`Saving your ${count} ${l.noun}…`);
@@ -188,7 +200,13 @@ export default function CockpitStart() {
           {goal && (
             <Copilot>
               <p>{askFor[goal]}</p>
-              {count > 0 && (
+              {examples?.generate && (
+                <p className="mt-2 flex items-start gap-1.5 text-muted-foreground">
+                  <Sparkles className="mt-0.5 size-3.5 shrink-0 text-primary" />
+                  <span>{examples.generate.teacher} will write up to {examples.generate.n} {l.noun} once you create the model.</span>
+                </p>
+              )}
+              {count > 0 && !examples?.generate && (
                 <p className={cn("mt-2 flex items-start gap-1.5", count < minimum[goal] ? "text-warning" : "text-muted-foreground")}>
                   {count < minimum[goal] ? <TriangleAlert className="mt-0.5 size-3.5 shrink-0" /> : <Check className="mt-0.5 size-3.5 shrink-0 text-good" />}
                   <span>
@@ -203,7 +221,14 @@ export default function CockpitStart() {
           {goal && recipe && count > 0 && (
             <div className="border border-border bg-card">
               <div className="px-4 pt-3.5 pb-3">
-                <p className="flex items-center gap-1.5 text-sm font-medium"><Sparkles className="size-3.5 text-primary" />The plan for version 1</p>
+                <p className="flex items-center gap-1.5 text-sm font-medium"><Sparkles className="size-3.5 text-primary" />
+                  {examples?.generate ? "The plan: examples first, then version 1" : "The plan for version 1"}</p>
+                {examples?.generate && (
+                  <p className="mt-2 text-sm text-muted-foreground">
+                    {examples.generate.teacher} writes up to {examples.generate.n} {l.noun} and scores each one. When they're in,
+                    Ctrl agent proposes this fine-tune for you to start:
+                  </p>
+                )}
                 <ul className="mt-2 space-y-1.5 text-sm">
                   {recipe.why.map((w) => (
                     <li key={w} className="flex gap-2"><Check className="mt-0.5 size-3.5 shrink-0 text-primary" /><span>{w}</span></li>
@@ -223,7 +248,8 @@ export default function CockpitStart() {
               </div>
               <div className="flex items-center justify-end gap-2 border-t border-border bg-subtle px-4 py-2.5">
                 <Button onClick={start} disabled={busy || !projectName.trim()}>
-                  {busy ? <><LoaderCircle className="animate-spin" /> {phase}</> : <>Create and start fine-tuning <ArrowRight /></>}
+                  {busy ? <><LoaderCircle className="animate-spin" /> {phase}</> : examples?.generate
+                    ? <>Create and write examples <ArrowRight /></> : <>Create and start fine-tuning <ArrowRight /></>}
                 </Button>
               </div>
             </div>

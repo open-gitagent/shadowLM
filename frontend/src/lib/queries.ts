@@ -6,7 +6,7 @@ import { QueryClient, useQuery } from "@tanstack/react-query";
 
 import {
   getCheckpoints, getDataset, getDatasets, getDeployments, getEval, getHealth, getJob, getJobs,
-  getLogs, getMetrics, getProject, getProjects, getSettings,
+  getLogs, getMetrics, getProject, getProjects, getSettings, getSynthRun,
 } from "@/api";
 
 export const queryClient = new QueryClient({
@@ -40,5 +40,8 @@ export const useCheckpointsQ = (id?: string | null) =>
 export const useEvalQ = (id?: string | null) =>
   useQuery({ queryKey: ["eval", id], queryFn: () => getEval(id!), enabled: !!id,
              refetchInterval: (q) => (moving(q.state.data?.status) ? 2_000 : false) });
+export const useSynthQ = (id?: string | null) =>
+  useQuery({ queryKey: ["synth", id], queryFn: () => getSynthRun(id!), enabled: !!id,
+             refetchInterval: (q) => (q.state.data?.status === "running" ? 1_500 : false) });
 export const useDeploymentsQ = () =>
   useQuery({ queryKey: ["deployments"], queryFn: () => getDeployments().then((r) => r.deployments), refetchInterval: 15_000 });

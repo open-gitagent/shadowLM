@@ -3,18 +3,18 @@
 // fine-tune, evaluate, deploy) with a status and a one-line state each. The
 // conversation and the loop map both read this; neither fetches on its own.
 import { useQueries, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import {
-  createDeployment, getEval,
+  createDeployment, getEval, startSynth,
   type DatasetMeta, type Deployment, type Evaluation, type Health, type JobSummary,
-  type Project, type StepMetric,
+  type Project, type StepMetric, type SynthStatus,
 } from "@/api";
 import { verdict } from "@/components/scorecard";
 import {
-  useDatasetQ, useDeploymentsQ, useEvalQ, useHealthQ, useJobsQ, useMetricsQ, useProjectQ, useSettingsQ,
+  useDatasetQ, useDeploymentsQ, useEvalQ, useHealthQ, useJobsQ, useMetricsQ, useProjectQ, useSettingsQ, useSynthQ,
 } from "@/lib/queries";
-import { methodLabel } from "@/lib/format";
+import { examples, methodLabel } from "@/lib/format";
 import { pickRecipe, type Recipe, startProjectEval, startProjectFinetune } from "@/lib/recipe";
 
 export type StationId = "data" | "finetune" | "evaluate" | "deploy";
@@ -46,6 +46,9 @@ export interface Loop {
   evalSteps: StepMetric[];
   evaluation?: Evaluation;
   deployment?: Deployment;
+  synth?: SynthStatus;  // examples being written for it, or the last run that wrote some
+  writing: boolean;     // that run is still going
+  dataChanged: boolean; // the examples changed since the current version trained
   versions: Version[];
   stations: Record<StationId, Station>;
   next: StationId;  // where attention belongs now
@@ -68,6 +71,19 @@ export function useLoop(projectId?: string): Loop {
   const deploymentsQ = useDeploymentsQ();
   const health = useHealthQ().data;
   const frontier = useSettingsQ().data?.frontier ?? null;
+  const synthQ = useSynthQ(project?.synth_id);
+  const synth = synthQ.data;
+  const writing = synth?.status === "running";
+  // refetch the project when a run lands: the server just gave it the examples
+  const landed = useRef(synth?.status);
+  const qc = useQueryClient();
+  useEffect(() => {
+    if (landed.current === "running" && synth && synth.status !== "running" && project) {
+      void qc.invalidateQueries({ queryKey: ["project", project.project_id] });
+      void qc.invalidateQueries({ queryKey: ["datasets"] });
+    }
+    landed.current = synth?.status;
+  }, [synth?.status]);  // eslint-disable-line react-hooks/exhaustive-deps
 
   const history = project?.history ?? [];
   const pastEvals = useQueries({
@@ -93,7 +109,7 @@ export function useLoop(projectId?: string): Loop {
   const steps = metricsQ.data?.steps ?? [];
 
   const stations = {
-    data: dataStation(project, dataset),
+    data: dataStation(project, dataset, synth),
     finetune: finetuneStation(project, job, steps.length),
     evaluate: evaluateStation(project, job, evaluation),
     deploy: deployStation(job, deployment),
@@ -103,23 +119,34 @@ export function useLoop(projectId?: string): Loop {
   // copilot is proposing the next version there, not a deploy)
   const ready = evaluation ? verdict(evaluation)?.tone === "good" : false;
   const next: StationId =
-    stations.data.status !== "done" ? "data" :
+    stations.data.status !== "done" || writing ? "data" :
     stations.finetune.status !== "done" ? "finetune" :
     stations.evaluate.status !== "done" || (!ready && !deployment) ? "evaluate" : "deploy";
 
   return {
     project, dataset, job, steps, evalSteps: metricsQ.data?.evals ?? [], evaluation, deployment,
+    synth, writing,
+    dataChanged: !!project?.run_id && !!project.run_dataset_id && project.run_dataset_id !== project.dataset_id,
     versions, stations, next, health, frontier,
     loading: !!projectId && projectQ.isLoading,
     missing: !!projectId && projectQ.isError,
   };
 }
 
-function dataStation(p?: Project, d?: DatasetMeta): Station {
+export const synthPhase: Record<string, string> = {
+  starting: "Starting", planning: "Planning", generating: "Writing", judging: "Checking", kept: "Collecting",
+};
+
+function dataStation(p?: Project, d?: DatasetMeta, s?: SynthStatus): Station {
   const base = { id: "data" as const, label: "Data" };
+  if (s?.status === "running") {
+    return { ...base, status: "running",
+             line: `${synthPhase[s.phase ?? "starting"] ?? "Writing"} examples · ${s.kept} of ${s.requested} kept` };
+  }
+  if (!p?.dataset_id && s && s.status !== "succeeded") return { ...base, status: "failed", line: "Writing examples stopped" };
   if (!p?.dataset_id) return { ...base, status: "ready", line: "No examples yet" };
   if (!d) return { ...base, status: "running", line: "Loading examples…" };
-  return { ...base, status: "done", line: `${d.rows ?? "?"} examples` };
+  return { ...base, status: "done", line: d.rows == null ? "Examples" : examples(d.rows) };
 }
 
 function finetuneStation(p: Project | undefined, j: JobSummary | undefined, stepsDone: number): Station {
@@ -154,7 +181,8 @@ function deployStation(j: JobSummary | undefined, d: Deployment | undefined): St
 export type Action =
   | { kind: "finetune"; recipe: Recipe }
   | { kind: "evaluate"; withFrontier: boolean }
-  | { kind: "deploy"; name: string };
+  | { kind: "deploy"; name: string }
+  | { kind: "synthesize"; n: number };
 
 export function useActions(loop: Loop) {
   const qc = useQueryClient();
@@ -170,6 +198,14 @@ export function useActions(loop: Loop) {
       if (a.kind === "finetune") {
         if (!p.dataset_id) throw new Error("add examples before fine-tuning");
         await startProjectFinetune(p, p.dataset_id, a.recipe);
+      } else if (a.kind === "synthesize") {
+        if (!loop.frontier) throw new Error("add a frontier model to write examples with");
+        if (!p.dataset_id) throw new Error("it needs a few examples to write more like them");
+        // the examples it has stay in; the server makes the result the project's data
+        await startSynth({
+          name: `${p.name} · more examples`, n: a.n, dataset_id: p.dataset_id, include_seed: true,
+          project_id: p.project_id, teacher: { kind: "frontier", model: loop.frontier.model },
+        });
       } else if (a.kind === "evaluate") {
         if (!loop.job) throw new Error("fine-tune before evaluating");
         await startProjectEval(p, loop.job.base_model, a.withFrontier);
@@ -205,6 +241,12 @@ export function firstRecipe(loop: Loop): Recipe | null {
 export function nextRecipe(loop: Loop): Recipe | null {
   const first = firstRecipe(loop);
   if (!first || !loop.job) return first;
+  if (loop.dataChanged) {
+    const rows = loop.dataset?.rows ?? 0;
+    return { ...first, base_model: loop.job.base_model,
+             why: [`All ${examples(rows)}, the new ones included: v${loop.versions.length} trained on fewer`, ...first.why.filter((w) => !w.startsWith("Qwen") && !w.includes(loop.job!.base_model))],
+             cli: first.cli.replace(first.base_model, loop.job.base_model) };
+  }
   const prevSteps = loop.job.steps || Number(first.config.max_steps) || 100;
   const v = loop.evaluation ? verdict(loop.evaluation) : null;
   const onGpu = (loop.health?.gpus ?? 0) > 0;
@@ -221,3 +263,7 @@ export function nextRecipe(loop: Loop): Recipe | null {
            why: [`Twice the training, ${steps} steps: v${loop.versions.length} hadn't learned your examples yet`, ...first.why.slice(0, 2)],
            cli: first.cli.replace(/--max-steps \d+/, `--max-steps ${steps}`) };
 }
+
+// How many examples to ask for when writing more: enough to matter, few enough
+// to read (three for each one it has, 30 to 150).
+export const moreExamples = (rows: number) => Math.max(30, Math.min(150, rows * 3));
