@@ -156,3 +156,45 @@ def test_listing_hides_the_log_buffer(monkeypatch):
         # the detail view keeps them, for the console panel
         assert server.synth_status(started["synth_id"])["logs"]
         assert server.synth_status("nope") == {}
+
+
+def test_include_seed_keeps_the_examples_it_was_written_from(monkeypatch):
+    """The cockpit amplifies a project's examples and trains the next version on
+    old and new together, so the saved dataset carries both."""
+    with tempfile.TemporaryDirectory() as tmp:
+        server = _server(tmp)
+        monkeypatch.setattr("shadowlm.models.load", lambda *a, **k: _Teacher())
+        seed = server.datasets.save("seed", [
+            {"messages": [{"role": "user", "content": f"q{i}"}, {"role": "assistant", "content": f"a{i}"}]}
+            for i in range(3)])
+        started = server.start_synth({
+            "name": "more", "task": "answer questions", "n": 4, "method": "lora",
+            "dataset_id": seed["dataset_id"], "include_seed": True,
+            "teacher": {"kind": "local", "model": "stub"}})
+        status = _wait(server, started["synth_id"])
+        assert status["status"] == "succeeded", status.get("error")
+        meta = server.datasets.meta(status["dataset_id"])
+        assert meta["rows"] == 3 + status["kept"]
+
+
+def test_a_project_shows_the_run_and_gets_its_examples(monkeypatch):
+    """Examples written for a project link to it while they're written, and
+    become its data when the run lands — so the cockpit can start from a
+    description and pick up when the examples arrive."""
+    with tempfile.TemporaryDirectory() as tmp:
+        server = _server(tmp)
+        monkeypatch.setattr("shadowlm.models.load", lambda *a, **k: _Teacher())
+        project = server.projects.create("triage", "task")
+        started = server.start_synth({
+            "name": "triage examples", "task": "triage email", "n": 4,
+            "project_id": project["project_id"], "teacher": {"kind": "local", "model": "stub"}})
+        assert server.projects.get(project["project_id"])["synth_id"] == started["synth_id"]
+        status = _wait(server, started["synth_id"])
+        assert server.projects.get(project["project_id"])["dataset_id"] == status["dataset_id"]
+        try:
+            server.start_synth({"task": "t", "n": 1, "project_id": "nope",
+                                "teacher": {"kind": "local", "model": "stub"}})
+        except ValueError as e:
+            assert "no project" in str(e)
+        else:
+            raise AssertionError("an unknown project was accepted")

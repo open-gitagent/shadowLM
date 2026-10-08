@@ -95,6 +95,12 @@ def test_project_lifecycle(studio):
     code, v2 = _call(port, "PATCH", f"/v1/projects/{s['project_id']}", {"run_id": "run2"})
     assert code == 200 and (v2["run_id"], v2["eval_id"]) == ("run2", None)
     assert [(h["run_id"], h["eval_id"]) for h in v2["history"]] == [("def456", "ev1")]
+    # the examples being written for it are linked too
+    code, s3 = _call(port, "PATCH", f"/v1/projects/{s['project_id']}", {"synth_id": "a1b2c3d4e5"})
+    assert code == 200 and s3["synth_id"] == "a1b2c3d4e5"
+    # new data under the current version: it remembers what it trained on
+    code, s4 = _call(port, "PATCH", f"/v1/projects/{s['project_id']}", {"dataset_id": "moredata1"})
+    assert s4["dataset_id"] == "moredata1" and s4["run_dataset_id"] != "moredata1"
     assert _call(port, "DELETE", f"/v1/projects/{s['project_id']}")[0] == 200
     assert _call(port, "GET", f"/v1/projects/{s['project_id']}")[0] == 404
 

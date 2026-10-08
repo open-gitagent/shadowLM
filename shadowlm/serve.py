@@ -487,7 +487,7 @@ class DatasetStore:
 # "knowledge" (teach it facts), "task" (teach it a job from examples),
 # "takeover" (move a task off a frontier model, from captured agent traffic).
 _PROJECT_GOALS = ("knowledge", "task", "takeover")
-_PROJECT_LINKS = ("dataset_id", "run_id", "eval_id")
+_PROJECT_LINKS = ("dataset_id", "run_id", "eval_id", "synth_id")  # synth_id: examples being written
 
 
 class ProjectStore:
@@ -519,7 +519,7 @@ class ProjectStore:
             raise ValueError(f"goal must be one of {', '.join(_PROJECT_GOALS)}")
         now = int(time.time())
         item = {"project_id": uuid.uuid4().hex[:12], "name": name, "goal": goal,
-                "dataset_id": None, "run_id": None, "eval_id": None, "history": [],
+                "dataset_id": None, "run_id": None, "eval_id": None, "synth_id": None, "history": [],
                 "created": now, "updated": now}
         with self._lock:
             self._items[item["project_id"]] = item
@@ -547,11 +547,16 @@ class ProjectStore:
             if "run_id" in patch and item.get("run_id") and new_run != item["run_id"]:
                 item.setdefault("history", []).append(
                     {"run_id": item["run_id"], "eval_id": item.get("eval_id"),
-                     "dataset_id": item.get("dataset_id"), "replaced": int(time.time())})
+                     "dataset_id": item.get("run_dataset_id", item.get("dataset_id")),
+                     "replaced": int(time.time())})
                 item["eval_id"] = None
             for k in _PROJECT_LINKS:
                 if k in patch:
                     item[k] = patch[k]
+            # what the current version trained on: the data can change under it
+            # (more examples written) and the cockpit offers a new version then
+            if "run_id" in patch:
+                item["run_dataset_id"] = item.get("dataset_id")
             item.setdefault("history", [])
             item["updated"] = int(time.time())
             self._save()
@@ -1055,6 +1060,11 @@ class Server:
         name = body.get("name") or f"synth-{synth_id[:4]}"
         requested = int(body.get("n") or 100)
         budget = int(body.get("token_budget") or 0) or None
+        # a project the examples are for: it shows the run while it writes, and
+        # its data becomes the result when the run lands
+        project_id = body.get("project_id")
+        if project_id and not self.projects.get(project_id):
+            raise ValueError(f"no project {project_id!r}")
         cancel = threading.Event()
         with self._lock:
             self._synth[synth_id] = {
@@ -1065,6 +1075,8 @@ class Server:
             }
             self._synth_cancel[synth_id] = cancel
         self._persist_synth(synth_id)
+        if project_id:
+            self.projects.update(project_id, {"synth_id": synth_id})
 
         def update(**fields) -> None:
             with self._lock:
@@ -1111,7 +1123,12 @@ class Server:
                     min_score=body.get("min_score", 0.6) or None, verbose=False,
                     token_budget=budget, should_stop=cancel.is_set,
                     on_progress=progress)
-                meta = self.datasets.save(name, result.rows())
+                rows = result.rows()
+                # include_seed: the dataset carries the examples it was written
+                # from too, so the next fine-tune trains on old and new together
+                if body.get("include_seed") and episodes is not None:
+                    rows = list(episodes.rows) + list(rows)
+                meta = self.datasets.save(name, rows)
                 with self._lock:
                     entry = self._synth[synth_id]
                     # A cancelled run still saved its rows — report it as
@@ -1122,6 +1139,8 @@ class Server:
                                  dataset_id=meta["dataset_id"])
                     entry["logs"].append(result.report.summary())
                     del entry["logs"][:-_SYNTH_LOG_LINES]
+                if project_id and result.report.kept:
+                    self.projects.update(project_id, {"dataset_id": meta["dataset_id"]})
             except Exception as e:  # noqa: BLE001 — surfaced to the UI
                 update(status="stopped" if cancel.is_set() else "failed",
                        error=f"{type(e).__name__}: {e}")
@@ -2323,7 +2342,10 @@ def make_handler(server: Server, auth: "Auth"):
                     if not (b.get("task") or b.get("document") or b.get("dataset_id")):
                         return self._error(
                             422, "provide a 'task', a 'document', or a 'dataset_id'")
-                    self._send(202, server.start_synth(b))
+                    try:
+                        self._send(202, server.start_synth(b))
+                    except ValueError as e:
+                        self._error(422, str(e))
                 elif len(parts) == 4 and parts[:2] == ["v1", "synth"] \
                         and parts[3] == "cancel":
                     if server.cancel_synth(parts[2]):
