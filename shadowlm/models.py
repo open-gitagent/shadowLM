@@ -148,8 +148,8 @@ class Model:
         """Finetune on `dataset`, returning a `TrainingRun`.
 
         method: any registered training method — built-ins are lora, qlora,
-        dora, full, cpt, dpo, grpo, more, more_plus, bitfit, prompt, ptuning,
-        and adapter.
+        dora, full, cpt, dpo, grpo, sdft, sdpo, more, more_plus, bitfit,
+        prompt, ptuning, and adapter.
         See `shadowlm.methods` to list or register methods. The default
         learning rate comes from the method's spec.
 
@@ -157,6 +157,8 @@ class Model:
         set during training; eval loss lands in `run.eval_metrics` / `run.eval_loss`.
         To carve the eval set out of the training data, pass `"auto"` (10%), a
         percent like `"15%"`, or a fraction in (0, 1) such as `0.15`.
+        `reward_fns` drives grpo and sdpo — an sdpo fn may return
+        `(score, feedback)` pairs to hand the self-teacher rich feedback.
         Extra keyword args (`max_steps`, `learning_rate`, `lora_r`, ...) override the
         `TrainConfig` defaults. Pass `on_step`/`on_eval` to observe metrics live.
         """

@@ -29,6 +29,8 @@ python examples/remote/grpo.py
 | `cpt`       | ✅ | ✅ | ✅ | raw text | — |
 | `dpo`       | ✅ | ✅ | ✅ | preference pairs | — |
 | `grpo`      | ✅ | ✅ | ✅ | prompts + reward fn | — |
+| `sdft`      | ✅ | ✅ | ✅ | chat | — |
+| `sdpo`      | ✅ | ✅ | ✅ | prompts + reward fn | — |
 | `more`      | ✅ | ✅ | ✅ | facts | — |
 | `more_plus` | ✅ | ✅ | ✅ | facts | unquantized |
 | `bitfit`    | ✅ | ✅ | ✅ | chat | unquantized + bias params |
@@ -68,14 +70,16 @@ The `data/` folder holds tiny sample datasets so the examples are self-contained
 
 | file | format | used by |
 |------|--------|---------|
-| `data/chat.jsonl`       | chat (`messages`)              | lora, qlora, dora, full, bitfit, prompt, ptuning, adapter |
+| `data/chat.jsonl`       | chat (`messages`)              | lora, qlora, dora, full, sdft, bitfit, prompt, ptuning, adapter |
 | `data/preference.jsonl` | preference (`prompt/chosen/rejected`) | dpo |
 | `data/domain.jsonl`     | raw text (`text`)              | cpt |
 | `data/facts.jsonl`      | instruction (`instruction/output`) | more, more_plus |
 | `data/handbook.md`      | prose                          | synthesize_from_doc |
 | `data/agent_traces.otlp.json` | OTel GenAI spans         | shadow_from_traces |
 
-`grpo` defines its prompts and reward function inline in each script.
+`grpo` and `sdpo` define their prompts and reward function inline in each
+script (an `sdpo` reward fn may return `(score, feedback)` pairs — the feedback
+becomes the self-teacher's in-context signal).
 
 There's also `shadowlm_qa.jsonl` — a chat dataset *about ShadowLM itself*, handy
 for a quick end-to-end finetune that teaches a small model to answer questions

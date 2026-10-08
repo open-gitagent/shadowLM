@@ -1,7 +1,7 @@
 """Training methods — one module per technique, all driven by one spec.
 
-Built-ins: lora, qlora, dora, full, cpt, dpo, grpo, more, bitfit,
-prompt, ptuning, adapter. Backends read the spec's fields
+Built-ins: lora, qlora, dora, full, cpt, dpo, grpo, sdft, sdpo, more,
+more_plus, bitfit, prompt, ptuning, adapter. Backends read the spec's fields
 (adapter kind, base requirements, data rendering) — never the method name — so
 adding a technique is a new module here with one `register()` call:
 
@@ -37,7 +37,7 @@ from .base import (
 )
 
 # Importing a technique module registers it.
-from . import adapter, bitfit, cpt, dora, dpo, full, grpo, lora, more, more_plus, ptuning, qlora, soft_prompt  # noqa: E402, F401
+from . import adapter, bitfit, cpt, dora, dpo, full, grpo, lora, more, more_plus, ptuning, qlora, sdft, sdpo, soft_prompt  # noqa: E402, F401
 
 __all__ = [
     "ADAPTER_BITFIT",

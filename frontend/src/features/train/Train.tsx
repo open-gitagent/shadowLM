@@ -89,6 +89,27 @@ const EXTRA: Record<string, Param[]> = {
     { key: "grpo_group_size", label: "Group size", kind: "int", def: "4", hint: "completions per prompt" },
     { key: "grpo_max_completion_length", label: "Max completion", kind: "int", def: "256" },
   ],
+  sdft: [
+    { key: "sdft_alpha", label: "Alpha (divergence)", kind: "float", def: "0",
+      hint: "0 = forward KL, 1 = reverse KL, between = JSD" },
+    { key: "sdft_max_completion_length", label: "Max completion", kind: "int", def: "512",
+      hint: "on-policy tokens sampled per prompt" },
+    { key: "sdft_temperature", label: "Rollout temperature", kind: "float", def: "1",
+      hint: "0 = greedy" },
+  ],
+  sdpo: [
+    { key: "sdpo_alpha", label: "Alpha (divergence)", kind: "float", def: "0.5",
+      hint: "0 = forward KL, 1 = reverse KL, 0.5 = JSD" },
+    { key: "sdpo_group_size", label: "Group size", kind: "int", def: "4",
+      hint: "rollouts per prompt" },
+    { key: "sdpo_max_completion_length", label: "Max completion", kind: "int", def: "256" },
+    { key: "sdpo_temperature", label: "Rollout temperature", kind: "float", def: "1",
+      hint: "0 = greedy" },
+    { key: "sdpo_success_threshold", label: "Success threshold", kind: "float", def: "1",
+      hint: "reward that makes a rollout a reusable solution" },
+    { key: "sdpo_teacher_ema", label: "Teacher EMA", kind: "float", def: "0.05",
+      hint: "0 = frozen teacher, 1 = live student" },
+  ],
   prompt: [{ key: "num_virtual_tokens", label: "Virtual tokens", kind: "int", def: "16" }],
   ptuning: [{ key: "num_virtual_tokens", label: "Virtual tokens", kind: "int", def: "16" }],
 };
@@ -123,14 +144,14 @@ const FAMILY: Record<string, string> = {
   lora: "peft", qlora: "peft", dora: "peft", adapter: "peft",
   bitfit: "peft", prompt: "peft", ptuning: "peft",
   full: "sft", cpt: "sft",
-  dpo: "rl", grpo: "rl",
+  dpo: "rl", grpo: "rl", sdft: "rl", sdpo: "rl",
   more: "memory",
   more_plus: "memory",
 };
 const FAMILY_LABEL: Record<string, string> = {
   peft: "PEFT · parameter-efficient",
   sft: "SFT · full & continued pretraining",
-  rl: "Preference & RL",
+  rl: "Preference · RL · distillation",
   memory: "Memory · retrieval",
   other: "Other",
 };
@@ -191,7 +212,9 @@ export default function Train({ methods }: { methods: MethodInfo[] }) {
   const advParams = advancedParams(methodInfo);
   const configParams = allParams(methodInfo);
   // held-out eval only applies when it's meaningful and not already provided
-  const useHoldout = evalSplit && methodInfo?.trainer !== "grpo" && !meta?.eval_split;
+  const noHoldoutTrainers = ["grpo", "sdft", "sdpo"];
+  const useHoldout = evalSplit && !meta?.eval_split
+    && !noHoldoutTrainers.includes(methodInfo?.trainer ?? "");
   const ready = Boolean(ds && model && method);
   const canNext = [Boolean(ds), Boolean(model), Boolean(method), true][step];
 
@@ -430,7 +453,7 @@ export default function Train({ methods }: { methods: MethodInfo[] }) {
                 <div className="border-t border-border pt-5 text-sm text-muted-foreground">
                   Eval uses the dataset's own <span className="font-medium text-foreground">{meta.eval_split}</span> split.
                 </div>
-              ) : methodInfo?.trainer === "grpo" ? null : (
+              ) : noHoldoutTrainers.includes(methodInfo?.trainer ?? "") ? null : (
                 <div className="space-y-3 border-t border-border pt-5">
                   <div className="flex items-center gap-2.5">
                     <Switch id="eval-split" checked={evalSplit} onCheckedChange={setEvalSplit} />

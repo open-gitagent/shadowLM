@@ -60,6 +60,20 @@ class TrainConfig:
     grpo_group_size: int = 4  # completions sampled per prompt (the GRPO "group")
     grpo_max_completion_length: int = 256  # tokens generated per completion during training
 
+    # self-distillation (sdft — on-policy KL to the demonstration-conditioned teacher)
+    sdft_alpha: float = 0.0  # 0 → forward KL (reference default), 1 → reverse KL, else generalized JSD
+    sdft_max_completion_length: int = 512  # on-policy tokens sampled per prompt during training
+    sdft_temperature: float = 1.0  # sampling temperature for the rollouts (0 → greedy)
+    sdft_teacher_template: str | None = None  # suffix appended to the final user turn; must contain {demonstration}
+
+    # self-distillation RL (sdpo — rollouts rescored by the feedback-conditioned self-teacher)
+    sdpo_alpha: float = 0.5  # 0 → forward KL, 1 → reverse KL, 0.5 → symmetric JSD (paper setting)
+    sdpo_group_size: int = 4  # rollouts sampled per prompt; successful ones teach the rest (paper uses 8)
+    sdpo_max_completion_length: int = 256  # tokens generated per rollout during training
+    sdpo_temperature: float = 1.0  # rollout sampling temperature (0 → greedy)
+    sdpo_success_threshold: float = 1.0  # reward at/above this makes a rollout a reusable "correct solution"
+    sdpo_teacher_ema: float = 0.05  # per-step pull of the teacher toward the student; 0 → frozen initial teacher, 1 → the live student
+
     # memory tuning (more — mixture of retrieval experts)
     retrieval_k: int = 2  # memories retrieved per token
     retrieval_layers: int = 8  # how many attention layers (from the top) get memory

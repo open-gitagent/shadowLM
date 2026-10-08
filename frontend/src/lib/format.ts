@@ -4,7 +4,7 @@
 const METHOD_LABELS: Record<string, string> = {
   lora: "LoRA", qlora: "QLoRA", dora: "DoRA", full: "Full", cpt: "CPT", dpo: "DPO", grpo: "GRPO",
   more: "MoRE", more_plus: "MoRE+", bitfit: "BitFit", prompt: "Prompt tuning", ptuning: "P-tuning",
-  adapter: "Adapter",
+  adapter: "Adapter", sdft: "SDFT", sdpo: "SDPO",
 };
 
 export const methodLabel = (m?: string | null) => (m ? METHOD_LABELS[m] ?? m : "");
