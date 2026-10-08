@@ -3,13 +3,13 @@
 // hash router, and the sign-in gate. Embedded in a host console
 // (lib/embed.ts), the host's menu and sign-in replace both.
 import {
-  ArrowRight, BookOpen, Box, Cpu, Database, ExternalLink, History, KeyRound, LayoutDashboard,
-  LoaderCircle, type LucideIcon, LogOut, MessagesSquare, MonitorSmartphone, Moon,
-  PanelLeftClose, PanelLeftOpen, Sun, Zap,
+  ArrowRight, BookOpen, Box, ClipboardCheck, Cloud, Rocket, Cpu, Database, ExternalLink, FlaskConical, FolderKanban,
+  History, KeyRound, LayoutDashboard, LoaderCircle, type LucideIcon, LogOut, MessagesSquare,
+  MonitorSmartphone, Moon, PanelLeftClose, PanelLeftOpen, Plus, Sun, Target, Zap,
 } from "lucide-react";
 import { AnimatePresence, motion, MotionConfig } from "motion/react";
 import { ThemeProvider, useTheme } from "next-themes";
-import { type CSSProperties, type FormEvent, type ReactNode, useEffect, useState } from "react";
+import { type CSSProperties, type FormEvent, type ReactNode, useEffect, useState, useSyncExternalStore } from "react";
 
 import {
   apiKey, clearVram, getAuthInfo, getHealth, getMethods, getSettings, getVram,
@@ -22,40 +22,52 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { FrontierDialog, useFrontier } from "@/components/frontier-settings";
+import { ModeChooser } from "@/components/mode-chooser";
 import {
   allows, embedded, hashToPage, type MenuItem, onHostAction, reportMenu, reportRoute, reportTitle, useEmbedTheme,
 } from "@/lib/embed";
+import { useRoute } from "@/app/router";
+import Cockpit from "@/features/cockpit/Cockpit";
+import CockpitStart from "@/features/cockpit/CockpitStart";
+import { type Mode, setMode, useMode } from "@/lib/mode";
 import { cn } from "@/lib/utils";
-import Dashboard from "@/pages/Dashboard";
-import Datasets from "@/pages/Datasets";
-import Machines from "@/pages/Machines";
-import Models from "@/pages/Models";
-import Playground from "@/pages/Playground";
-import Runs from "@/pages/Runs";
-import Train from "@/pages/Train";
+import Dashboard from "@/features/overview/Dashboard";
+import Datasets from "@/features/datasets/Datasets";
+import Deployments from "@/features/deployments/Deployments";
+import Evaluate from "@/features/evaluate/Evaluate";
+import Machines from "@/features/machines/Machines";
+import Models from "@/features/models/Models";
+import Playground from "@/features/playground/Playground";
+import Projects from "@/features/projects/Projects";
+import Runs from "@/features/runs/Runs";
+import Train from "@/features/train/Train";
 
-function useHash(): string {
-  const [h, setH] = useState(window.location.hash);
-  useEffect(() => {
-    const f = () => setH(window.location.hash);
-    window.addEventListener("hashchange", f);
-    return () => window.removeEventListener("hashchange", f);
-  }, []);
-  return h.replace(/^#/, "");
-}
+// The current page, from the router (app/router.ts).
+const useHash = (): string => useRoute().hash;
 
 interface NavItem { hash: string; label: string; icon: LucideIcon }
 type Section = { title?: string; items: NavItem[] };
 
-// The navigation leads with the Playground, where you talk to what you own,
-// then follows the shadowing loop: bring data and a base model, train, watch
-// the run. Machines, where training runs, is setup, so it sits apart at the
-// foot.
-const sections: Section[] = [
+// Business mode walks one job at a time: its projects, a new one, the
+// playground. Research mode leads with the Playground, then the fine-tuning
+// loop's objects: data and base models, runs, evaluations. Machines, where
+// training runs, is setup, so it sits apart at the foot (Research only).
+const businessSections: Section[] = [
+  {
+    items: [
+      { hash: "", label: "Projects", icon: FolderKanban },
+      { hash: "projects/new", label: "New project", icon: Plus },
+      { hash: "playground", label: "Playground", icon: MessagesSquare },
+    ],
+  },
+];
+const researchSections: Section[] = [
   {
     items: [
       { hash: "playground", label: "Playground", icon: MessagesSquare },
       { hash: "", label: "Overview", icon: LayoutDashboard },
+      { hash: "projects", label: "Projects", icon: FolderKanban },
     ],
   },
   {
@@ -70,17 +82,30 @@ const sections: Section[] = [
     items: [
       { hash: "train", label: "New run", icon: Cpu },
       { hash: "runs", label: "Runs", icon: History },
+      { hash: "evaluate", label: "Evaluate", icon: ClipboardCheck },
+      { hash: "deployments", label: "Deployments", icon: Rocket },
     ],
   },
 ];
+const sectionsFor = (m: Mode | null) => (m === "research" ? researchSections : businessSections);
 const machinesItem: NavItem = { hash: "machines", label: "Machines", icon: MonitorSmartphone };
-const allItems = [...sections.flatMap((s) => s.items), machinesItem];
+const allItems = [...businessSections, ...researchSections].flatMap((s) => s.items).concat(machinesItem);
+
+// The nav item a hash belongs to: "projects/<id>" sits under Projects, a run
+// under Runs.
+function activeHash(m: Mode | null, hash: string): string {
+  const [section, arg] = hash.split("/");
+  if (section === "projects") return arg === "new" && m === "business" ? "projects/new" : m === "research" ? "projects" : "";
+  if (m === "business" && section === "") return "";
+  return section;
+}
 
 // glyphs are the menu's icons by name, for a host that draws the menu itself
 // (HostMenu): lucide's names, which the host knows.
 const glyphs = new Map<LucideIcon, string>([
   [LayoutDashboard, "layout-dashboard"], [MessagesSquare, "messages-square"], [Database, "database"],
   [Box, "box"], [Cpu, "cpu"], [History, "history"], [MonitorSmartphone, "monitor-smartphone"],
+  [FolderKanban, "folder-kanban"], [Plus, "plus"], [ClipboardCheck, "clipboard-check"], [Rocket, "rocket"],
 ]);
 
 // The repository; its README is the documentation.
@@ -93,6 +118,20 @@ const gap = 24;
 const pageRight = 32;
 const spring = { type: "spring", stiffness: 380, damping: 36 } as const;
 const storageKey = "of-island-open";
+
+// Phone widths: the island stays a rail, and opening it lays it over the page
+// instead of pushing the page into a sliver.
+const narrowQuery = "(max-width: 767px)";
+function useNarrow(): boolean {
+  return useSyncExternalStore(
+    (l) => {
+      const m = window.matchMedia(narrowQuery);
+      m.addEventListener("change", l);
+      return () => m.removeEventListener("change", l);
+    },
+    () => window.matchMedia(narrowQuery).matches,
+  );
+}
 
 function readOpen(): boolean {
   try {
@@ -236,6 +275,10 @@ function Studio({ onSignOut, embeddedIn }: { onSignOut?: () => void; embeddedIn?
   const [section, arg] = hash.split("/");
   const [methods, setMethods] = useState<MethodInfo[]>([]);
   const [open, setOpen] = useState(readOpen);
+  const narrow = useNarrow();
+  const [overlay, setOverlay] = useState(false);  // the island opened over the page, on a phone
+  const mode = useMode();
+  useEffect(() => { setOverlay(false); }, [hash, narrow]);  // going somewhere closes it
 
   useEffect(() => {
     getMethods().then((m) => setMethods(m.methods)).catch(() => {});
@@ -246,11 +289,10 @@ function Studio({ onSignOut, embeddedIn }: { onSignOut?: () => void; embeddedIn?
   useEffect(() => {
     if (!embeddedIn) return;
     reportRoute(hashToPage(hash));
-    reportTitle(allItems.find((i) => i.hash === section)?.label ?? "Overview");
-  }, [embeddedIn, hash, section]);
+    reportTitle(allItems.find((i) => i.hash === activeHash(mode, hash))?.label ?? "Projects");
+  }, [embeddedIn, hash, mode]);
 
-  const toggle = () =>
-    setOpen((o) => {
+  const toggle = () => narrow ? setOverlay((o) => !o) : setOpen((o) => {
       try {
         localStorage.setItem(storageKey, String(!o));
       } catch {
@@ -258,8 +300,17 @@ function Studio({ onSignOut, embeddedIn }: { onSignOut?: () => void; embeddedIn?
       }
       return !o;
     });
+  const islandOpen = narrow ? overlay : open;
+  const reserved = inset + (narrow ? railWidth : open ? openWidth : railWidth) + (narrow ? inset : gap);
 
   const page =
+    mode === null ? <ModeChooser /> :
+    section === "projects" && arg === "new" ? <CockpitStart /> :
+    section === "projects" && arg ? <Cockpit key={arg} id={arg} /> :
+    section === "projects" ? <Projects /> :
+    section === "evaluate" ? <Evaluate initialId={arg} /> :
+    section === "deployments" ? <Deployments /> :
+    section === "" && mode === "business" ? <Projects /> :
     section === "models" ? <Models /> :
     section === "datasets" ? <Datasets /> :
     section === "train" ? <Train methods={methods} /> :
@@ -272,18 +323,22 @@ function Studio({ onSignOut, embeddedIn }: { onSignOut?: () => void; embeddedIn?
     return (
       <main className="@container flex h-full min-h-0 flex-col overflow-y-auto bg-canvas px-6 pt-6 pb-8 *:shrink-0">
         {page}
-        <HostMenu />
+        <HostMenu mode={mode} />
       </main>
     );
   }
 
   return (
     <MotionConfig reducedMotion="user">
-      <div className="h-full" style={{ "--nav-right": `${inset + (open ? openWidth : railWidth)}px` } as CSSProperties}>
-        <Island open={open} onToggle={toggle} section={section} onSignOut={onSignOut} />
+      <div className="h-full" style={{ "--nav-right": `${inset + (islandOpen ? openWidth : railWidth)}px` } as CSSProperties}>
+        {narrow && overlay && (
+          <button type="button" aria-label="Close navigation" onClick={() => setOverlay(false)}
+                  className="fixed inset-0 z-40 bg-ink/30 backdrop-blur-[1px]" />
+        )}
+        <Island open={islandOpen} onToggle={toggle} mode={mode} active={activeHash(mode, hash)} onSignOut={onSignOut} />
         <motion.main
           initial={false}
-          animate={{ paddingLeft: inset + (open ? openWidth : railWidth) + gap, paddingRight: pageRight }}
+          animate={{ paddingLeft: reserved, paddingRight: narrow ? inset : pageRight }}
           transition={spring}
           className="@container flex h-full min-h-0 flex-col overflow-y-auto pt-6 pb-8 *:shrink-0"
         >
@@ -301,8 +356,8 @@ const fade = {
   transition: { duration: 0.12 },
 };
 
-function Island({ open, onToggle, section, onSignOut }: {
-  open: boolean; onToggle: () => void; section: string; onSignOut?: () => void;
+function Island({ open, onToggle, mode, active, onSignOut }: {
+  open: boolean; onToggle: () => void; mode: Mode | null; active: string; onSignOut?: () => void;
 }) {
   const [backend, setBackend] = useState<string>();
   const [version, setVersion] = useState<string>();
@@ -336,12 +391,14 @@ function Island({ open, onToggle, section, onSignOut }: {
         </span>
       </a>
 
+      {mode && <ModeSwitch open={open} mode={mode} />}
+
       <div className="mt-2 flex min-h-0 flex-col gap-0.5 overflow-y-auto px-1.5 [scrollbar-width:none]">
-        {sections.map((sec, i) => (
+        {mode && sectionsFor(mode).map((sec, i) => (
           <div key={sec.title ?? i} className="flex flex-col gap-0.5">
             {sec.title && <SectionTitle open={open}>{sec.title}</SectionTitle>}
             {sec.items.map((item) => (
-              <Item key={item.hash} item={item} open={open} active={section === item.hash} />
+              <Item key={item.hash} item={item} open={open} active={active === item.hash} />
             ))}
           </div>
         ))}
@@ -350,9 +407,14 @@ function Island({ open, onToggle, section, onSignOut }: {
       <div className="flex-1" />
 
       <div className="flex flex-col gap-0.5 px-1.5 pb-2">
-        <Item item={machinesItem} open={open} active={section === machinesItem.hash} />
-        <HfTokenButton open={open} />
-        <VramButton open={open} />
+        {mode && <FrontierRow open={open} />}
+        {mode === "research" && (
+          <>
+            <Item item={machinesItem} open={open} active={active === machinesItem.hash} />
+            <HfTokenButton open={open} />
+            <VramButton open={open} />
+          </>
+        )}
         <ActionRow open={open} icon={BookOpen} label="Docs" title="The README: SDK, CLI, methods, studio"
                    onClick={() => window.open(`${repo}#readme`, "_blank", "noreferrer")} />
         <ActionRow open={open} icon={ExternalLink} label="GitHub" title="github.com/open-gitagent/shadowLM"
@@ -398,6 +460,53 @@ function Island({ open, onToggle, section, onSignOut }: {
         </div>
       </div>
     </motion.nav>
+  );
+}
+
+// FrontierRow shows which frontier model fine-tunes are measured against, and
+// opens its settings.
+function FrontierRow({ open }: { open: boolean }) {
+  const { frontier, refresh } = useFrontier();
+  const [dialog, setDialog] = useState(false);
+  return (
+    <>
+      <ActionRow open={open} icon={Cloud} label="Frontier model"
+                 hint={frontier ? frontier.model : "not set"}
+                 title="The model your fine-tunes are measured against"
+                 onClick={() => setDialog(true)} />
+      <FrontierDialog open={dialog} onOpenChange={setDialog} current={frontier} onSaved={() => refresh()} />
+    </>
+  );
+}
+
+// ModeSwitch flips between Business and Research. Open, it is a two-part
+// control under the name; as a rail, one button that shows the other mode.
+function ModeSwitch({ open, mode }: { open: boolean; mode: Mode }) {
+  const modes: { m: Mode; label: string; icon: LucideIcon }[] = [
+    { m: "business", label: "Business", icon: Target },
+    { m: "research", label: "Research", icon: FlaskConical },
+  ];
+  if (!open) {
+    const other = modes.find((x) => x.m !== mode)!;
+    return (
+      <div className="mx-1.5 mt-1 grid shrink-0 place-items-center">
+        <IconButton label={`Switch to ${other.label}`} onClick={() => setMode(other.m)}>
+          <other.icon className="size-3.5" />
+        </IconButton>
+      </div>
+    );
+  }
+  return (
+    <div role="radiogroup" aria-label="Mode" className="mx-1.5 mt-1 grid shrink-0 grid-cols-2 gap-0.5 rounded-lg bg-surface-2/70 p-0.5">
+      {modes.map((x) => (
+        <button key={x.m} type="button" role="radio" aria-checked={mode === x.m} onClick={() => setMode(x.m)}
+          className={cn("flex h-7 items-center justify-center gap-1.5 rounded-md text-xs font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/40",
+            mode === x.m ? "bg-card text-foreground shadow-paper" : "text-muted-foreground hover:text-foreground")}>
+          <x.icon className="size-3.5" strokeWidth={1.75} />
+          {x.label}
+        </button>
+      ))}
+    </div>
   );
 }
 
@@ -603,7 +712,7 @@ function VramButton({ open }: { open: boolean }) {
 // place of the island (lib/embed.ts): the same sections, the island's
 // actions the person's role in the host allows, and its links. The host
 // says when an action is chosen; it runs here, where its dialog is.
-function HostMenu() {
+function HostMenu({ mode }: { mode: Mode | null }) {
   const hf = useHfToken();
   const vram = useVram();
   const admin = allows("admin");
@@ -613,12 +722,12 @@ function HostMenu() {
 
   useEffect(() => {
     const item = (i: NavItem): MenuItem => ({ label: i.label, icon: glyphs.get(i.icon) ?? "", path: hashToPage(i.hash) });
-    const foot: MenuItem[] = [item(machinesItem)];
-    if (admin) foot.push({ label: "Hugging Face token", icon: "key-round", hint: hf.isSet ? "set" : "not set", action: "hf-token" });
-    if (operator) foot.push({ label: "Clean VRAM", icon: vram.busy ? "loader-circle" : "zap", hint: vram.hint || undefined, action: "clear-vram" });
+    const foot: MenuItem[] = mode === "research" ? [item(machinesItem)] : [];
+    if (admin && mode === "research") foot.push({ label: "Hugging Face token", icon: "key-round", hint: hf.isSet ? "set" : "not set", action: "hf-token" });
+    if (operator && mode === "research") foot.push({ label: "Clean VRAM", icon: vram.busy ? "loader-circle" : "zap", hint: vram.hint || undefined, action: "clear-vram" });
     foot.push({ label: "Docs", icon: "book-open", href: `${repo}#readme` }, { label: "GitHub", icon: "external-link", href: repo });
-    reportMenu({ groups: sections.map((s) => ({ title: s.title, items: s.items.map(item) })), foot });
-  }, [admin, operator, hf.isSet, vram.busy, vram.hint]);
+    reportMenu({ groups: sectionsFor(mode).map((s) => ({ title: s.title, items: s.items.map(item) })), foot });
+  }, [mode, admin, operator, hf.isSet, vram.busy, vram.hint]);
 
   useEffect(() => onHostAction((id) => {
     if (id === "hf-token" && admin) setOpen(true);

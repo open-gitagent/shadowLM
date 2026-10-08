@@ -1,9 +1,11 @@
 // Playground — a clean chat. The model picker is a command palette: one
-// search across base open models AND your shadows, grouped. Pick a shadow and a
-// quiet "shadow mode" toggle appears — the shadow answers next to its base.
+// search across base open models AND your fine-tunes, grouped. Pick a fine-tune
+// and a quiet "compare with base" toggle appears — it answers next to its base.
+// Answers are background tasks (chatAsync), so a cold model's first reply still
+// lands even when it takes longer than the proxy holds a request.
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowUp, Check, ChevronDown, ChevronRight, LoaderCircle, MessagesSquare, RotateCcw, Search, TriangleAlert } from "lucide-react";
-import { chat, getCheckpoints, getJobs, getModels, prewarm } from "@/api";
+import { chatAsync, getCheckpoints, getJobs, getModels, prewarm } from "@/api";
 import type { CatalogModel, Checkpoint, JobSummary } from "@/api";
 import { Dots } from "@/components/common";
 import { Button } from "@/components/ui/button";
@@ -79,7 +81,7 @@ export default function Playground() {
   useEffect(() => { inputRef.current?.focus(); });
   useEffect(() => { if (logRef.current) logRef.current.scrollTop = 1e9; }, [msgs, base]);
 
-  // a shadow's saved versions — only mid-run if it was trained with save_steps
+  // a fine-tune's saved versions — only mid-run if it was trained with save_steps
   useEffect(() => {
     setCkpts([]); setCkptStep(null);
     if (!adapter) return;
@@ -130,7 +132,7 @@ export default function Playground() {
       return s || t.trim();  // reply was all think-block: show it rather than nothing
     };
     const ask = (ad: string | null, h: Msg[]) =>
-      chat({ model, adapter: ad, checkpoint: ad ? ckptStep : null,
+      chatAsync({ model, adapter: ad, checkpoint: ad ? ckptStep : null,
              messages: h, max_new_tokens: 256, temperature: 0.7, top_p: 0.95 })
         .then((o) => clean(o.text)).catch((e: Error) => `⚠ ${e.message}`);
     try {
@@ -156,7 +158,7 @@ export default function Playground() {
         <MessagesSquare className="size-4 shrink-0 text-muted-foreground" strokeWidth={1.75} />
         <button onClick={() => { setPop((v) => !v); setQ(""); }}
           className="flex min-w-0 items-center gap-2 rounded-md px-1.5 py-1 text-sm font-semibold transition-colors hover:bg-surface-2">
-          <span className="text-xs font-normal text-muted-foreground">{adapter ? "Shadow" : "Base"}</span>
+          <span className="text-xs font-normal text-muted-foreground">{adapter ? "Fine-tune" : "Base"}</span>
           <span className={cn("truncate", adapter && "text-primary")}>{label}</span>
           <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
         </button>
@@ -164,7 +166,7 @@ export default function Playground() {
           <label className="flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
             <input type="checkbox" checked={compare}
                    onChange={(e) => setCompare(e.target.checked)} />
-            Shadow mode <span className="text-muted-foreground/70">(base ↔ shadow)</span>
+            Compare with base
           </label>
         )}
         {adapter && ckpts.length > 1 && (
@@ -192,12 +194,12 @@ export default function Playground() {
       </div>
 
       {/* model picker — a command palette, not a dropdown: one search across
-          base models AND your shadows, grouped. */}
+          base models AND your fine-tunes, grouped. */}
       <Dialog open={pop} onOpenChange={setPop}>
         <DialogContent showCloseButton={false}
           className="top-[11vh] translate-y-0 gap-0 overflow-hidden p-0 sm:max-w-2xl data-open:zoom-in-100 data-closed:zoom-out-100">
           <DialogTitle className="sr-only">Pick a model</DialogTitle>
-          <DialogDescription className="sr-only">Filter base models or your shadows, or paste any Hugging Face id.</DialogDescription>
+          <DialogDescription className="sr-only">Filter base models or your fine-tunes, or paste any Hugging Face id.</DialogDescription>
           {/* prompt line */}
           <div className="flex items-center gap-2.5 border-b border-border px-4 py-3">
             <Search className="size-4 shrink-0 text-muted-foreground" />
@@ -209,7 +211,7 @@ export default function Playground() {
                   else if (tunedRows[0]) pickTuned(tunedRows[0]);
                 }
               }}
-              placeholder="Filter base models or your shadows · paste any HF id"
+              placeholder="Filter base models or your fine-tunes · paste any HF id"
               className="flex-1 border-0 bg-transparent p-0 text-sm outline-none placeholder:text-muted-foreground" />
             <kbd className="rounded border border-border px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">esc</kbd>
           </div>
@@ -234,8 +236,8 @@ export default function Playground() {
               );
             })}
 
-            {/* shadows */}
-            <div className="mt-1.5 border-t border-border px-4 pt-3 pb-1 text-[11px] font-medium text-muted-foreground">Shadows · your runs</div>
+            {/* fine-tunes */}
+            <div className="mt-1.5 border-t border-border px-4 pt-3 pb-1 text-[11px] font-medium text-muted-foreground">Fine-tunes · your runs</div>
             {tunedRows.length ? tunedRows.map((j) => {
               const on = j.job_id === adapter;
               return (
@@ -250,13 +252,13 @@ export default function Playground() {
                     <span className="text-muted-foreground"> · {j.method}</span>
                   </span>
                   <span className="shrink-0 text-xs text-muted-foreground">
-                    shadows {(j.base_model || "").split("/").pop()}
+                    on {(j.base_model || "").split("/").pop()}
                   </span>
                 </button>
               );
             }) : (
               <div className="px-4 py-3 text-sm text-muted-foreground">
-                No shadows yet. <a href="#train" className="font-medium text-primary hover:underline">Train one</a> to see it here.
+                No fine-tunes yet. <a href="#train" className="font-medium text-primary hover:underline">Train one</a> to see it here.
               </div>
             )}
           </div>
@@ -274,11 +276,11 @@ export default function Playground() {
             <img src="/logo1.png" alt=""
                  className="mb-2 hidden size-28 dark:block [filter:drop-shadow(0_0_40px_#ffffff33)_drop-shadow(0_0_14px_#ffffff22)]" />
             <h1 className="text-xl font-semibold tracking-[-0.015em]">
-              {adapter ? "Does it cast the same shadow?" : "Talk to a model"}
+              {adapter ? "Does it beat its base?" : "Talk to a model"}
             </h1>
             <p className="text-[13px] text-muted-foreground">
               Base <span className="font-mono text-foreground">{model.split("/").pop()}</span>
-              {adapter && <> · shadow <span className="font-mono text-primary">{adapter.slice(0, 8)}</span></>}
+              {adapter && <> · fine-tune <span className="font-mono text-primary">{adapter.slice(0, 8)}</span></>}
             </p>
           </div>
         ) : compare && adapter ? (
@@ -287,14 +289,14 @@ export default function Playground() {
               <UserBubble key={i} text={m.content} />
             ) : (
               <div key={i} className="grid grid-cols-2 gap-3">
-                <Pane tone="tuned" label="Shadow" text={m.content} />
+                <Pane tone="tuned" label="Fine-tune" text={m.content} />
                 <Pane tone="base" label="Base" text={base[i]?.content} />
               </div>
             ))}
-            {/* until the shadow answers, both panes wait here; after, its row
+            {/* until the fine-tune answers, both panes wait here; after, its row
                 carries the base's wait, so don't draw a second one */}
             {busy && msgs[msgs.length - 1]?.role === "user" && (
-              <div className="grid grid-cols-2 gap-3"><Pane tone="tuned" label="Shadow" /><Pane tone="base" label="Base" /></div>
+              <div className="grid grid-cols-2 gap-3"><Pane tone="tuned" label="Fine-tune" /><Pane tone="base" label="Base" /></div>
             )}
           </div>
         ) : (
@@ -318,7 +320,7 @@ export default function Playground() {
             onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
             placeholder={!allows("operator") ? needs("operator")
                          : warming ? "Warming up the model — first load can take a couple of minutes…"
-                                   : "Say something to the shadow…"}
+                                   : "Ask something…"}
             disabled={!allows("operator")}
             className="field-sizing-content max-h-40 min-h-9 min-w-0 grow resize-none rounded-lg border border-input bg-transparent px-3 py-2 text-[13px] outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50" />
           <Button size="icon" className="size-9" aria-label="Send" onClick={send} disabled={!input.trim() || busy || warming || !allows("operator")}>

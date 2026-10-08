@@ -53,7 +53,7 @@ let passWaiters: (() => void)[] = [];
 // A page of the studio, as the host sees it: "/" or "/<section>[/<id>]",
 // the studio's own #<section>/<id> as a path. The only places the host may
 // move it to.
-const sections = ["playground", "datasets", "models", "train", "runs", "machines"];
+const sections = ["playground", "datasets", "models", "train", "runs", "machines", "projects", "evaluate", "deployments"];
 export const isPage = (p: unknown): p is string =>
   typeof p === "string" && p.length <= 512 &&
   (p === "/" || new RegExp(`^/(${sections.join("|")})(/[A-Za-z0-9._-]+)?$`).test(p));

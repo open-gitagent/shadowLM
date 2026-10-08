@@ -1,12 +1,13 @@
 // Dataset library — upload JSONL, or reference a HuggingFace dataset (with a
 // streamed preview before you add it). Both become trainable by reference.
 import { useEffect, useRef, useState } from "react";
-import { ChevronDown, ChevronRight, Database, LoaderCircle, Search, Upload } from "lucide-react";
+import { ChevronDown, ChevronRight, Database, FileJson, LoaderCircle, Radio, Search, Trash2, Upload } from "lucide-react";
 import {
-  addHFDataset, createDataset, deleteDataset, getDataset, getDatasets, hfInfo, previewHF,
+  addHFDataset, captureToDataset, createDataset, deleteCapture, deleteDataset, getCaptures, getDataset,
+  getDatasets, hfInfo, importTraces, previewHF,
 } from "@/api";
-import type { DatasetMeta, HFPreview } from "@/api";
-import { EmptyState, Field, Mono, PageHeader } from "@/components/common";
+import type { CaptureInfo, DatasetMeta, HFPreview } from "@/api";
+import { ConfirmDelete, EmptyState, Field, Mono, PageHeader, SectionHeader } from "@/components/common";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -42,11 +43,15 @@ export default function Datasets() {
   const [list, setList] = useState<DatasetMeta[]>([]);
   const [search, setSearch] = useState("");
   const [view, setView] = useState<"mine" | "explore">("mine");
-  const [tab, setTab] = useState<"none" | "upload" | "hf">("none");
+  const [tab, setTab] = useState<"none" | "upload" | "hf" | "traces">("none");
+  const [captures, setCaptures] = useState<CaptureInfo[]>([]);
   const [rowPreview, setRowPreview] = useState<PreviewState | null>(null);
   const [previewing, setPreviewing] = useState<string | null>(null);
 
-  const refresh = () => getDatasets().then((d) => setList(d.datasets)).catch(() => {});
+  const refresh = () => {
+    getDatasets().then((d) => setList(d.datasets)).catch(() => {});
+    getCaptures().then((c) => setCaptures(c.captures)).catch(() => {});
+  };
   useEffect(() => { refresh(); }, []);
 
   async function previewRow(d: DatasetMeta) {
@@ -85,6 +90,9 @@ export default function Datasets() {
         description="Upload JSONL, or reference a Hugging Face dataset. Chat, instruction, preference, or raw text — the format is auto-detected."
         actions={allows("operator") && (
           <>
+            <Button variant="outline" onClick={() => setTab("traces")}>
+              <FileJson /> Import traces
+            </Button>
             <Button variant="outline" onClick={() => setTab("hf")}>
               <Database /> Hugging Face
             </Button>
@@ -112,6 +120,18 @@ export default function Datasets() {
             <DialogDescription>Streamed preview first; nothing is downloaded until you train on it.</DialogDescription>
           </DialogHeader>
           <HFForm onDone={() => { setTab("none"); refresh(); }} />
+        </DialogContent>
+      </Dialog>
+      <Dialog open={tab === "traces"} onOpenChange={(o) => !o && setTab("none")}>
+        <DialogContent className="sm:max-w-xl">
+          <DialogHeader>
+            <DialogTitle>Import traces</DialogTitle>
+            <DialogDescription>
+              OpenTelemetry GenAI traces from an agent that's already instrumented: an OTLP JSON export, or a JSON
+              array of spans. Each conversation becomes one chat example.
+            </DialogDescription>
+          </DialogHeader>
+          <TracesForm onDone={() => { setTab("none"); refresh(); }} />
         </DialogContent>
       </Dialog>
 
@@ -200,6 +220,8 @@ export default function Datasets() {
         </div>
       )}
 
+      {view === "mine" && captures.length > 0 && <Captures captures={captures} onChange={refresh} />}
+
       <Dialog open={!!rowPreview} onOpenChange={(o) => !o && setRowPreview(null)}>
         <DialogContent className="gap-0 p-0 sm:max-w-3xl">
           {rowPreview && (
@@ -213,6 +235,143 @@ export default function Datasets() {
         </DialogContent>
       </Dialog>
     </>
+  );
+}
+
+// TracesForm reads an OTel JSON file in the browser and sends it to be turned
+// into a chat dataset on the server.
+function TracesForm({ onDone }: { onDone: () => void }) {
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const file = useRef<HTMLInputElement>(null);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setErr("");
+    const f = file.current?.files?.[0];
+    if (!f) return setErr("Pick a .json file of traces first.");
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(await f.text());
+    } catch {
+      return setErr(`${f.name} isn't valid JSON. Export the traces as OTLP JSON (or a JSON array of spans) and try again.`);
+    }
+    setBusy(true);
+    try {
+      await importTraces(name.trim() || f.name.replace(/\.json$/i, ""), parsed);
+      onDone();
+    } catch (ex) {
+      setErr((ex as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form onSubmit={submit} className="grid gap-3">
+      <Field label="Name" htmlFor="tr-name" hint="Defaults to the file's name">
+        <Input id="tr-name" placeholder="support-agent-traces" value={name} onChange={(e) => setName(e.target.value)} />
+      </Field>
+      <div className="flex flex-wrap items-center gap-2.5">
+        <input ref={file} type="file" accept=".json,application/json" aria-label="Traces file"
+               className="text-xs text-muted-foreground file:mr-2 file:rounded-md file:border file:border-border file:bg-card file:px-2.5 file:py-1 file:text-xs file:text-foreground hover:file:bg-surface-2" />
+        <Button type="submit" className="ml-auto" disabled={busy}>
+          {busy && <LoaderCircle className="animate-spin" />} {busy ? "Importing…" : "Import"}
+        </Button>
+      </div>
+      {err && <p className="text-sm text-destructive">{err}</p>}
+    </form>
+  );
+}
+
+// Captures are agent traffic recorded through the frontier model (a project's
+// "Connect your agent" step starts them); saving one turns its conversations
+// into a dataset.
+function Captures({ captures, onChange }: { captures: CaptureInfo[]; onChange: () => void }) {
+  const [saving, setSaving] = useState<string | null>(null);
+  const [del, setDel] = useState<CaptureInfo | null>(null);
+  const [err, setErr] = useState("");
+  const operator = allows("operator");
+
+  async function save(c: CaptureInfo) {
+    setSaving(c.capture_id);
+    setErr("");
+    try {
+      await captureToDataset(c.capture_id, c.name);
+      onChange();
+    } catch (ex) {
+      setErr(`${c.name}: ${(ex as Error).message}`);
+    } finally {
+      setSaving(null);
+    }
+  }
+
+  return (
+    <section className="mt-8">
+      <SectionHeader title="Agent captures"
+        description="Conversations recorded while an agent talked to your frontier model through a capture URL. Save one as a dataset to fine-tune on it." />
+      {err && <p className="mb-3 text-sm text-destructive">{err}</p>}
+      <div className="@container rounded-xl border">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Name</TableHead>
+              <TableHead>Status</TableHead>
+              <TableHead className="text-right">Calls</TableHead>
+              <TableHead className="hidden @2xl:table-cell">Started</TableHead>
+              <TableHead className="text-right">Actions</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {captures.map((c) => (
+              <TableRow key={c.capture_id}>
+                <TableCell className="max-w-80">
+                  <div className="flex min-w-0 items-center gap-2.5">
+                    <Radio className="size-4 shrink-0 text-muted-foreground" strokeWidth={1.75} />
+                    <span className="truncate font-medium">{c.name}</span>
+                  </div>
+                </TableCell>
+                <TableCell>
+                  <Badge variant="outline" className={cn("font-normal",
+                    c.status === "open" ? "border-primary/25 bg-primary/10 text-primary" : "text-muted-foreground")}>
+                    {c.status === "open" ? "Listening" : "Closed"}
+                  </Badge>
+                </TableCell>
+                <TableCell className="text-right tabular-nums">{c.calls.toLocaleString()}</TableCell>
+                <TableCell className="hidden text-sm text-muted-foreground @2xl:table-cell">
+                  {new Date(c.created * 1000).toLocaleString()}
+                </TableCell>
+                <TableCell>
+                  <div className="flex justify-end gap-1.5">
+                    {operator && (
+                      <Button size="sm" variant="outline" disabled={!c.calls || saving === c.capture_id}
+                        title={c.calls ? undefined : "Nothing captured yet"} onClick={() => save(c)}>
+                        {saving === c.capture_id ? <><LoaderCircle className="animate-spin" /> Saving…</> : "Save as dataset"}
+                      </Button>
+                    )}
+                    {operator && (
+                      <Button size="icon-sm" variant="ghost" aria-label={`Delete ${c.name}`}
+                        className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive" onClick={() => setDel(c)}>
+                        <Trash2 />
+                      </Button>
+                    )}
+                  </div>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
+      <ConfirmDelete what={del?.name} onClose={() => setDel(null)}
+        onConfirm={() => {
+          const c = del;
+          setDel(null);
+          if (c) deleteCapture(c.capture_id).then(onChange).catch((ex) => setErr((ex as Error).message));
+        }}>
+        Its recorded calls are removed and its capture URL stops working. Datasets already saved from it stay.
+      </ConfirmDelete>
+    </section>
   );
 }
 
