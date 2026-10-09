@@ -220,39 +220,45 @@ class CaptureProxy:
 
     # ---- reconstruction -----------------------------------------------------
     def trajectories(self) -> list[Trajectory]:
-        """Reconstruct captured calls into episodes.
-
-        Within a session (explicit `x-session-id`, or implicit), a call whose
-        messages extend the previous conversation replaces it — so the final
-        trajectory holds the full multi-turn history. Calls that don't extend
-        anything start a new trajectory.
-        """
+        """Reconstruct captured calls into episodes (see `reconstruct`)."""
         with self._lock:
             calls = list(self.calls)
-        episodes: dict[str, list[list]] = {}  # session -> list of [messages, tools]
-        for call in calls:
-            convo = call.messages + [call.response]
-            buckets = episodes.setdefault(call.session, [])
-            for bucket in reversed(buckets):
-                if _is_prefix(bucket[0], call.messages):
-                    # genuinely extends the episode — replace with the longer view
-                    bucket[0] = convo
-                    bucket[1] = call.tools or bucket[1]
-                    break
-            else:
-                # new conversation, or a regeneration from an earlier point —
-                # keep it as its own trajectory rather than dropping history
-                buckets.append([convo, call.tools])
-        out = []
-        for session, buckets in episodes.items():
-            for convo, tools in buckets:
-                out.append(Trajectory(messages=convo, tools=tools,
-                                      metadata={"session": session}))
-        return out
+        return reconstruct(calls)
 
     def clear(self) -> None:
         with self._lock:
             self.calls.clear()
+
+
+def reconstruct(calls: list[_Call]) -> list[Trajectory]:
+    """Reconstruct recorded calls into episodes.
+
+    Within a session (explicit `x-session-id`, or implicit), a call whose
+    messages extend the previous conversation replaces it — so the final
+    trajectory holds the full multi-turn history. Calls that don't extend
+    anything start a new trajectory. Shared by the local capture proxy and the
+    studio's pass-through capture in front of a frontier model.
+    """
+    episodes: dict[str, list[list]] = {}  # session -> list of [messages, tools]
+    for call in calls:
+        convo = call.messages + [call.response]
+        buckets = episodes.setdefault(call.session, [])
+        for bucket in reversed(buckets):
+            if _is_prefix(bucket[0], call.messages):
+                # genuinely extends the episode — replace with the longer view
+                bucket[0] = convo
+                bucket[1] = call.tools or bucket[1]
+                break
+        else:
+            # new conversation, or a regeneration from an earlier point —
+            # keep it as its own trajectory rather than dropping history
+            buckets.append([convo, call.tools])
+    out = []
+    for session, buckets in episodes.items():
+        for convo, tools in buckets:
+            out.append(Trajectory(messages=convo, tools=tools,
+                                  metadata={"session": session}))
+    return out
 
 
 def capture(model, *, host: str = "127.0.0.1", port: int = DEFAULT_PORT) -> CaptureProxy:

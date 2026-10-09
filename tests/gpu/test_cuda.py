@@ -214,6 +214,12 @@ MATRIX = {
                     kwargs=dict(grpo_group_size=2, grpo_max_completion_length=24)),
     "grpo-trajectories": dict(legal=("bf16", "4bit"), illegal=(), data="groups",
                               eval=False, reload=True, method="grpo"),
+    "sdft":    dict(legal=("bf16", "4bit"), illegal=(), data="rows", eval=False,
+                    reload=True,
+                    kwargs=dict(sdft_max_completion_length=24)),
+    "sdpo":    dict(legal=("bf16", "4bit"), illegal=(), data="prompts", eval=False,
+                    reload=True,
+                    kwargs=dict(sdpo_group_size=2, sdpo_max_completion_length=24)),
     "more":    dict(legal=("bf16", "4bit"), illegal=(), data="facts", eval=True,
                     reload=True, steps=80,
                     kwargs=dict(retrieval_layers=4)),
@@ -240,6 +246,14 @@ def _matrix_cell(name: str, spec: dict, base: str):
         def brevity(prompts, completions, answer, types=None):
             return [max(0.0, 1.0 - len(c) / 80) for c in completions]
         kwargs["reward_fns"] = [brevity]
+    if name == "sdpo":
+        # Exercise both teacher paths: a sibling solution on a hit, rich
+        # feedback on a miss.
+        def color_or_hint(prompts, completions, answer, types=None):
+            return [1.0 if "blue" in c.lower() else
+                    (0.0, "Answer with a single color word, like 'Blue'.")
+                    for c in completions]
+        kwargs["reward_fns"] = [color_or_hint]
 
     data = DATA[spec["data"]]()
     train = data

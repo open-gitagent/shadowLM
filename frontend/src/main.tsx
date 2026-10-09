@@ -1,16 +1,20 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import "./index.css";
-import App from "./App";
+import App from "@/app/App";
+import { QueryClientProvider } from "@tanstack/react-query";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { queryClient } from "@/lib/queries";
 import { embedded, pageToHash, startEmbed } from "@/lib/embed";
 
 const render = () =>
   createRoot(document.getElementById("root")!).render(
     <StrictMode>
-      <TooltipProvider delayDuration={300}>
-        <App />
-      </TooltipProvider>
+      <QueryClientProvider client={queryClient}>
+        <TooltipProvider delayDuration={300}>
+          <App />
+        </TooltipProvider>
+      </QueryClientProvider>
     </StrictMode>,
   );
 

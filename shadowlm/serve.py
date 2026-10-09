@@ -327,6 +327,11 @@ _MODEL_CATALOG = [
 
 # Sample JSONLs shipped in the wheel (shadowlm/_samples) — a fresh studio seeds
 # these so the Datasets page isn't empty on first spin.
+# Synthesis history is bounded on both axes: a run keeps its most recent log
+# lines, and the store keeps its most recent runs. Neither grows without end.
+_SYNTH_LOG_LINES = 200
+_SYNTH_KEEP = 100
+
 _SAMPLE_DIR = Path(__file__).resolve().parent / "_samples"
 _SAMPLE_NAMES = {
     "chat": "ShadowLM Q&A · chat",
@@ -475,6 +480,289 @@ class DatasetStore:
         return found
 
 
+# ---- projects: one fine-tune, as Business mode walks it ----------------------
+# A project ties together the fine-tune a business user is making for one job:
+# its data (a dataset), the training run, the evaluation that proves it. Its
+# stage is read off those links by the UI; the store only keeps them. Goals:
+# "knowledge" (teach it facts), "task" (teach it a job from examples),
+# "takeover" (move a task off a frontier model, from captured agent traffic).
+_PROJECT_GOALS = ("knowledge", "task", "takeover")
+_PROJECT_LINKS = ("dataset_id", "run_id", "eval_id", "synth_id")  # synth_id: examples being written
+
+
+class ProjectStore:
+    """Fine-tune projects in one JSON file under the server's work dir."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self._lock = threading.Lock()
+        try:
+            self._items: dict[str, dict] = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            self._items = {}
+
+    def _save(self) -> None:
+        self.path.write_text(json.dumps(self._items, indent=1))
+
+    def list(self) -> list[dict]:
+        with self._lock:
+            return sorted(self._items.values(), key=lambda d: -d["updated"])
+
+    def get(self, sid: str) -> dict | None:
+        return self._items.get(sid)
+
+    def create(self, name: str, goal: str) -> dict:
+        name = (name or "").strip()
+        if not name or len(name) > 80:
+            raise ValueError("a project needs a name of 1-80 characters")
+        if goal not in _PROJECT_GOALS:
+            raise ValueError(f"goal must be one of {', '.join(_PROJECT_GOALS)}")
+        now = int(time.time())
+        item = {"project_id": uuid.uuid4().hex[:12], "name": name, "goal": goal,
+                "dataset_id": None, "run_id": None, "eval_id": None, "synth_id": None, "history": [],
+                "created": now, "updated": now}
+        with self._lock:
+            self._items[item["project_id"]] = item
+            self._save()
+        return item
+
+    def update(self, sid: str, patch: dict) -> dict | None:
+        with self._lock:
+            item = self._items.get(sid)
+            if item is None:
+                return None
+            if "name" in patch:
+                name = (patch["name"] or "").strip()
+                if not name or len(name) > 80:
+                    raise ValueError("a project needs a name of 1-80 characters")
+                item["name"] = name
+            for k in _PROJECT_LINKS:
+                if k in patch:
+                    v = patch[k]
+                    if v is not None and not _PLAIN_ID.fullmatch(str(v)):
+                        raise ValueError(f"field {k!r} must be a plain id")
+            # a new fine-tune makes a new version: the one it replaces, with its
+            # evaluation, moves to history so versions can be compared
+            new_run = patch.get("run_id", item.get("run_id"))
+            if "run_id" in patch and item.get("run_id") and new_run != item["run_id"]:
+                item.setdefault("history", []).append(
+                    {"run_id": item["run_id"], "eval_id": item.get("eval_id"),
+                     "dataset_id": item.get("run_dataset_id", item.get("dataset_id")),
+                     "replaced": int(time.time())})
+                item["eval_id"] = None
+            for k in _PROJECT_LINKS:
+                if k in patch:
+                    item[k] = patch[k]
+            # what the current version trained on: the data can change under it
+            # (more examples written) and the cockpit offers a new version then
+            if "run_id" in patch:
+                item["run_dataset_id"] = item.get("dataset_id")
+            item.setdefault("history", [])
+            item["updated"] = int(time.time())
+            self._save()
+            return dict(item)
+
+    def delete(self, sid: str) -> bool:
+        with self._lock:
+            if self._items.pop(sid, None) is None:
+                return False
+            self._save()
+            return True
+
+
+# ---- captures: an agent's traffic to its frontier model, recorded ------------
+# A capture session is an OpenAI-compatible URL the user points their agent at
+# (base URL /v1/capture/<id>): every call passes through to the frontier model
+# configured in settings and is recorded, then reconstructed into episodes
+# (capture.reconstruct) and saved as a dataset to fine-tune on. The agent is
+# not modified. The id is the URL's only secret, so it is long and random, and
+# a closed session stops forwarding.
+_CAPTURE_MAX_CALLS = 5000
+
+
+class CaptureStore:
+    """Capture sessions, one JSON file each under <work>/captures/."""
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self._lock = threading.Lock()
+        self._items: dict[str, dict] = {}
+        for f in sorted(root.glob("*.json")):
+            try:
+                d = json.loads(f.read_text())
+                self._items[d["capture_id"]] = d
+            except (OSError, ValueError, KeyError):
+                continue
+
+    def _save(self, item: dict) -> None:
+        self.root.mkdir(parents=True, exist_ok=True)
+        _write_private(self.root / f"{item['capture_id']}.json", json.dumps(item))
+
+    def create(self, name: str, project_id: str | None = None) -> dict:
+        name = (name or "").strip()[:80] or "Agent capture"
+        if project_id is not None and not _PLAIN_ID.fullmatch(str(project_id)):
+            raise ValueError("project_id must be a plain id")
+        item = {"capture_id": uuid.uuid4().hex + uuid.uuid4().hex[:8], "name": name,
+                "project_id": project_id, "status": "open",
+                "created": int(time.time()), "calls": []}
+        with self._lock:
+            self._items[item["capture_id"]] = item
+            self._save(item)
+        return item
+
+    def get(self, cid: str) -> dict | None:
+        return self._items.get(cid)
+
+    def record(self, cid: str, call: dict) -> None:
+        with self._lock:
+            item = self._items[cid]
+            item["calls"].append(call)
+            if len(item["calls"]) >= _CAPTURE_MAX_CALLS:
+                item["status"] = "closed"  # a cap, so a leaked URL can't run forever
+            self._save(item)
+
+    def close(self, cid: str) -> dict | None:
+        with self._lock:
+            item = self._items.get(cid)
+            if item is None:
+                return None
+            item["status"] = "closed"
+            self._save(item)
+            return item
+
+    def delete(self, cid: str) -> bool:
+        with self._lock:
+            if self._items.pop(cid, None) is None:
+                return False
+            (self.root / f"{cid}.json").unlink(missing_ok=True)
+            return True
+
+    def list(self) -> list[dict]:
+        with self._lock:
+            items = sorted(self._items.values(), key=lambda d: -d["created"])
+        return [{k: v for k, v in d.items() if k != "calls"} | {"calls": len(d["calls"])}
+                for d in items]
+
+
+def _capture_trajectories(item: dict):
+    from .capture import _Call, reconstruct  # noqa: PLC0415
+
+    return reconstruct([_Call(session=c.get("session") or "", messages=c["messages"],
+                              response=c["response"], tools=c.get("tools"), ts=c.get("ts", 0.0))
+                        for c in item["calls"]])
+
+
+# ---- deployments: a fine-tune behind an OpenAI-compatible endpoint -----------
+# A deployment serves one fine-tune (a run, optionally at a checkpoint) at
+# /openai/v1/chat/completions under its own name and key, so an agent switches
+# to it by changing its base URL, key and model name. The key is shown once and
+# stored hashed; deleting the deployment revokes it.
+class DeploymentStore:
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self._lock = threading.Lock()
+        try:
+            self._items: dict[str, dict] = json.loads(path.read_text())
+        except (OSError, ValueError):
+            self._items = {}
+        self._dirty_at = 0.0
+
+    def _save(self) -> None:
+        _write_private(self.path, json.dumps(self._items, indent=1))
+
+    def list(self) -> list[dict]:
+        with self._lock:
+            return [{k: v for k, v in d.items() if k != "key_hash"}
+                    for d in sorted(self._items.values(), key=lambda d: -d["created"])]
+
+    def create(self, *, name: str, run_id: str, base_model: str,
+               checkpoint: int | None, project_id: str | None) -> tuple[dict, str]:
+        name = (name or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", name):
+            raise ValueError("a deployment name is 1-64 letters, digits, '.', '_' or '-', "
+                             "starting with a letter or digit: it becomes the API's model name")
+        with self._lock:
+            if any(d["name"] == name for d in self._items.values()):
+                raise ValueError(f"a deployment named {name!r} already exists")
+            key = "slmd_" + uuid.uuid4().hex + uuid.uuid4().hex[:8]
+            item = {"deployment_id": uuid.uuid4().hex[:12], "name": name, "run_id": run_id,
+                    "base_model": base_model, "checkpoint": checkpoint,
+                    "project_id": project_id, "key_prefix": key[:9],
+                    "key_hash": hashlib.sha256(key.encode()).hexdigest(),
+                    "created": int(time.time()), "requests": 0, "last_used": None}
+            self._items[item["deployment_id"]] = item
+            self._save()
+        return {k: v for k, v in item.items() if k != "key_hash"}, key
+
+    def by_key(self, key: str) -> dict | None:
+        h = hashlib.sha256(key.encode()).hexdigest()
+        with self._lock:
+            return next((d for d in self._items.values()
+                         if hmac.compare_digest(d["key_hash"], h)), None)
+
+    def used(self, dep_id: str) -> None:
+        with self._lock:
+            d = self._items.get(dep_id)
+            if d is None:
+                return
+            d["requests"] += 1
+            d["last_used"] = int(time.time())
+            if time.time() - self._dirty_at > 5:  # don't rewrite the file per request
+                self._save()
+                self._dirty_at = time.time()
+
+    def delete(self, dep_id: str) -> bool:
+        with self._lock:
+            if self._items.pop(dep_id, None) is None:
+                return False
+            self._save()
+            return True
+
+
+# ---- evaluations: task quality, as a background job --------------------------
+# An evaluation scores one or more targets (a base model, or a shadow at a
+# checkpoint) on the same questions, so the studio can show shadow vs base side
+# by side. It runs in the background — a held HTTP request would hit the
+# 100-second proxy limit — and persists under <work>/evals/<id>.json.
+_EVAL_METRICS = ("contains", "exact", "judge")  # judge: the frontier model scores
+_EVAL_MAX_TARGETS = 4
+
+
+@dataclass
+class _Eval:
+    eval_id: str
+    name: str
+    dataset_id: str
+    metric: str
+    targets: list  # [{label, model, adapter, checkpoint}]
+    sample: int | None
+    status: str = "pending"  # pending | running | succeeded | failed
+    error: str | None = None
+    results: list = field(default_factory=list)  # per target: {score, n, examples}
+    created: int = 0
+    finished: int | None = None
+
+    def record(self) -> dict:
+        return {k: getattr(self, k) for k in (
+            "eval_id", "name", "dataset_id", "metric", "targets", "sample",
+            "status", "error", "results", "created", "finished")}
+
+    def summary(self) -> dict:
+        """The record without per-example detail, for lists."""
+        d = self.record()
+        d["results"] = [{k: r.get(k) for k in ("score", "n")} for r in self.results]
+        return d
+
+
+@dataclass
+class _ChatTask:
+    task_id: str
+    status: str = "running"  # running | succeeded | failed
+    text: str | None = None
+    error: str | None = None
+    created: float = 0.0
+
+
 @dataclass
 class _Worker:
     """A machine that dialed in with `shadowlm worker` and takes jobs from us.
@@ -539,12 +827,21 @@ class Server:
         self._prewarming: set = set()  # (model, adapter) loads in flight
         self._prewarm_errors: dict = {}  # key → (when, message) of a failed load
         self.datasets = DatasetStore(work_root / "datasets")
+        self.projects = ProjectStore(work_root / "projects.json")
+        self.evals: dict[str, _Eval] = {}
+        self._evals_root = work_root / "evals"
+        self._load_evals()
+        self.chat_tasks: dict[str, _ChatTask] = {}
+        self.captures = CaptureStore(work_root / "captures")
+        self.deployments = DeploymentStore(work_root / "deployments.json")
         self.queue: "queue.Queue[str]" = queue.Queue()
         self._lock = threading.Lock()          # job-store mutations
         self._model_lock = threading.Lock()    # one model computation at a time
         self._infer_cache: dict[tuple, object] = {}  # (model, adapter) → Model
         self._infer_cache_cap = 3  # compare mode alternates base ↔ adapter
         self._downloads: dict[str, dict] = {}  # model id → prefetch status
+        self._synth: dict[str, dict] = {}      # synth id → status + log lines
+        self._synth_cancel: dict[str, threading.Event] = {}  # live runs only
         self._settings_path = work_root / "settings.json"
         self._custom_path = work_root / "custom_models.json"
         self._tokens_path = work_root / "tokens.json"
@@ -552,6 +849,7 @@ class Server:
         self._machine_tokens = self._load_tokens()  # name → {hash, created}
         self._load_settings()
         self._load_jobs()
+        self._load_synth()
         threading.Thread(target=self._worker, daemon=True).start()
 
     def capacity(self) -> dict:
@@ -572,21 +870,53 @@ class Server:
         from . import hub  # noqa: PLC0415
 
         try:
-            saved = json.loads(self._settings_path.read_text())
+            self._settings: dict = json.loads(self._settings_path.read_text())
         except (OSError, ValueError):
-            saved = {}
+            self._settings = {}
         # a persisted token wins; otherwise honor one already in the environment
-        if saved.get("hf_token") or os.environ.get("HF_TOKEN"):
-            hub.set_token(saved.get("hf_token") or os.environ.get("HF_TOKEN"))
+        if self._settings.get("hf_token") or os.environ.get("HF_TOKEN"):
+            hub.set_token(self._settings.get("hf_token") or os.environ.get("HF_TOKEN"))
+
+    def _save_settings(self) -> None:
+        try:
+            _write_private(self._settings_path, json.dumps(self._settings))
+        except OSError:
+            pass  # in-memory still works for this process
 
     def set_hf_token(self, token: str | None) -> None:
         from . import hub  # noqa: PLC0415
 
         hub.set_token(token)
-        try:
-            _write_private(self._settings_path, json.dumps({"hf_token": token or ""}))
-        except OSError:
-            pass  # in-memory still works for this process
+        self._settings["hf_token"] = token or ""
+        self._save_settings()
+
+    # ---- frontier model: the user's OpenAI-compatible model, by its key -------
+    # Used as an evaluation baseline, as the judge, and as the upstream an
+    # agent's captured traffic passes through. The key is stored owner-only
+    # and never sent back to a client.
+    def set_frontier(self, base_url: str | None, api_key: str | None, model: str | None) -> None:
+        from .frontier import FrontierModel  # noqa: PLC0415
+
+        if not base_url:
+            self._settings.pop("frontier", None)
+        else:
+            if not api_key or not model:
+                raise ValueError("a frontier model needs a base URL, an API key and a model name")
+            FrontierModel(base_url, api_key, model)  # validates the URL
+            self._settings["frontier"] = {"base_url": base_url.rstrip("/"),
+                                          "api_key": api_key, "model": model}
+        self._save_settings()
+
+    def frontier(self):
+        """The configured frontier model, or None."""
+        from .frontier import FrontierModel  # noqa: PLC0415
+
+        f = self._settings.get("frontier")
+        return FrontierModel(f["base_url"], f["api_key"], f["model"]) if f else None
+
+    def frontier_info(self) -> dict | None:
+        f = self._settings.get("frontier")
+        return {"base_url": f["base_url"], "model": f["model"]} if f else None
 
     # ---- machine tokens: long-lived credentials for `shadowlm worker` --------
     # Named + individually revocable, hashed at rest in tokens.json — the same
@@ -715,6 +1045,161 @@ class Server:
                 d["pct"] = round(100 * d["downloaded"] / total, 1) if total else None
             out[model] = d
         return out
+
+    # ---- synthesis: generate a dataset instead of uploading one --------------
+    def start_synth(self, body: dict) -> dict:
+        """Kick off a synthesis run in the background; poll `synth_status`.
+
+        Deliberately not on the training queue — synthesis is teacher calls and
+        would otherwise block the one training slot for the whole run.
+        """
+        from .synth import frontier, synthesize  # noqa: PLC0415
+
+        spec = body.get("teacher") or {}
+        synth_id = uuid.uuid4().hex[:10]
+        name = body.get("name") or f"synth-{synth_id[:4]}"
+        requested = int(body.get("n") or 100)
+        budget = int(body.get("token_budget") or 0) or None
+        # a project the examples are for: it shows the run while it writes, and
+        # its data becomes the result when the run lands
+        project_id = body.get("project_id")
+        if project_id and not self.projects.get(project_id):
+            raise ValueError(f"no project {project_id!r}")
+        cancel = threading.Event()
+        with self._lock:
+            self._synth[synth_id] = {
+                "synth_id": synth_id, "name": name, "status": "running",
+                "kept": 0, "requested": requested, "phase": "starting",
+                "done": 0, "total": 0, "tokens": 0, "logs": [],
+                "created": int(time.time()),
+            }
+            self._synth_cancel[synth_id] = cancel
+        self._persist_synth(synth_id)
+        if project_id:
+            self.projects.update(project_id, {"synth_id": synth_id})
+
+        def update(**fields) -> None:
+            with self._lock:
+                self._synth[synth_id].update(**fields)
+
+        def run() -> None:
+            def progress(done: int, total: int, phase: str) -> None:
+                with self._lock:
+                    entry = self._synth[synth_id]
+                    entry["phase"], entry["done"], entry["total"] = phase, done, total
+                    # Only a completed round is worth a log line; ticking once
+                    # per finished job would bury the report under hundreds.
+                    if phase == "kept":
+                        entry["kept"] = done
+                        entry["logs"].append(f"[synth] {done}/{total} rows kept")
+                        del entry["logs"][:-_SYNTH_LOG_LINES]
+
+            try:
+                # teacher and episodes resolve in here: loading a local model
+                # (or pulling an HF dataset) can take minutes, and the POST
+                # must return the synth_id immediately, not after the download
+                if spec.get("kind") == "local":
+                    from .models import load  # noqa: PLC0415
+                    teacher = load(spec["model"], backend=self.backend_name)
+                elif spec.get("kind") == "frontier":
+                    # the frontier model saved in settings: its stored key, so
+                    # the person never pastes it twice
+                    f = self._settings.get("frontier")
+                    if not f:
+                        raise ValueError("no frontier model is set up; add one in settings")
+                    teacher = frontier(f["model"], base_url=f["base_url"], api_key=f["api_key"])
+                else:
+                    # the key is used for this run and never written to disk
+                    teacher = frontier(spec.get("model") or "gpt-4o",
+                                       base_url=spec.get("base_url") or None,
+                                       api_key=spec.get("api_key") or None)
+                episodes = (self.datasets.resolve(body["dataset_id"])
+                            if body.get("dataset_id") else None)
+                result = synthesize(
+                    teacher=teacher, task=body.get("task") or None,
+                    document=body.get("document") or None, episodes=episodes,
+                    n=requested, method=body.get("method") or None,
+                    # 0 from the UI means "no gate", same as the CLI
+                    min_score=body.get("min_score", 0.6) or None, verbose=False,
+                    token_budget=budget, should_stop=cancel.is_set,
+                    on_progress=progress)
+                rows = result.rows()
+                # include_seed: the dataset carries the examples it was written
+                # from too, so the next fine-tune trains on old and new together
+                if body.get("include_seed") and episodes is not None:
+                    rows = list(episodes.rows) + list(rows)
+                meta = self.datasets.save(name, rows)
+                with self._lock:
+                    entry = self._synth[synth_id]
+                    # A cancelled run still saved its rows — report it as
+                    # stopped, not succeeded, so the number means something.
+                    entry.update(status="stopped" if cancel.is_set() else "succeeded",
+                                 kept=result.report.kept,
+                                 tokens=result.report.tokens,
+                                 dataset_id=meta["dataset_id"])
+                    entry["logs"].append(result.report.summary())
+                    del entry["logs"][:-_SYNTH_LOG_LINES]
+                if project_id and result.report.kept:
+                    self.projects.update(project_id, {"dataset_id": meta["dataset_id"]})
+            except Exception as e:  # noqa: BLE001 — surfaced to the UI
+                update(status="stopped" if cancel.is_set() else "failed",
+                       error=f"{type(e).__name__}: {e}")
+            finally:
+                self._persist_synth(synth_id)
+                with self._lock:
+                    self._synth_cancel.pop(synth_id, None)
+
+        threading.Thread(target=run, daemon=True).start()
+        return {"synth_id": synth_id}
+
+    def cancel_synth(self, synth_id: str) -> bool:
+        """Ask a running synthesis to stop. It keeps the rows it already has."""
+        with self._lock:
+            event = self._synth_cancel.get(synth_id)
+        if event is None:
+            return False
+        event.set()
+        return True
+
+    def synth_status(self, synth_id: str | None = None) -> dict:
+        with self._lock:
+            if synth_id is not None:
+                entry = self._synth.get(synth_id)
+                return dict(entry) if entry else {}
+            recent = sorted(self._synth.values(),
+                            key=lambda e: e.get("created", 0), reverse=True)
+            return {"jobs": [{k: v for k, v in e.items() if k != "logs"}
+                             for e in recent]}
+
+    def _persist_synth(self, synth_id: str) -> None:
+        """Synth records outlive the process, like training jobs do."""
+        with self._lock:
+            entry = dict(self._synth.get(synth_id) or {})
+        if not entry:
+            return
+        root = self.work_root / "synth"
+        root.mkdir(parents=True, exist_ok=True)
+        (root / f"{synth_id}.json").write_text(json.dumps(entry))
+
+    def _load_synth(self) -> None:
+        """Reload past runs, newest first, capped so the store can't grow forever.
+
+        Anything still marked running belongs to a process that no longer
+        exists, so it is recorded as stopped rather than left spinning.
+        """
+        records = sorted(self.work_root.glob("synth/*.json"),
+                         key=lambda p: p.stat().st_mtime, reverse=True)
+        for path in records[:_SYNTH_KEEP]:
+            try:
+                entry = json.loads(path.read_text())
+            except (json.JSONDecodeError, OSError):
+                continue
+            if entry.get("status") == "running":
+                entry["status"] = "stopped"
+                entry["error"] = "the server restarted while this run was going"
+            self._synth[entry["synth_id"]] = entry
+        for path in records[_SYNTH_KEEP:]:
+            path.unlink(missing_ok=True)
 
     # ---- persistence: jobs survive restarts ----------------------------------
     def _persist(self, job: _Job) -> None:
@@ -970,6 +1455,140 @@ class Server:
         return out
 
     # ---- operations ------------------------------------------------------------
+    # ---- evaluations -------------------------------------------------------
+    def _load_evals(self) -> None:
+        for rec in sorted(self._evals_root.glob("*.json")):
+            try:
+                ev = _Eval(**json.loads(rec.read_text()))
+            except (OSError, json.JSONDecodeError, TypeError):
+                continue
+            if ev.status in ("pending", "running"):  # the server restarted mid-run
+                ev.status, ev.error = "failed", "the server restarted during this evaluation"
+            self.evals[ev.eval_id] = ev
+
+    def _persist_eval(self, ev: _Eval) -> None:
+        self._evals_root.mkdir(parents=True, exist_ok=True)
+        (self._evals_root / f"{ev.eval_id}.json").write_text(json.dumps(ev.record()))
+
+    def start_eval(self, body: dict) -> _Eval:
+        """Validate an evaluation request and run it in the background."""
+        ds_id = body.get("dataset_id") or ""
+        if self.datasets.meta(ds_id) is None:
+            raise ValueError(f"unknown dataset {ds_id!r}")
+        metric = body.get("metric") or "contains"
+        if metric not in _EVAL_METRICS:
+            raise ValueError(f"metric must be one of {', '.join(_EVAL_METRICS)}")
+        targets = body.get("targets")
+        if not isinstance(targets, list) or not 1 <= len(targets) <= _EVAL_MAX_TARGETS:
+            raise ValueError(f"targets must be a list of 1-{_EVAL_MAX_TARGETS} models")
+        fm = self.frontier()
+        if metric == "judge" and fm is None:
+            raise ValueError("judge scoring needs a frontier model; add one in settings")
+        clean = []
+        for t in targets:
+            if isinstance(t, dict) and t.get("kind") == "frontier":
+                if fm is None:
+                    raise ValueError("a frontier baseline needs a frontier model; add one in settings")
+                clean.append({"label": str(t.get("label") or "Frontier model")[:40],
+                              "model": fm.name, "adapter": None, "checkpoint": None,
+                              "kind": "frontier"})
+                continue
+            if not isinstance(t, dict) or not t.get("model"):
+                raise ValueError("each target needs a 'model'")
+            clean.append({"label": str(t.get("label") or t.get("adapter") or "base")[:40],
+                          "model": str(t["model"]),
+                          "adapter": t.get("adapter") or None,
+                          "checkpoint": t.get("checkpoint")})
+        sample = body.get("sample")
+        if sample is not None and (not isinstance(sample, int) or sample < 1):
+            raise ValueError("sample must be a positive integer")
+        ev = _Eval(eval_id=uuid.uuid4().hex[:12],
+                   name=str(body.get("name") or "")[:80],
+                   dataset_id=ds_id, metric=metric, targets=clean,
+                   sample=sample if sample is not None else 50,
+                   created=int(time.time()))
+        with self._lock:
+            self.evals[ev.eval_id] = ev
+        self._persist_eval(ev)
+        threading.Thread(target=self._run_eval, args=(ev,), daemon=True).start()
+        return ev
+
+    def _eval_rows(self, ds_id: str) -> Dataset:
+        """The questions an evaluation asks: the dataset's own eval split when it
+        has one, else its rows (for a fact set, 'does it know these' is the test)."""
+        return self.datasets.resolve_eval(ds_id) or self.datasets.resolve(ds_id)
+
+    def _run_eval(self, ev: _Eval) -> None:
+        from .eval import evaluate  # noqa: PLC0415
+
+        ev.status = "running"
+        self._persist_eval(ev)
+        try:
+            data = self._eval_rows(ev.dataset_id)
+            judge = self.frontier() if ev.metric == "judge" else None
+            for t in ev.targets:
+                if t.get("kind") == "frontier":
+                    fm = self.frontier()
+                    if fm is None:
+                        raise RuntimeError("the frontier model was removed from settings")
+                    res = evaluate(fm, data, metric=ev.metric, judge=judge,
+                                   sample=ev.sample, verbose=False)
+                    ev.results.append(res.to_dict())
+                    self._persist_eval(ev)
+                    continue
+                wjob = self.jobs.get(t["adapter"] or "")
+                if wjob is not None and wjob.worker:
+                    raise RuntimeError(
+                        f"{t['label']} was trained on {wjob.worker}; evaluate it "
+                        "there — this box can't load that machine's adapter format")
+                with self._model_lock:
+                    m = self._infer_model(t["model"], t["adapter"], t["checkpoint"])
+                    res = evaluate(m, data, metric=ev.metric, judge=judge,
+                                   sample=ev.sample, verbose=False)
+                ev.results.append(res.to_dict())
+                self._persist_eval(ev)  # each target's numbers land as they finish
+            ev.status = "succeeded"
+        except Exception as e:  # noqa: BLE001 — reported on the evaluation
+            ev.status, ev.error = "failed", f"{type(e).__name__}: {e}"
+            print(f"[eval {ev.eval_id[:8]}] FAILED: {ev.error}", flush=True)
+        ev.finished = int(time.time())
+        self._persist_eval(ev)
+
+    # ---- chat as a background task -----------------------------------------
+    def start_chat(self, body: dict) -> _ChatTask:
+        """Answer a chat in the background: the first answer from a cold model
+        can take longer than the proxy in front of the studio holds a request."""
+        task = _ChatTask(task_id=uuid.uuid4().hex[:12], created=time.time())
+        with self._lock:
+            cutoff = time.time() - 3600  # finished answers are kept for an hour
+            for tid in [k for k, t in self.chat_tasks.items()
+                        if t.status != "running" and t.created < cutoff]:
+                self.chat_tasks.pop(tid, None)
+            self.chat_tasks[task.task_id] = task
+        threading.Thread(target=self._run_chat, args=(task, body), daemon=True).start()
+        return task
+
+    def _run_chat(self, task: _ChatTask, b: dict) -> None:
+        try:
+            wjob = self.jobs.get(b.get("adapter") or "")
+            if wjob is not None and wjob.worker:
+                task.text = self.worker_infer(wjob, {
+                    "type": "chat", "messages": b["messages"],
+                    "max_new_tokens": b.get("max_new_tokens", 512),
+                    "temperature": b.get("temperature", 0.7),
+                    "top_p": b.get("top_p", 0.95)})
+            else:
+                with self._model_lock:
+                    m = self._infer_model(b["model"], b.get("adapter"), b.get("checkpoint"))
+                    reply = m.chat(b["messages"], tools=b.get("tools"),
+                                   max_new_tokens=b.get("max_new_tokens", 512),
+                                   temperature=b.get("temperature", 0.7),
+                                   top_p=b.get("top_p", 0.95))
+                task.text = reply.raw or reply.content
+            task.status = "succeeded"
+        except Exception as e:  # noqa: BLE001 — reported on the task
+            task.status, task.error = "failed", f"{type(e).__name__}: {e}"
+
     def submit(self, payload: dict) -> str:
         job_id = uuid.uuid4().hex[:12]
         job = _Job(job_id=job_id, base_model=payload["base_model"],
@@ -1329,6 +1948,84 @@ def make_handler(server: Server, auth: "Auth"):
         def _error(self, code: int, msg: str) -> None:
             self._send(code, {"error": msg})
 
+        def _openai_error(self, code: int, msg: str, kind: str = "invalid_request_error") -> None:
+            """An OpenAI-shaped error: callers here are OpenAI clients (an agent
+            under capture, or one using a deployment), which handle a JSON error
+            but read a dropped connection as a transport fault."""
+            self._send(code, {"error": {"message": msg, "type": kind, "param": None, "code": None}})
+
+        def _send_completion(self, reply: dict, stream: bool) -> None:
+            if not stream:
+                return self._send(200, reply)
+            from .capture import CaptureProxy  # noqa: PLC0415
+
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            for chunk in CaptureProxy._stream_chunks(reply):
+                self.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode())
+            self.wfile.write(b"data: [DONE]\n\n")
+
+        def _capture_call(self, cid: str) -> None:
+            """Pass one agent call through to the frontier model and record it."""
+            item = server.captures.get(cid)
+            if item is None:
+                return self._openai_error(404, "no such capture session")
+            if item["status"] != "open":
+                return self._openai_error(403, "this capture session is closed", "permission_error")
+            fm = server.frontier()
+            if fm is None:
+                return self._openai_error(503, "no frontier model is set up in the studio", "server_error")
+            body = self._body()
+            if not isinstance(body.get("messages"), list):
+                return self._openai_error(400, "'messages' must be a list")
+            from .frontier import FrontierError  # noqa: PLC0415
+            try:
+                out = fm.forward(body)
+                message = out["choices"][0]["message"]
+            except FrontierError as e:
+                return self._openai_error(502, str(e), "server_error")
+            except (KeyError, IndexError, TypeError):
+                return self._openai_error(502, "the frontier model's reply had no message", "server_error")
+            server.captures.record(cid, {
+                "session": self.headers.get("x-session-id") or "",
+                "messages": body["messages"], "response": message,
+                "tools": body.get("tools"), "ts": time.time()})
+            out.setdefault("id", f"chatcmpl-{uuid.uuid4().hex[:24]}")
+            out.setdefault("created", int(time.time()))
+            out.setdefault("model", fm.name)
+            self._send_completion(out, bool(body.get("stream")))
+
+        def _deployment_call(self) -> None:
+            """Serve a deployed fine-tune, authenticated by its own key."""
+            from .capture import _wire_message  # noqa: PLC0415
+
+            got = self.headers.get("Authorization", "")
+            dep = server.deployments.by_key(got[7:]) if got.startswith("Bearer ") else None
+            if dep is None:
+                return self._openai_error(401, "invalid deployment key", "authentication_error")
+            body = self._body()
+            if body.get("model") and body["model"] != dep["name"]:
+                return self._openai_error(404, f"this key serves the model {dep['name']!r}")
+            if not isinstance(body.get("messages"), list):
+                return self._openai_error(400, "'messages' must be a list")
+            with server._model_lock:
+                m = server._infer_model(dep["base_model"], dep["run_id"], dep.get("checkpoint"))
+                reply = m.chat(body["messages"], tools=body.get("tools"),
+                               temperature=body.get("temperature", 0.7),
+                               top_p=body.get("top_p", 0.95),
+                               max_new_tokens=body.get("max_tokens") or body.get("max_completion_tokens") or 512)
+            server.deployments.used(dep["deployment_id"])
+            message = reply.to_message()
+            self._send_completion({
+                "id": f"chatcmpl-{uuid.uuid4().hex[:24]}", "object": "chat.completion",
+                "created": int(time.time()), "model": dep["name"],
+                "choices": [{"index": 0, "message": _wire_message(message),
+                             "finish_reason": "tool_calls" if reply.tool_calls else "stop"}],
+                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            }, bool(body.get("stream")))
+
         def _authed(self) -> bool:
             if not auth.enabled:
                 return True
@@ -1405,6 +2102,20 @@ def make_handler(server: Server, auth: "Auth"):
             if parts == ["v1", "auth"]:  # public: lets the UI decide to show login
                 self._send(200, {"auth_required": auth.enabled, "mode": auth.mode})
                 return
+            # OpenAI clients health-check /models; these answer on their own keys
+            if len(parts) == 4 and parts[:2] == ["v1", "capture"] and parts[3] == "models":
+                item, fm = server.captures.get(parts[2]), server.frontier()
+                if item is None or fm is None:
+                    return self._openai_error(404, "no such capture session")
+                return self._send(200, {"object": "list", "data": [
+                    {"id": fm.name, "object": "model", "created": item["created"], "owned_by": "frontier"}]})
+            if parts == ["openai", "v1", "models"]:
+                got = self.headers.get("Authorization", "")
+                dep = server.deployments.by_key(got[7:]) if got.startswith("Bearer ") else None
+                if dep is None:
+                    return self._openai_error(401, "invalid deployment key", "authentication_error")
+                return self._send(200, {"object": "list", "data": [
+                    {"id": dep["name"], "object": "model", "created": dep["created"], "owned_by": "openfinetuner"}]})
             if not self._authed():
                 return
             if parts == ["v1", "health"]:
@@ -1420,6 +2131,27 @@ def make_handler(server: Server, auth: "Auth"):
                     "final_loss": j.final_loss, "steps": len(j.steps),
                     "method": j.method,
                 } for j in reversed(jobs)]})  # newest first
+            elif parts == ["v1", "projects"]:
+                self._send(200, {"projects": server.projects.list()})
+            elif len(parts) == 3 and parts[:2] == ["v1", "projects"]:
+                item = server.projects.get(parts[2])
+                if item is None:
+                    return self._error(404, f"unknown project {parts[2]!r}")
+                self._send(200, item)
+            elif parts == ["v1", "evals"]:
+                evs = sorted(server.evals.values(), key=lambda e: -e.created)
+                self._send(200, {"evals": [e.summary() for e in evs]})
+            elif len(parts) == 3 and parts[:2] == ["v1", "evals"]:
+                ev = server.evals.get(parts[2])
+                if ev is None:
+                    return self._error(404, f"unknown evaluation {parts[2]!r}")
+                self._send(200, ev.record())
+            elif len(parts) == 3 and parts[:2] == ["v1", "tasks"]:
+                task = server.chat_tasks.get(parts[2])
+                if task is None:
+                    return self._error(404, f"unknown task {parts[2]!r}")
+                self._send(200, {"task_id": task.task_id, "status": task.status,
+                                 "text": task.text, "error": task.error})
             elif parts == ["v1", "datasets"]:
                 self._send(200, {"datasets": server.datasets.list()})
             elif len(parts) == 3 and parts[:2] == ["v1", "datasets"]:
@@ -1441,12 +2173,36 @@ def make_handler(server: Server, auth: "Auth"):
                                  "server_backend": server.backend_name})
             elif parts == ["v1", "models", "downloads"]:
                 self._send(200, {"downloads": server.download_status()})
+            elif parts == ["v1", "synth"]:
+                self._send(200, server.synth_status())
+            elif len(parts) == 3 and parts[:2] == ["v1", "synth"]:
+                status = server.synth_status(parts[2])
+                if status:
+                    self._send(200, status)
+                else:
+                    self._error(404, f"unknown synth run {parts[2]!r}")
             elif parts == ["v1", "vram"]:
                 self._send(200, {"used_mb": server._gpu_used_mb(),
                                  "cached_models": len(server._infer_cache)})
             elif parts == ["v1", "settings"]:
                 from . import hub as _hub  # noqa: PLC0415
-                self._send(200, {"hf_token_set": _hub.has_token()})
+                self._send(200, {"hf_token_set": _hub.has_token(),
+                                 "frontier": server.frontier_info()})
+            elif parts == ["v1", "captures"]:
+                self._send(200, {"captures": server.captures.list()})
+            elif len(parts) == 3 and parts[:2] == ["v1", "captures"]:
+                item = server.captures.get(parts[2])
+                if item is None:
+                    return self._error(404, f"unknown capture {parts[2]!r}")
+                eps = _capture_trajectories(item)
+                self._send(200, {**{k: v for k, v in item.items() if k != "calls"},
+                                 "calls": len(item["calls"]), "episodes": len(eps),
+                                 "preview": [{"question": t.first_user_content()[:400],
+                                              "answer": t.final_content()[:400],
+                                              "turns": sum(m.get("role") == "assistant" for m in t.messages)}
+                                             for t in eps[-50:][::-1]]})
+            elif parts == ["v1", "deployments"]:
+                self._send(200, {"deployments": server.deployments.list()})
             elif parts == ["v1", "methods"]:
                 from . import methods as _methods  # noqa: PLC0415
                 self._send(200, {"methods": [{
@@ -1532,6 +2288,21 @@ def make_handler(server: Server, auth: "Auth"):
                 else:
                     self._error(401, "invalid username or password")
                 return
+            # an agent under capture, or one using a deployment: own credentials
+            if len(parts) == 5 and parts[:2] == ["v1", "capture"] and parts[3:] == ["chat", "completions"]:
+                try:
+                    return self._capture_call(parts[2])
+                except _PayloadTooLarge as e:
+                    return self._openai_error(413, str(e))
+                except Exception as e:  # noqa: BLE001 — the agent gets an error, not a dead socket
+                    return self._openai_error(500, f"{type(e).__name__}: {e}", "server_error")
+            if parts == ["openai", "v1", "chat", "completions"]:
+                try:
+                    return self._deployment_call()
+                except _PayloadTooLarge as e:
+                    return self._openai_error(413, str(e))
+                except Exception as e:  # noqa: BLE001
+                    return self._openai_error(500, f"{type(e).__name__}: {e}", "server_error")
             if not self._authed():
                 return
             try:
@@ -1543,11 +2314,44 @@ def make_handler(server: Server, auth: "Auth"):
                     if not body.get("dataset") and not body.get("dataset_id"):
                         return self._error(422, "provide 'dataset' rows or a 'dataset_id'")
                     self._send(202, {"job_id": server.submit(body)})
+                elif parts == ["v1", "projects"]:
+                    b = self._body()
+                    try:
+                        self._send(201, server.projects.create(b.get("name"), b.get("goal")))
+                    except ValueError as e:
+                        self._error(422, str(e))
+                elif parts == ["v1", "evals"]:
+                    try:
+                        self._send(202, server.start_eval(self._body()).record())
+                    except ValueError as e:
+                        self._error(422, str(e))
+                elif parts == ["v1", "tasks", "chat"]:
+                    b = self._body()
+                    if not self._require(b, "messages", "model"):
+                        return
+                    if not isinstance(b["messages"], list):
+                        return self._error(422, "field 'messages' must be a list")
+                    self._send(202, {"task_id": server.start_chat(b).task_id})
                 elif parts == ["v1", "models", "download"]:
                     b = self._body()
                     if not b.get("model"):
                         return self._error(422, "provide a 'model' id")
                     self._send(202, server.start_download(b["model"]))
+                elif parts == ["v1", "synth"]:
+                    b = self._body()
+                    if not (b.get("task") or b.get("document") or b.get("dataset_id")):
+                        return self._error(
+                            422, "provide a 'task', a 'document', or a 'dataset_id'")
+                    try:
+                        self._send(202, server.start_synth(b))
+                    except ValueError as e:
+                        self._error(422, str(e))
+                elif len(parts) == 4 and parts[:2] == ["v1", "synth"] \
+                        and parts[3] == "cancel":
+                    if server.cancel_synth(parts[2]):
+                        self._send(200, {"ok": True})
+                    else:
+                        self._error(404, f"no synthesis running as {parts[2]!r}")
                 elif parts == ["v1", "vram", "clear"]:
                     self._send(200, server.clear_vram())
                 elif parts == ["v1", "models", "custom"]:
@@ -1560,9 +2364,70 @@ def make_handler(server: Server, auth: "Auth"):
                     self._send(200, {"custom": custom})
                 elif parts == ["v1", "settings"]:
                     b = self._body()
-                    server.set_hf_token((b.get("hf_token") or "").strip() or None)
+                    if "hf_token" in b:
+                        server.set_hf_token((b.get("hf_token") or "").strip() or None)
+                    if "frontier" in b:
+                        f = b["frontier"] or {}
+                        try:
+                            server.set_frontier((f.get("base_url") or "").strip() or None,
+                                                (f.get("api_key") or "").strip() or None,
+                                                (f.get("model") or "").strip() or None)
+                        except ValueError as e:
+                            return self._error(422, str(e))
                     from . import hub as _hub  # noqa: PLC0415
-                    self._send(200, {"hf_token_set": _hub.has_token()})
+                    self._send(200, {"hf_token_set": _hub.has_token(),
+                                     "frontier": server.frontier_info()})
+                elif parts == ["v1", "captures"]:
+                    b = self._body()
+                    try:
+                        item = server.captures.create(b.get("name"), b.get("project_id"))
+                    except ValueError as e:
+                        return self._error(422, str(e))
+                    self._send(201, {**{k: v for k, v in item.items() if k != "calls"}, "calls": 0})
+                elif len(parts) == 4 and parts[:2] == ["v1", "captures"] and parts[3] == "close":
+                    item = server.captures.close(parts[2])
+                    if item is None:
+                        return self._error(404, f"unknown capture {parts[2]!r}")
+                    self._send(200, {"ok": True})
+                elif len(parts) == 4 and parts[:2] == ["v1", "captures"] and parts[3] == "dataset":
+                    item = server.captures.get(parts[2])
+                    if item is None:
+                        return self._error(404, f"unknown capture {parts[2]!r}")
+                    eps = _capture_trajectories(item)
+                    if not eps:
+                        return self._error(409, "nothing captured yet: run the agent against the capture URL first")
+                    from . import traces as _traces  # noqa: PLC0415
+                    ds = _traces.to_dataset(eps)
+                    name = (self._body().get("name") or item["name"]).strip()[:80]
+                    self._send(201, server.datasets.save(name, ds.rows))
+                elif parts == ["v1", "datasets", "traces"]:
+                    b = self._body()
+                    if not b.get("traces"):
+                        return self._error(422, "provide 'traces': OTLP JSON or a list of spans")
+                    from . import traces as _traces  # noqa: PLC0415
+                    try:
+                        ds = _traces.to_dataset(b["traces"])
+                    except (ValueError, TypeError, KeyError) as e:
+                        return self._error(422, f"couldn't read those traces: {e}")
+                    if not ds.rows:
+                        return self._error(422, "no model calls found in those traces")
+                    self._send(201, server.datasets.save((b.get("name") or "Imported traces").strip()[:80], ds.rows))
+                elif parts == ["v1", "deployments"]:
+                    b = self._body()
+                    job = server.jobs.get(b.get("run_id") or "")
+                    if job is None or job.status != "succeeded":
+                        return self._error(422, "deploy a fine-tune whose run succeeded")
+                    if job.worker:
+                        return self._error(422, f"this fine-tune was trained on {job.worker}; "
+                                                "it can only be served while that machine is connected")
+                    try:
+                        dep, key = server.deployments.create(
+                            name=b.get("name"), run_id=job.job_id, base_model=job.base_model,
+                            checkpoint=b.get("checkpoint"), project_id=b.get("project_id"))
+                    except ValueError as e:
+                        return self._error(422, str(e))
+                    server.prewarm(job.base_model, job.job_id, b.get("checkpoint"))  # first call fast
+                    self._send(201, {"deployment": dep, "key": key})
                 elif parts == ["v1", "datasets", "hf-info"]:
                     b = self._body()
                     if not b.get("repo"):
@@ -1665,6 +2530,26 @@ def make_handler(server: Server, auth: "Auth"):
             except Exception as e:  # noqa: BLE001 — report, keep serving
                 self._error(500, f"{type(e).__name__}: {e}")
 
+        def do_PATCH(self):  # noqa: N802
+            if not self._authed():
+                return
+            parts = self.path.split("?")[0].strip("/").split("/")
+            try:
+                if len(parts) == 3 and parts[:2] == ["v1", "projects"]:
+                    try:
+                        item = server.projects.update(parts[2], self._body())
+                    except ValueError as e:
+                        return self._error(422, str(e))
+                    if item is None:
+                        return self._error(404, f"unknown project {parts[2]!r}")
+                    self._send(200, item)
+                else:
+                    self._error(404, f"no route: PATCH {self.path}")
+            except _PayloadTooLarge as e:
+                self._error(413, str(e))
+            except Exception as e:  # noqa: BLE001 — report, keep serving
+                self._error(500, f"{type(e).__name__}: {e}")
+
         def do_DELETE(self):  # noqa: N802
             if not self._authed():
                 return
@@ -1674,6 +2559,30 @@ def make_handler(server: Server, auth: "Auth"):
                     self._send(200, {"ok": True})
                 else:
                     self._error(404, f"unknown dataset {parts[2]!r}")
+            elif len(parts) == 3 and parts[:2] == ["v1", "projects"]:
+                if server.projects.delete(parts[2]):
+                    self._send(200, {"ok": True})
+                else:
+                    self._error(404, f"unknown project {parts[2]!r}")
+            elif len(parts) == 3 and parts[:2] == ["v1", "captures"]:
+                if server.captures.delete(parts[2]):
+                    self._send(200, {"ok": True})
+                else:
+                    self._error(404, f"unknown capture {parts[2]!r}")
+            elif len(parts) == 3 and parts[:2] == ["v1", "deployments"]:
+                if server.deployments.delete(parts[2]):
+                    self._send(200, {"ok": True})
+                else:
+                    self._error(404, f"unknown deployment {parts[2]!r}")
+            elif len(parts) == 3 and parts[:2] == ["v1", "evals"]:
+                ev = server.evals.get(parts[2])
+                if ev is None or ev.status in ("pending", "running"):
+                    return self._error(404 if ev is None else 409,
+                                       f"unknown evaluation {parts[2]!r}" if ev is None
+                                       else "this evaluation is still running")
+                server.evals.pop(parts[2], None)
+                (server._evals_root / f"{parts[2]}.json").unlink(missing_ok=True)
+                self._send(200, {"ok": True})
             elif len(parts) == 3 and parts[:2] == ["v1", "tokens"]:
                 if server.revoke_machine_token(parts[2]):
                     self._send(200, {"ok": True})

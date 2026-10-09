@@ -292,9 +292,16 @@
   }
   :where(input, textarea)::placeholder { color: var(--muted-foreground); }
   input[type="checkbox"] { accent-color: var(--primary); }
+  /* the parts the browser draws: selection and the caret wear the slate-blue
+     primary, in light and dark alike (the token changes with the theme) */
+  ::selection { background: color-mix(in srgb, var(--primary) 24%, transparent); color: inherit; }
+  input, textarea, [contenteditable] { caret-color: var(--primary); }
 }
 
 .scrollbar-thin { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
 
 @keyframes rise { from { opacity: 0; transform: translateY(5px); } }
+
+/* The cockpit's flowing dash: work moving along the loop while a job runs. */
+@keyframes of-dashflow { to { background-position: 16px 0; } }
 .rise { animation: rise 0.18s ease-out; }
