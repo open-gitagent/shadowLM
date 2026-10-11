@@ -4,6 +4,7 @@
 // pending decision as an action card. What the person types is understood by
 // plain rules (no model call): intents like "evaluate", "train again with 300
 // steps", "deploy", "how's it going". Every proposal shows what it will run.
+import type { CtrlReply } from "@/api";
 import { verdict } from "@/components/scorecard";
 import type { Recipe } from "@/lib/recipe";
 import { examples, methodLabel } from "@/lib/format";
@@ -255,4 +256,79 @@ export function suggestions(loop: Loop): string[] {
   const ready = verdict(loop.evaluation)?.tone === "good";
   if (!ready && !loop.deployment) return [canWrite ? "Write more examples" : "Train again with more steps", "Use SDFT", "Compare versions"];
   return [loop.deployment ? "How's it going?" : "Deploy it", "Train another version", "Compare versions"];
+}
+
+// ---- Claude: the state it reads, and its action as a card -------------------------
+const clip = (t: string, n = 240) => (t.length > n ? `${t.slice(0, n)}…` : t);
+
+// What Ctrl agent knows when Claude answers: the same facts the cockpit shows,
+// compact. The server adds the failed run's log and a few examples.
+export function ctrlState(loop: Loop) {
+  const plan = nextRecipe(loop) ?? firstRecipe(loop);
+  return {
+    stations: Object.fromEntries(Object.values(loop.stations).map((s) => [s.id, `${s.status}: ${s.line}`])),
+    attention: loop.next,
+    data: loop.dataset ? { name: loop.dataset.name, rows: loop.dataset.rows, format: loop.dataset.format } : null,
+    writing_examples: loop.synth ? { status: loop.synth.status, kept: loop.synth.kept, requested: loop.synth.requested, error: loop.synth.error } : null,
+    data_changed_since_current_version: loop.dataChanged,
+    versions: loop.versions.map((v) => {
+      const r = v.evaluation?.results;
+      return {
+        version: v.n, current: v.current, status: v.job?.status, method: v.job?.method, base_model: v.job?.base_model,
+        steps: v.job?.steps, final_loss: v.job?.final_loss, error: v.job?.error?.split("\n")[0],
+        evaluation: v.evaluation && {
+          status: v.evaluation.status, metric: v.evaluation.metric,
+          verdict: verdict(v.evaluation)?.title,
+          scores: r?.map((x, i) => ({ target: v.evaluation!.targets[i]?.label ?? `target ${i + 1}`, correct: Math.round(x.score * x.n), of: x.n })),
+          // the current version's answers, so "why did it miss that?" has evidence
+          answers: v.current ? r?.map((x, i) => ({
+            target: v.evaluation!.targets[i]?.label ?? `target ${i + 1}`,
+            examples: (x.examples ?? []).slice(0, 6).map((e) => ({
+              question: clip(e.input), expected: clip(e.expected), answer: clip(e.output), score: e.score })),
+          })) : undefined,
+        },
+      };
+    }),
+    training_now: loop.job && (loop.job.status === "running" || loop.job.status === "pending")
+      ? { steps_done: loop.steps.length, last_loss: loop.steps.at(-1)?.loss } : null,
+    deployment: loop.deployment ? { name: loop.deployment.name, requests: loop.deployment.requests } : null,
+    frontier_model: loop.frontier?.model ?? null,
+    hardware: { gpus: loop.health?.gpus ?? 0 },
+    studio_plan_for_next_version: plan && { base_model: plan.base_model, method: plan.method, steps: plan.config.max_steps, why: plan.why },
+  };
+}
+
+// Claude's action as a card, checked against the state: an action the state
+// rules out becomes no card (its reply already says why).
+export function fromAction(a: CtrlReply["action"], loop: Loop): Pick<Understood, "proposal" | "station"> {
+  if (!a) return {};
+  const n = loop.versions.length || 1;
+  const done = loop.job?.status === "succeeded";
+  const num = (v: unknown) => (typeof v === "number" && Number.isInteger(v) && v > 0 ? v : undefined);
+  switch (a.kind) {
+    case "finetune": {
+      const base = nextRecipe(loop) ?? firstRecipe(loop);
+      if (!base || loop.writing) return { station: "data" };
+      let r = typeof a.args.method === "string" ? withMethod(base, a.args.method) : base;
+      const steps = num(a.args.max_steps);
+      if (steps) r = { ...r, config: { ...r.config, max_steps: steps }, cli: r.cli.replace(/--max-steps \d+/, `--max-steps ${steps}`),
+                       why: [...r.why.filter((w) => !/steps/.test(w)), `${steps} steps, as you asked`] };
+      const bm = typeof a.args.base_model === "string" && a.args.base_model.trim();
+      if (bm) r = { ...r, base_model: bm, cli: r.cli.replace(/--model \S+/, `--model ${bm}`) };
+      return { station: "finetune", proposal: { kind: "finetune", recipe: r, version: loop.job ? n + 1 : 1 } };
+    }
+    case "evaluate":
+      return done ? { station: "evaluate", proposal: { kind: "evaluate", withFrontier: !!loop.frontier && a.args.with_frontier !== false } } : { station: "finetune" };
+    case "synthesize":
+      return loop.frontier && loop.dataset && !loop.writing
+        ? { station: "data", proposal: { kind: "synthesize", n: Math.min(num(a.args.n) ?? moreExamples(loop.dataset.rows ?? 0), 1000) } }
+        : { station: "data" };
+    case "deploy":
+      return done ? { station: "deploy", proposal: { kind: "deploy" } } : { station: "finetune" };
+    case "playground":
+      return done ? { proposal: { kind: "playground" } } : {};
+    case "add-frontier":
+      return { station: "evaluate", proposal: { kind: "add-frontier" } };
+  }
+  return {};
 }

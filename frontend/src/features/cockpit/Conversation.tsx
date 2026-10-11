@@ -21,13 +21,16 @@ import { goalLabel, RECIPE_METHODS, type Recipe, withMethod } from "@/lib/recipe
 import { cn } from "@/lib/utils";
 
 import { type CockpitActions, type Loop, useCockpitLink } from "./Cockpit";
-import { interpret, type Message, narrate, type Proposal, suggestions } from "./copilot";
+import { askCtrl } from "@/api";
+
+import { ctrlState, fromAction, interpret, type Message, narrate, type Proposal, suggestions } from "./copilot";
 import { STATIONS, type StationId } from "./model";
 
 const stationLabel = (s: StationId) => STATIONS.find((x) => x.id === s)?.label ?? s;
 
 // ---- the typed log, kept per project in this browser ---------------------------
-interface Typed extends Message { spent?: boolean }
+// by: the model that answered (Claude), unset when the rules did
+interface Typed extends Message { spent?: boolean; by?: string }
 const MAX_LOG = 50;
 const logKey = (pid: string) => `of.thread.${pid}`;
 
@@ -58,6 +61,7 @@ export function Conversation({ loop, actions }: { loop: Loop; actions: CockpitAc
   const link = useCockpitLink();
   const [log, setLog] = useState<Typed[]>(() => readLog(pid));
   const [flash, setFlash] = useState<string | null>(null);
+  const [thinking, setThinking] = useState(false);  // Claude is answering
   const threadRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => { setLog(readLog(pid)); }, [pid]);
@@ -82,7 +86,7 @@ export function Conversation({ loop, actions }: { loop: Loop; actions: CockpitAc
   });
 
   // stay at the newest message as the thread grows
-  const count = messages.length;
+  const count = messages.length + (thinking ? 1 : 0);
   useEffect(() => {
     const el = threadRef.current;
     if (el && !link.stacked) el.scrollTo({ top: el.scrollHeight, behavior: reducedMotion() ? "auto" : "smooth" });
@@ -118,16 +122,36 @@ export function Conversation({ loop, actions }: { loop: Loop; actions: CockpitAc
     });
   }
 
-  function send(text: string) {
+  // Claude answers when the server has a model for Ctrl agent; the rules
+  // answer otherwise, and whenever Claude can't (the reply says so)
+  async function send(text: string) {
     const said = text.trim();
-    if (!said) return;
+    if (!said || thinking) return;
     const now = Date.now();
-    const u = interpret(said, loop);
-    append([
-      { id: `you-${now}`, from: "you", text: said, at: now },
-      { id: `re-${now}`, from: "copilot", text: u.reply, station: u.station, proposal: u.proposal, at: now },
-    ]);
-    if (u.station) link.select(u.station, "thread");
+    const you: Typed = { id: `you-${now}`, from: "you", text: said, at: now };
+    append([you]);
+    let reply: Typed;
+    if (loop.ctrl) {
+      setThinking(true);
+      try {
+        const thread = messages.slice(-16).map((m) => ({ from: m.from, text: m.text }));
+        const r = await askCtrl(pid, { message: said, state: ctrlState(loop), thread });
+        const a = fromAction(r.action, loop);
+        reply = { id: `re-${now}`, from: "copilot", by: loop.ctrl.model, at: Date.now(),
+                  text: r.reply || (a.proposal ? "Here's what I'd do:" : "I don't have an answer for that."), ...a };
+      } catch (e) {
+        const u = interpret(said, loop);
+        reply = { id: `re-${now}`, from: "copilot", text: u.reply, station: u.station, proposal: u.proposal, at: Date.now(),
+                  detail: [`Claude couldn't answer (${(e as Error).message}), so this is the built-in reply.`] };
+      } finally {
+        setThinking(false);
+      }
+    } else {
+      const u = interpret(said, loop);
+      reply = { id: `re-${now}`, from: "copilot", text: u.reply, station: u.station, proposal: u.proposal, at: now };
+    }
+    append([reply]);
+    if (reply.station) link.select(reply.station, "thread");
   }
 
   // a typed proposal that ran is spent, so a reload doesn't offer it again
@@ -156,11 +180,16 @@ export function Conversation({ loop, actions }: { loop: Loop; actions: CockpitAc
               : <SpentProposal proposal={m.proposal} />)}
           </MessageRow>
         ))}
+        {thinking && (
+          <div className="flex items-center gap-2 text-xs text-muted-foreground" role="status">
+            <LoaderCircle className="size-3.5 animate-spin" /> Ctrl agent is thinking…
+          </div>
+        )}
       </div>
       {/* stacked, the composer stays pinned to the bottom of the screen */}
       <div className={link.stacked ? "sticky -bottom-8 z-10 bg-card pb-8" : "contents"}>
         <LiveLine loop={loop} />
-        <Composer loop={loop} onSend={send} oneRow={link.stacked} />
+        <Composer loop={loop} onSend={(t) => void send(t)} busy={thinking} oneRow={link.stacked} />
       </div>
     </>
   );
@@ -193,9 +222,10 @@ function Header({ loop }: { loop: Loop }) {
 
 // ---- one message -------------------------------------------------------------------
 function MessageRow({ m, isNew, flashing, children }: {
-  m: Message; isNew: boolean; flashing: boolean; children?: React.ReactNode;
+  m: Typed; isNew: boolean; flashing: boolean; children?: React.ReactNode;
 }) {
   const link = useCockpitLink();
+  const mode = useMode();
   const linked = !!m.station;
   const lit = linked && link.hovered === m.station;
   const rise = isNew ? "motion-safe:[animation:rise_0.2s_ease-out]" : "";
@@ -219,6 +249,7 @@ function MessageRow({ m, isNew, flashing, children }: {
       <div className="mb-1 flex items-center gap-2 text-[11px] text-muted-foreground">
         <MessagesSquare className="size-3" strokeWidth={1.75} aria-hidden />
         <span>Ctrl agent</span>
+        {m.by && mode === "research" && <span className="font-mono text-[10px]">· {m.by}</span>}
         {linked && (
           <button type="button" onClick={() => link.select(m.station!, "thread")}
             className={cn("ml-auto rounded-sm px-1.5 py-px text-[11px] transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/40",
@@ -228,7 +259,7 @@ function MessageRow({ m, isNew, flashing, children }: {
         )}
       </div>
       <p className="text-sm leading-relaxed">{m.text}</p>
-      {m.detail && m.detail.length > 0 && !m.proposal && (
+      {m.detail && m.detail.length > 0 && (!m.proposal || m.from === "copilot" && m.id.startsWith("re-")) && (
         <ul className="mt-1.5 space-y-0.5 text-sm text-muted-foreground">
           {m.detail.map((d) => <li key={d} className="flex gap-2"><span aria-hidden>·</span><span>{d}</span></li>)}
         </ul>
@@ -502,12 +533,12 @@ function LiveLine({ loop }: { loop: Loop }) {
 }
 
 // ---- composer -----------------------------------------------------------------------------
-function Composer({ loop, onSend, oneRow = false }: { loop: Loop; onSend: (text: string) => void; oneRow?: boolean }) {
+function Composer({ loop, onSend, busy = false, oneRow = false }: { loop: Loop; onSend: (text: string) => void; busy?: boolean; oneRow?: boolean }) {
   const [text, setText] = useState("");
   const chips = suggestions(loop);
 
   function submit() {
-    if (!text.trim()) return;
+    if (!text.trim() || busy) return;
     onSend(text);
     setText("");
   }
@@ -526,7 +557,7 @@ function Composer({ loop, onSend, oneRow = false }: { loop: Loop; onSend: (text:
           ? "-mx-4 mb-2.5 flex gap-1.5 overflow-x-auto px-4 [scrollbar-width:none] *:shrink-0"
           : "mb-2.5 flex flex-wrap gap-1.5"}>
           {chips.map((c) => (
-            <Button key={c} type="button" variant="outline" size="xs" onClick={() => onSend(c)} className="font-normal">
+            <Button key={c} type="button" variant="outline" size="xs" disabled={busy} onClick={() => onSend(c)} className="font-normal">
               {c}
             </Button>
           ))}
@@ -536,10 +567,10 @@ function Composer({ loop, onSend, oneRow = false }: { loop: Loop; onSend: (text:
         <textarea
           value={text} rows={1} data-slot="composer" aria-label="Message Ctrl agent"
           onChange={(e) => setText(e.target.value)} onKeyDown={onKey}
-          placeholder="Ask, or say what to do next: “train again with 300 steps”"
+          placeholder={loop.ctrl ? "Ask anything about this model, or say what to do next" : "Ask, or say what to do next: “train again with 300 steps”"}
           className="field-sizing-content max-h-32 min-h-9 min-w-0 grow resize-none rounded-lg border border-input bg-transparent px-3 py-2 text-sm outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
         />
-        <Button size="icon" className="size-9 shrink-0" aria-label="Send" onClick={submit} disabled={!text.trim()}>
+        <Button size="icon" className="size-9 shrink-0" aria-label="Send" onClick={submit} disabled={!text.trim() || busy}>
           <ArrowUp className="size-4" />
         </Button>
       </div>

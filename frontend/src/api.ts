@@ -244,7 +244,17 @@ export const addCustomModel = (model: string) =>
 export const removeCustomModel = (model: string) =>
   api<{ custom: CatalogModel[] }>("/v1/models/custom", { method: "POST", body: JSON.stringify({ model, remove: true }) });
 export interface FrontierInfo { base_url: string; model: string }
-export interface Settings { hf_token_set: boolean; frontier: FrontierInfo | null }
+// ctrl: the model answering the cockpit's conversation (the server's
+// ANTHROPIC_API_KEY), or null when Ctrl agent answers by its rules
+export interface Settings { hf_token_set: boolean; frontier: FrontierInfo | null; ctrl?: { model: string } | null }
+
+// ---- Ctrl agent: a typed message answered by Claude ---------------------------------
+// It may propose one action; the cockpit shows it as a card, and nothing runs
+// until the person approves it there.
+export type CtrlActionKind = "finetune" | "evaluate" | "synthesize" | "deploy" | "playground" | "add-frontier";
+export interface CtrlReply { reply: string; action: { kind: CtrlActionKind; args: Record<string, unknown> } | null }
+export const askCtrl = (projectId: string, body: { message: string; state: unknown; thread: { from: string; text: string }[] }) =>
+  api<CtrlReply>(`/v1/projects/${projectId}/ctrl`, { method: "POST", body: JSON.stringify(body) });
 export const getSettings = () => api<Settings>("/v1/settings");
 // The user's frontier model (any OpenAI-compatible API): an evaluation baseline,
 // the judge, and the upstream an agent's captured traffic passes through. The

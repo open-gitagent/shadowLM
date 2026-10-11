@@ -54,6 +54,7 @@ export interface Loop {
   next: StationId;  // where attention belongs now
   health?: Health;
   frontier: { base_url: string; model: string } | null;
+  ctrl: { model: string } | null;  // Claude answers typed messages, or null: the rules do
   loading: boolean;
   missing: boolean;  // the project id doesn't exist
 }
@@ -70,7 +71,9 @@ export function useLoop(projectId?: string): Loop {
   const evalQ = useEvalQ(project?.eval_id);
   const deploymentsQ = useDeploymentsQ();
   const health = useHealthQ().data;
-  const frontier = useSettingsQ().data?.frontier ?? null;
+  const settings = useSettingsQ().data;
+  const frontier = settings?.frontier ?? null;
+  const ctrl = settings?.ctrl ?? null;
   const synthQ = useSynthQ(project?.synth_id);
   const synth = synthQ.data;
   const writing = synth?.status === "running";
@@ -127,7 +130,7 @@ export function useLoop(projectId?: string): Loop {
     project, dataset, job, steps, evalSteps: metricsQ.data?.evals ?? [], evaluation, deployment,
     synth, writing,
     dataChanged: !!project?.run_id && !!project.run_dataset_id && project.run_dataset_id !== project.dataset_id,
-    versions, stations, next, health, frontier,
+    versions, stations, next, health, frontier, ctrl,
     loading: !!projectId && projectQ.isLoading,
     missing: !!projectId && projectQ.isError,
   };
