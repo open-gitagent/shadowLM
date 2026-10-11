@@ -828,6 +828,10 @@ class Server:
         self._prewarm_errors: dict = {}  # key → (when, message) of a failed load
         self.datasets = DatasetStore(work_root / "datasets")
         self.projects = ProjectStore(work_root / "projects.json")
+        # Ctrl agent answers the cockpit's conversation with Claude when the
+        # server has ANTHROPIC_API_KEY; without it the studio keeps its rules
+        from .ctrl import CtrlAgent  # noqa: PLC0415
+        self.ctrl = CtrlAgent.from_env()
         self.evals: dict[str, _Eval] = {}
         self._evals_root = work_root / "evals"
         self._load_evals()
@@ -913,6 +917,41 @@ class Server:
 
         f = self._settings.get("frontier")
         return FrontierModel(f["base_url"], f["api_key"], f["model"]) if f else None
+
+    def ctrl_reply(self, project_id: str, body: dict) -> dict:
+        """Answer one message in a project's cockpit conversation.
+
+        The browser sends the state it shows (stations, versions, scores) and
+        the thread; the server adds what only it has: the current run's last
+        log lines when it failed, and a few of the project's examples.
+        """
+        from .ctrl import CtrlError  # noqa: PLC0415
+
+        if self.ctrl is None:
+            raise LookupError("Ctrl agent has no model: set ANTHROPIC_API_KEY on the server")
+        project = self.projects.get(project_id)
+        if project is None:
+            raise KeyError(project_id)
+        message = str(body.get("message") or "").strip()[:4000]
+        if not message:
+            raise ValueError("say something to Ctrl agent")
+        state = {"project": {k: project.get(k) for k in ("name", "goal", "dataset_id", "run_id", "eval_id")},
+                 "cockpit": body.get("state") or {}}
+        job = self.jobs.get(project.get("run_id") or "")
+        if job is not None and job.status in ("failed", "stopped"):
+            state["run_log_tail"] = job.logs[-40:]
+        if project.get("dataset_id"):
+            try:
+                ds = self.datasets.resolve(project["dataset_id"])
+                state["example_rows"] = {"total": len(ds.rows),
+                                         "first": json.dumps(ds.rows[:8], default=str)[:6000]}
+            except Exception:  # noqa: BLE001 — examples are context, not required
+                pass
+        thread = [t for t in (body.get("thread") or []) if isinstance(t, dict)]
+        try:
+            return self.ctrl.reply(state, thread, message)
+        except CtrlError as e:
+            raise RuntimeError(str(e)) from None
 
     def frontier_info(self) -> dict | None:
         f = self._settings.get("frontier")
@@ -2187,7 +2226,8 @@ def make_handler(server: Server, auth: "Auth"):
             elif parts == ["v1", "settings"]:
                 from . import hub as _hub  # noqa: PLC0415
                 self._send(200, {"hf_token_set": _hub.has_token(),
-                                 "frontier": server.frontier_info()})
+                                 "frontier": server.frontier_info(),
+                                 "ctrl": server.ctrl.info() if server.ctrl else None})
             elif parts == ["v1", "captures"]:
                 self._send(200, {"captures": server.captures.list()})
             elif len(parts) == 3 and parts[:2] == ["v1", "captures"]:
@@ -2320,6 +2360,17 @@ def make_handler(server: Server, auth: "Auth"):
                         self._send(201, server.projects.create(b.get("name"), b.get("goal")))
                     except ValueError as e:
                         self._error(422, str(e))
+                elif len(parts) == 4 and parts[:2] == ["v1", "projects"] and parts[3] == "ctrl":
+                    try:
+                        self._send(200, server.ctrl_reply(parts[2], self._body()))
+                    except KeyError:
+                        self._error(404, f"unknown project {parts[2]!r}")
+                    except LookupError as e:
+                        self._error(503, str(e))
+                    except ValueError as e:
+                        self._error(422, str(e))
+                    except RuntimeError as e:
+                        self._error(502, str(e))
                 elif parts == ["v1", "evals"]:
                     try:
                         self._send(202, server.start_eval(self._body()).record())
@@ -2376,7 +2427,8 @@ def make_handler(server: Server, auth: "Auth"):
                             return self._error(422, str(e))
                     from . import hub as _hub  # noqa: PLC0415
                     self._send(200, {"hf_token_set": _hub.has_token(),
-                                     "frontier": server.frontier_info()})
+                                     "frontier": server.frontier_info(),
+                                     "ctrl": server.ctrl.info() if server.ctrl else None})
                 elif parts == ["v1", "captures"]:
                     b = self._body()
                     try:
