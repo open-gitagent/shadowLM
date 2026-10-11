@@ -172,8 +172,11 @@ routing; its run progress is one step per unit (see `resolve_total_steps`).
   `src/lib/` (`queries.ts` is the react-query data layer: one hook per
   resource, polling only while something runs). The **cockpit**
   (`features/cockpit/`) is where a model is made: the Ctrl agent conversation
-  on the right (`copilot.ts` narrates state and proposes the next action; rule-based, no
-  model call) drives a live map of the loop on the left (`model.ts` folds every resource
+  on the right (`copilot.ts` narrates state and proposes the next action, rule-based;
+  what the person *types* goes to Claude via `shadowlm/ctrl.py` and
+  `POST /v1/projects/<id>/ctrl` when the server has `ANTHROPIC_API_KEY`, and a
+  tool call comes back as the same approvable card — never executed) drives a
+  live map of the loop on the left (`model.ts` folds every resource
   into Data → Fine-tune → Evaluate → Deploy stations). Its direction contract
   lives in `.impeccable/surfaces/`. `npm run build` outputs to
   `../shadowlm/_static` (the wheel ships the compiled UI; end users never need

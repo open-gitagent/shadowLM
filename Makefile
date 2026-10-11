@@ -56,12 +56,15 @@ frontend:  ## install + build the React studio into shadowlm/_static
 
 # ---- run --------------------------------------------------------------------
 .PHONY: serve
+# .env (gitignored) reaches the server: ANTHROPIC_API_KEY gives Ctrl agent Claude
+_DOTENV = set -a; [ -f .env ] && . ./.env; set +a;
+
 serve: | $(SHADOWLM)  ## run the studio + API on one port (make serve PORT=8329)
-	$(SHADOWLM) serve --port $(PORT)
+	@$(_DOTENV) $(SHADOWLM) serve --port $(PORT)
 
 .PHONY: dev
 dev: | $(SHADOWLM)  ## serve with Vite hot-reload UI alongside the backend
-	$(SHADOWLM) serve --port $(PORT) --dev
+	@$(_DOTENV) $(SHADOWLM) serve --port $(PORT) --dev
 
 .PHONY: demo
 demo: | $(SHADOWLM)  ## end-to-end smoke: a tiny finetune through the CLI
